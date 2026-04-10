@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools==69.0.0", "wheel==0.43.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "opentrap"
+version = "0.1.0"
+description = "Open source trap-driven scenario testing toolkit"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = []
+
+[dependency-groups]
+dev = [
+  "jsonschema==4.26.0",
+  "pytest==9.0.3",
+  "ruff==0.6.0",
+]
+
+[project.scripts]
+opentrap = "opentrap.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "opentrap/src"}
+
+[tool.setuptools.packages.find]
+where = ["opentrap/src"]
+
+[tool.pytest.ini_options]
+addopts = "-q"
+testpaths = ["opentrap/tests", "adapter/tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["opentrap/src", "opentrap/tests", "adapter"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM"]

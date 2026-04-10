@@ -1,0 +1,47 @@
+# Codex/session files
+.codex
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+.eggs/
+.python-version
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# Node/Bun/TypeScript
+node_modules/
+.bun/
+dist/
+build/
+coverage/
+*.tsbuildinfo
+
+# Lockfiles (must be committed)
+!uv.lock
+!acme-client/bun.lock
+
+# Environment and local settings
+.env
+.env.*
+!.env.example
+
+# OS/editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# OpenTrap runtime artifacts
+runs/
+reports/
+traces/
