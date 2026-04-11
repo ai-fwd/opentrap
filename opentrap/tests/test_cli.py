@@ -28,14 +28,14 @@ def test_list_outputs_all_scenarios(capsys, tmp_path: Path, monkeypatch) -> None
 
 
 def test_list_discovers_lowercase_target_directories(capsys, tmp_path: Path, monkeypatch) -> None:
-    (tmp_path / "reasoning" / "prompt-injection-via-html").mkdir(parents=True)
+    (tmp_path / "reasoning" / "prompt_injection_via_html").mkdir(parents=True)
     monkeypatch.setattr("opentrap.cli.DEFAULT_TRAPS_DIR", tmp_path)
 
     code = main(["list"])
 
     captured = capsys.readouterr()
     assert code == 0
-    assert captured.out.strip().splitlines() == ["reasoning/prompt-injection-via-html"]
+    assert captured.out.strip().splitlines() == ["reasoning/prompt_injection_via_html"]
 
 
 def test_list_with_target_filters(capsys, tmp_path: Path, monkeypatch) -> None:
