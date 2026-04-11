@@ -1,6 +1,12 @@
 # OpenTrap
 
-OpenTrap is an open-source, flexible red teaming scenario testing tool focused on canonical attacks from published research papers.
+OpenTrap is an open-source tool for turning AI attack research into runnable scenarios.
+
+Inspiration comes from the Google DeepMind [AI Agent Traps](https://papers.ssrn.com/sol3/papers.cfm?abstract_id=6372438) paper which maps new attack surfaces emerging as agents interact with users, other agents, and external resources. These attacks manipulate the environment around the agent, using content, context, and system dynamics to steer behaviour in unintended ways.
+
+OpenTrap takes attacks described in academic work and turns them into runnable, reproducible scenarios. Given a simple description of your product, it generates realistic environments and adversarial inputs tailored to your use case.
+
+The goal is to make these attack classes easy to apply in practice, with a lightweight adapter that lets you run your system against them end to end, without needing to rethink your existing code or workflow.
 
 ## Repository Layout
 
