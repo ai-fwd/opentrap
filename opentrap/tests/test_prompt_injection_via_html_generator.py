@@ -11,7 +11,7 @@ def _trap_dir() -> Path:
         Path(__file__).resolve().parents[2]
         / "opentrap"
         / "traps"
-        / "reasoning"
+        / "perception"
         / "prompt_injection_via_html"
     )
 

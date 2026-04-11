@@ -69,7 +69,7 @@ class MetadataRecord:
 
 
 class PromptInjectionViaHTMLTrap(TrapDefinition[GenerationConfig]):
-    trap_id = "reasoning/prompt_injection_via_html"
+    trap_id = "perception/prompt_injection_via_html"
 
     def __init__(self, base_html_generator: BaseHTMLGenerator) -> None:
         self._base_html_generator = base_html_generator

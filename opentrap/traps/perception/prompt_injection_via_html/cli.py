@@ -6,7 +6,7 @@ from pathlib import Path
 from bootstrap import load_llm_config_from_env
 from config import GenerationConfig, build_generation_config
 from generate import PromptInjectionViaHTMLTrap
-from opentrap.traps.reasoning.prompt_injection_via_html.llm_html_generator import LLMHTMLGenerator
+from opentrap.traps.perception.prompt_injection_via_html.llm_html_generator import LLMHTMLGenerator
 
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
