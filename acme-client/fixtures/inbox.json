@@ -1,0 +1,182 @@
+[
+  {
+    "id": "email-001",
+    "sender": "Alice Johnson",
+    "subject": "Project Update — Q2 Roadmap",
+    "timestamp": "2026-04-14T17:00:00.000Z",
+    "preview": "Hey team, I wanted to share the latest updates on our Q2 roadmap. We've made significant progress on the authentication module and the da...",
+    "htmlPath": "emails/email-001.html",
+    "fromAddress": "alice@example.com"
+  },
+  {
+    "id": "email-002",
+    "sender": "Bob Smith",
+    "subject": "Meeting Notes — Design Review",
+    "timestamp": "2026-04-14T16:33:00.000Z",
+    "preview": "Hi everyone, Here are the notes from today's design review meeting. We covered the component library and migration plan. Action items: 1....",
+    "htmlPath": "emails/email-002.html",
+    "fromAddress": "bob@example.com"
+  },
+  {
+    "id": "email-003",
+    "sender": "Carol Davis",
+    "subject": "Invoice #1042 — March Services",
+    "timestamp": "2026-04-14T16:06:00.000Z",
+    "preview": "Dear Team, Please find attached the invoice for March consulting services. The total amount is $4,500 and payment is due within 30 days. ...",
+    "htmlPath": "emails/email-003.html",
+    "fromAddress": "carol@example.com"
+  },
+  {
+    "id": "email-004",
+    "sender": "David Lee",
+    "subject": "Re: Weekend Plans",
+    "timestamp": "2026-04-14T15:39:00.000Z",
+    "preview": "Sounds great! I'll bring the snacks. See you Saturday at 3pm. Looking forward to it! — David",
+    "htmlPath": "emails/email-004.html",
+    "fromAddress": "david@example.com"
+  },
+  {
+    "id": "email-005",
+    "sender": "Emily Chen",
+    "subject": "New Feature Request — Dark Mode",
+    "timestamp": "2026-04-14T15:12:00.000Z",
+    "preview": "Hi team, Several users requested a dark mode option for the app. I put together a brief proposal with implementation and timeline. Propos...",
+    "htmlPath": "emails/email-005.html",
+    "fromAddress": "emily@example.com"
+  },
+  {
+    "id": "email-006",
+    "sender": "Frank Wilson",
+    "subject": "Security Alert — Password Change",
+    "timestamp": "2026-04-14T14:45:00.000Z",
+    "preview": "Hello, We noticed a login from a new device on your account. If this was you, no action is needed. If you did not authorize this login, p...",
+    "htmlPath": "emails/email-006.html",
+    "fromAddress": "frank@example.com"
+  },
+  {
+    "id": "email-007",
+    "sender": "Alice Johnson",
+    "subject": "Project Update — Q2 Roadmap (Follow-up 2)",
+    "timestamp": "2026-04-14T14:18:00.000Z",
+    "preview": "Hey team, I wanted to share the latest updates on our Q2 roadmap. We've made significant progress on the authentication module and the da...",
+    "htmlPath": "emails/email-007.html",
+    "fromAddress": "alice@example.com"
+  },
+  {
+    "id": "email-008",
+    "sender": "Bob Smith",
+    "subject": "Meeting Notes — Design Review (Follow-up 2)",
+    "timestamp": "2026-04-14T13:51:00.000Z",
+    "preview": "Hi everyone, Here are the notes from today's design review meeting. We covered the component library and migration plan. Action items: 1....",
+    "htmlPath": "emails/email-008.html",
+    "fromAddress": "bob@example.com"
+  },
+  {
+    "id": "email-009",
+    "sender": "Carol Davis",
+    "subject": "Invoice #1042 — March Services (Follow-up 2)",
+    "timestamp": "2026-04-14T13:24:00.000Z",
+    "preview": "Dear Team, Please find attached the invoice for March consulting services. The total amount is $4,500 and payment is due within 30 days. ...",
+    "htmlPath": "emails/email-009.html",
+    "fromAddress": "carol@example.com"
+  },
+  {
+    "id": "email-010",
+    "sender": "David Lee",
+    "subject": "Re: Weekend Plans (Follow-up 2)",
+    "timestamp": "2026-04-14T12:57:00.000Z",
+    "preview": "Sounds great! I'll bring the snacks. See you Saturday at 3pm. Looking forward to it! — David Follow-up note 2: Please reply with updates ...",
+    "htmlPath": "emails/email-010.html",
+    "fromAddress": "david@example.com"
+  },
+  {
+    "id": "email-011",
+    "sender": "Emily Chen",
+    "subject": "New Feature Request — Dark Mode (Follow-up 2)",
+    "timestamp": "2026-04-14T12:30:00.000Z",
+    "preview": "Hi team, Several users requested a dark mode option for the app. I put together a brief proposal with implementation and timeline. Propos...",
+    "htmlPath": "emails/email-011.html",
+    "fromAddress": "emily@example.com"
+  },
+  {
+    "id": "email-012",
+    "sender": "Frank Wilson",
+    "subject": "Security Alert — Password Change (Follow-up 2)",
+    "timestamp": "2026-04-14T12:03:00.000Z",
+    "preview": "Hello, We noticed a login from a new device on your account. If this was you, no action is needed. If you did not authorize this login, p...",
+    "htmlPath": "emails/email-012.html",
+    "fromAddress": "frank@example.com"
+  },
+  {
+    "id": "email-013",
+    "sender": "Alice Johnson",
+    "subject": "Project Update — Q2 Roadmap (Follow-up 3)",
+    "timestamp": "2026-04-14T11:36:00.000Z",
+    "preview": "Hey team, I wanted to share the latest updates on our Q2 roadmap. We've made significant progress on the authentication module and the da...",
+    "htmlPath": "emails/email-013.html",
+    "fromAddress": "alice@example.com"
+  },
+  {
+    "id": "email-014",
+    "sender": "Bob Smith",
+    "subject": "Meeting Notes — Design Review (Follow-up 3)",
+    "timestamp": "2026-04-14T11:09:00.000Z",
+    "preview": "Hi everyone, Here are the notes from today's design review meeting. We covered the component library and migration plan. Action items: 1....",
+    "htmlPath": "emails/email-014.html",
+    "fromAddress": "bob@example.com"
+  },
+  {
+    "id": "email-015",
+    "sender": "Carol Davis",
+    "subject": "Invoice #1042 — March Services (Follow-up 3)",
+    "timestamp": "2026-04-14T10:42:00.000Z",
+    "preview": "Dear Team, Please find attached the invoice for March consulting services. The total amount is $4,500 and payment is due within 30 days. ...",
+    "htmlPath": "emails/email-015.html",
+    "fromAddress": "carol@example.com"
+  },
+  {
+    "id": "email-016",
+    "sender": "David Lee",
+    "subject": "Re: Weekend Plans (Follow-up 3)",
+    "timestamp": "2026-04-14T10:15:00.000Z",
+    "preview": "Sounds great! I'll bring the snacks. See you Saturday at 3pm. Looking forward to it! — David Follow-up note 3: Please reply with updates ...",
+    "htmlPath": "emails/email-016.html",
+    "fromAddress": "david@example.com"
+  },
+  {
+    "id": "email-017",
+    "sender": "Emily Chen",
+    "subject": "New Feature Request — Dark Mode (Follow-up 3)",
+    "timestamp": "2026-04-14T09:48:00.000Z",
+    "preview": "Hi team, Several users requested a dark mode option for the app. I put together a brief proposal with implementation and timeline. Propos...",
+    "htmlPath": "emails/email-017.html",
+    "fromAddress": "emily@example.com"
+  },
+  {
+    "id": "email-018",
+    "sender": "Frank Wilson",
+    "subject": "Security Alert — Password Change (Follow-up 3)",
+    "timestamp": "2026-04-14T09:21:00.000Z",
+    "preview": "Hello, We noticed a login from a new device on your account. If this was you, no action is needed. If you did not authorize this login, p...",
+    "htmlPath": "emails/email-018.html",
+    "fromAddress": "frank@example.com"
+  },
+  {
+    "id": "email-019",
+    "sender": "Alice Johnson",
+    "subject": "Project Update — Q2 Roadmap (Follow-up 4)",
+    "timestamp": "2026-04-14T08:54:00.000Z",
+    "preview": "Hey team, I wanted to share the latest updates on our Q2 roadmap. We've made significant progress on the authentication module and the da...",
+    "htmlPath": "emails/email-019.html",
+    "fromAddress": "alice@example.com"
+  },
+  {
+    "id": "email-020",
+    "sender": "Bob Smith",
+    "subject": "Meeting Notes — Design Review (Follow-up 4)",
+    "timestamp": "2026-04-14T08:27:00.000Z",
+    "preview": "Hi everyone, Here are the notes from today's design review meeting. We covered the component library and migration plan. Action items: 1....",
+    "htmlPath": "emails/email-020.html",
+    "fromAddress": "bob@example.com"
+  }
+]

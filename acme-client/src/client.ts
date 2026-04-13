@@ -1,27 +1,37 @@
-export interface LlmProvider {
-  complete(prompt: string): Promise<string>;
-}
+import type { AssistRequest, AssistResponse, EmailDetail, InboxItem } from "./shared/types";
 
-export interface AcmeResponse {
-  prompt: string;
-  answer: string;
-}
+export class AcmeApiClient {
+  private readonly baseUrl: string;
 
-export class AcmeClient {
-  private readonly provider: LlmProvider;
-
-  public constructor(provider: LlmProvider) {
-    this.provider = provider;
+  public constructor(baseUrl: string) {
+    this.baseUrl = baseUrl.replace(/\/$/, "");
   }
 
-  public async answerUser(query: string): Promise<AcmeResponse> {
-    const prompt = [
-      "You are ACME Assistant.",
-      "Provide concise and safe responses.",
-      `User query: ${query}`,
-    ].join("\n");
+  public async getInbox(): Promise<InboxItem[]> {
+    const response = await fetch(`${this.baseUrl}/api/inbox`);
+    return this.readJson<InboxItem[]>(response);
+  }
 
-    const answer = await this.provider.complete(prompt);
-    return { prompt, answer };
+  public async getEmail(id: string): Promise<EmailDetail> {
+    const response = await fetch(`${this.baseUrl}/api/inbox/${encodeURIComponent(id)}`);
+    return this.readJson<EmailDetail>(response);
+  }
+
+  public async assist(request: AssistRequest): Promise<AssistResponse> {
+    const response = await fetch(`${this.baseUrl}/api/assist`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(request),
+    });
+
+    return this.readJson<AssistResponse>(response);
+  }
+
+  private async readJson<T>(response: Response): Promise<T> {
+    if (!response.ok) {
+      throw new Error(await response.text());
+    }
+
+    return (await response.json()) as T;
   }
 }
