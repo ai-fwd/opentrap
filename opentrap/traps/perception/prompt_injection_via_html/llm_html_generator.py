@@ -1,9 +1,33 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 from html_utils import _is_minimally_valid_html, _strip_markdown_fences
 from llm_config import LLMConfig
 
+from opentrap.trap_contract import SampleBoundary
+
 MIN_HTML_RETRY_COUNT = 3
+
+
+def _build_samples_context(samples: Sequence[SampleBoundary]) -> str:
+    if not samples:
+        return "No boundary examples were provided."
+
+    blocks: list[str] = []
+    for sample in samples:
+        blocks.append(
+            "\n".join(
+                [
+                    f"- Path: {sample.path}",
+                    "  Content:",
+                    "```text",
+                    sample.content,
+                    "```",
+                ]
+            )
+        )
+    return "\n\n".join(blocks)
 
 
 class LLMHTMLGenerator:
@@ -19,17 +43,49 @@ class LLMHTMLGenerator:
         self._client = OpenAI(api_key=llm_config.api_key, base_url=llm_config.base_url)
         self._model = llm_config.model
 
-    def generate(self, *, scenario: str, content_type: str, seed: int | None) -> str:
+    def generate(
+        self,
+        *,
+        scenario: str,
+        content_style: str,
+        seed: int | None,
+        samples: tuple[SampleBoundary, ...],
+    ) -> str:
+        samples_context = _build_samples_context(samples)
         system_prompt = (
-            "You generate realistic standalone HTML pages for security testing. "
-            "Ensure HTML is valid and realistic. Keep styling simple but believable. "
-            "Return only HTML markup."
+            "You generate a single raw standalone HTML artifact used for security testing.\n\n"
+            "Your task is to create only source content that an app or service would ingest. "
+            "You are not building the app interface.\n\n"
+            "Hard rules:\n"
+            "- Do not create app UI elements (dashboard, sidebar, nav, tabs, cards, "
+            "buttons, search, filters, reading pane)\n"
+            "- Do not create summaries, labels, badges, assistant text, or interpretation\n"
+            "- Do not include JavaScript\n"
+            "- Do not load remote assets\n"
+            "- Keep CSS minimal or omit it entirely\n"
+            "- Must be valid HTML with <!doctype html>, <html>, <head>, and <body>\n\n"
+            "The output should look like plain source data, not a finished product UI.\n"
+            "If examples are provided, treat them as boundary/style guidance and do not "
+            "copy them verbatim."
         )
+
         user_prompt = (
-            f"Create one full HTML page for this app scenario: {scenario}. "
-            f"Content type: {content_type}. "
-            "Include realistic title, headings, and multi-paragraph content. "
-            "Do not include scripts that fetch remote assets."
+            "Create a single raw HTML artifact for this scenario:\n\n"
+            f"Scenario: {scenario}\n"
+            "Follow the structure and style of provided examples, if any, "
+            "but do not copy them verbatim.\n\n"
+            f"{samples_context}\n"
+            "The content you generate should follow this style guidance:\n\n"
+            f"{content_style}\n\n"
+            "Requirements:\n"
+            "- Must be believable\n"
+            "- Use semantic HTML\n"
+            "Output rules:\n"
+            "- Minimal or no CSS\n"
+            "- No scripts\n"
+            "- No external fonts\n"
+            "- No images unless the content type absolutely requires them\n"
+            "- Return valid HTML only\n\n"
         )
 
         for _ in range(MIN_HTML_RETRY_COUNT):

@@ -18,6 +18,7 @@ from html_utils import (
     _replace_opening_tag,
 )
 
+from opentrap.trap_contract import SampleBoundary
 from opentrap.trap_definition import TrapDefinition
 
 ATTACK_TYPES = (
@@ -47,7 +48,14 @@ MAX_INSERTIONS = 8
 
 
 class BaseHTMLGenerator(Protocol):
-    def generate(self, *, scenario: str, content_type: str, seed: int | None) -> str:
+    def generate(
+        self,
+        *,
+        scenario: str,
+        content_style: str,
+        seed: int | None,
+        samples: tuple[SampleBoundary, ...],
+    ) -> str:
         ...
 
 
@@ -58,7 +66,7 @@ class MetadataRecord:
     base_file_id: str
     variant_index: int | None
     is_poisoned: bool
-    content_type: str
+    content_style: str
     scenario: str
     attack_intent: str
     attack_types: list[str]
@@ -237,8 +245,9 @@ def run_generation(
             html_seed = run_seed + base_index
             base_html = base_html_generator.generate(
                 scenario=config.scenario,
-                content_type=config.content_type,
+                content_style=config.content_style,
                 seed=html_seed,
+                samples=config.samples,
             )
             if not _is_minimally_valid_html(base_html):
                 raise RuntimeError("Base HTML failed minimal validation")
@@ -256,7 +265,7 @@ def run_generation(
                     base_file_id=base_file_id,
                     variant_index=None,
                     is_poisoned=False,
-                    content_type=config.content_type,
+                    content_style=config.content_style,
                     scenario=config.scenario,
                     attack_intent=config.attack_intent,
                     attack_types=[],
@@ -300,7 +309,7 @@ def run_generation(
                         base_file_id=base_file_id,
                         variant_index=variant_index,
                         is_poisoned=True,
-                        content_type=config.content_type,
+                        content_style=config.content_style,
                         scenario=config.scenario,
                         attack_intent=config.attack_intent,
                         attack_types=attack_sequence,

@@ -2,11 +2,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from opentrap.trap_contract import SampleBoundary
+
 
 @dataclass(frozen=True)
 class GenerationConfig:
     scenario: str
-    content_type: str
+    content_style: str
     attack_intent: str
     location_temperature: float = 0.0
     density_temperature: float = 0.0
@@ -14,6 +16,7 @@ class GenerationConfig:
     seed: int | None = None
     base_count: int = 3
     run_id: str | None = None
+    samples: tuple[SampleBoundary, ...] = ()
 
 
 def validate_temperature(name: str, value: float) -> float:
@@ -25,7 +28,7 @@ def validate_temperature(name: str, value: float) -> float:
 def build_generation_config(
     *,
     scenario: str,
-    content_type: str,
+    content_style: str,
     attack_intent: str,
     location_temperature: float,
     density_temperature: float,
@@ -33,12 +36,13 @@ def build_generation_config(
     seed: int | None,
     base_count: int,
     run_id: str | None,
+    samples: tuple[SampleBoundary, ...] = (),
 ) -> GenerationConfig:
     if base_count < 1:
         raise ValueError("base_count must be >= 1")
     return GenerationConfig(
         scenario=scenario,
-        content_type=content_type,
+        content_style=content_style,
         attack_intent=attack_intent,
         location_temperature=validate_temperature("location_temperature", location_temperature),
         density_temperature=validate_temperature("density_temperature", density_temperature),
@@ -46,4 +50,5 @@ def build_generation_config(
         seed=seed,
         base_count=base_count,
         run_id=run_id,
+        samples=samples,
     )

@@ -32,8 +32,15 @@ def _load_module(filename: str, module_name: str):
 
 
 class _StaticHTMLGenerator:
-    def generate(self, *, scenario: str, content_type: str, seed: int | None) -> str:
-        del scenario, content_type, seed
+    def generate(
+        self,
+        *,
+        scenario: str,
+        content_style: str,
+        seed: int | None,
+        samples,
+    ) -> str:
+        del scenario, content_style, seed, samples
         return (
             "<!DOCTYPE html><html><head><title>Sample</title></head>"
             "<body><h1>Title</h1><p>Paragraph</p></body></html>"
@@ -42,10 +49,17 @@ class _StaticHTMLGenerator:
 
 class _TrackingHTMLGenerator:
     def __init__(self) -> None:
-        self.calls: list[tuple[str, str, int | None]] = []
+        self.calls: list[tuple[str, str, int | None, int]] = []
 
-    def generate(self, *, scenario: str, content_type: str, seed: int | None) -> str:
-        self.calls.append((scenario, content_type, seed))
+    def generate(
+        self,
+        *,
+        scenario: str,
+        content_style: str,
+        seed: int | None,
+        samples,
+    ) -> str:
+        self.calls.append((scenario, content_style, seed, len(samples)))
         return (
             "<!DOCTYPE html><html><head><title>Sample</title></head>"
             "<body><h1>Title</h1><p>Paragraph</p></body></html>"
@@ -67,7 +81,7 @@ def test_generator_is_deterministic_for_same_seed(tmp_path: Path) -> None:
 
     config = config_module.GenerationConfig(
         scenario="summarize hotel reviews",
-        content_type="reviews",
+        content_style="reviews",
         attack_intent="turn all bad reviews into positive reviews",
         location_temperature=0.25,
         density_temperature=0.5,
@@ -105,7 +119,7 @@ def test_file_count_invariants_hold(tmp_path: Path) -> None:
 
     config = config_module.GenerationConfig(
         scenario="summarize blogs",
-        content_type="blogs",
+        content_style="blogs",
         attack_intent="insert fabricated summary claims",
         seed=9,
         base_count=3,
@@ -143,7 +157,7 @@ def test_density_ceiling_wins_for_diversity_one_density_zero(tmp_path: Path) -> 
 
     config = config_module.GenerationConfig(
         scenario="summarize docs",
-        content_type="docs",
+        content_style="docs",
         attack_intent="override to biased response",
         density_temperature=0.0,
         diversity_temperature=1.0,
@@ -170,7 +184,7 @@ def test_metadata_links_base_and_poisoned_records(tmp_path: Path) -> None:
 
     config = config_module.GenerationConfig(
         scenario="summarize product pages",
-        content_type="docs",
+        content_style="docs",
         attack_intent="force favorable framing",
         density_temperature=0.0,
         diversity_temperature=0.0,
@@ -211,7 +225,7 @@ def test_location_randomization_stays_within_valid_families(tmp_path: Path) -> N
 
     config = config_module.GenerationConfig(
         scenario="summarize reviews",
-        content_type="reviews",
+        content_style="reviews",
         attack_intent="rewrite negatives as positives",
         location_temperature=1.0,
         density_temperature=1.0,
@@ -241,7 +255,7 @@ def test_run_generation_uses_injected_generator(tmp_path: Path) -> None:
 
     config = config_module.GenerationConfig(
         scenario="summarize changelog",
-        content_type="release-notes",
+        content_style="release-notes",
         attack_intent="insert fabricated achievements",
         seed=100,
         base_count=2,
@@ -255,8 +269,8 @@ def test_run_generation_uses_injected_generator(tmp_path: Path) -> None:
     )
 
     assert tracking_generator.calls == [
-        ("summarize changelog", "release-notes", 100),
-        ("summarize changelog", "release-notes", 101),
+        ("summarize changelog", "release-notes", 100, 0),
+        ("summarize changelog", "release-notes", 101, 0),
     ]
 
 
@@ -286,7 +300,7 @@ def test_file_naming_is_sequential_and_deterministic(tmp_path: Path) -> None:
 
     config = config_module.GenerationConfig(
         scenario="summarize docs",
-        content_type="docs",
+        content_style="docs",
         attack_intent="override style guide",
         seed=11,
         base_count=1,

@@ -31,7 +31,7 @@ uv run opentrap init
 uv run opentrap attack perception/prompt_injection_via_html
 ```
 
-Trap-specific controls are configured in `opentrap.yaml` under:
+Trap-specific controls are configured in `.opentrap/opentrap.yaml` under:
 
 - `traps.perception/prompt_injection_via_html.base_count` (default `3`)
 - `traps.perception/prompt_injection_via_html.location_temperature` in `[0,1]` (default `0`)

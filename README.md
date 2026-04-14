@@ -51,6 +51,16 @@ cp .env.shared.example .env.shared
 
 Project-specific `.env` files can override shared values.
 
+## Sample Boundaries
+
+Drop optional representative examples under:
+
+```bash
+.opentrap/samples/
+```
+
+Any supported text-like file in this directory tree is ingested and provided to traps as examples.
+
 ## Quickstart (OpenTrap CLI)
 
 ```bash

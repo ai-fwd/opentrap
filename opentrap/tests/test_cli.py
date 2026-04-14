@@ -27,7 +27,12 @@ def _run(shared_config: SharedConfig, trap_config: Mapping[str, Any], output_bas
     output_base.mkdir(parents=True, exist_ok=True)
     artifact_path = output_base / "artifact.txt"
     artifact_path.write_text(
-        "{trap_id}|" + shared_config.scenario + "|" + str(trap_config["knob"]),
+        "{trap_id}|"
+        + shared_config.scenario
+        + "|"
+        + str(trap_config["knob"])
+        + "|"
+        + str(len(shared_config.samples)),
         encoding="utf-8",
     )
     return artifact_path
@@ -102,7 +107,7 @@ def test_init_writes_yaml_with_shared_and_trap_defaults(
 ) -> None:
     _write_stub_contract(tmp_path, "reasoning/chain-trap")
     _write_stub_contract(tmp_path, "perception/vision-poison")
-    config_path = tmp_path / "opentrap.yaml"
+    config_path = tmp_path / ".opentrap" / "opentrap.yaml"
 
     responses = iter(
         [
@@ -115,17 +120,20 @@ def test_init_writes_yaml_with_shared_and_trap_defaults(
     monkeypatch.setattr("builtins.input", lambda _prompt: next(responses))
     monkeypatch.setattr("opentrap.cli.DEFAULT_TRAPS_DIR", tmp_path)
     monkeypatch.setattr("opentrap.cli.DEFAULT_CONFIG_PATH", config_path)
+    monkeypatch.setattr("opentrap.cli.DEFAULT_SAMPLES_DIR", tmp_path / ".opentrap" / "samples")
 
     code = main(["init"])
 
     captured = capsys.readouterr()
     assert code == 0
-    assert captured.out.strip() == str(config_path)
+    lines = captured.out.strip().splitlines()
+    assert lines[0] == f"Created config file: {config_path}"
+    assert lines[1] == f"Created samples directory: {tmp_path / '.opentrap' / 'samples'}"
 
     payload = yaml.safe_load(config_path.read_text(encoding="utf-8"))
     assert payload["shared"] == {
         "scenario": "summarize hotel reviews",
-        "content_type": "reviews",
+        "content_style": "reviews",
         "attack_intent": "turn all bad reviews into positive reviews",
         "seed": None,
     }
@@ -137,19 +145,23 @@ def test_init_writes_yaml_with_shared_and_trap_defaults(
 
 def test_init_always_overwrites_existing_file(capsys, tmp_path: Path, monkeypatch) -> None:
     _write_stub_contract(tmp_path, "reasoning/chain-trap")
-    config_path = tmp_path / "opentrap.yaml"
+    config_path = tmp_path / ".opentrap" / "opentrap.yaml"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
     config_path.write_text("old: true\n", encoding="utf-8")
 
     responses = iter(["summarize docs", "docs", "bias output", "42"])
     monkeypatch.setattr("builtins.input", lambda _prompt: next(responses))
     monkeypatch.setattr("opentrap.cli.DEFAULT_TRAPS_DIR", tmp_path)
     monkeypatch.setattr("opentrap.cli.DEFAULT_CONFIG_PATH", config_path)
+    monkeypatch.setattr("opentrap.cli.DEFAULT_SAMPLES_DIR", tmp_path / ".opentrap" / "samples")
 
     code = main(["init"])
 
     captured = capsys.readouterr()
     assert code == 0
-    assert captured.out.strip() == str(config_path)
+    lines = captured.out.strip().splitlines()
+    assert lines[0] == f"Created config file: {config_path}"
+    assert lines[1] == f"Created samples directory: {tmp_path / '.opentrap' / 'samples'}"
     payload = yaml.safe_load(config_path.read_text(encoding="utf-8"))
     assert payload["shared"]["scenario"] == "summarize docs"
     assert payload["shared"]["seed"] == 42
@@ -158,7 +170,11 @@ def test_init_always_overwrites_existing_file(capsys, tmp_path: Path, monkeypatc
 def test_attack_fails_when_config_is_missing(capsys, tmp_path: Path, monkeypatch) -> None:
     _write_stub_contract(tmp_path, "reasoning/chain-trap")
     monkeypatch.setattr("opentrap.cli.DEFAULT_TRAPS_DIR", tmp_path)
-    monkeypatch.setattr("opentrap.cli.DEFAULT_CONFIG_PATH", tmp_path / "missing.yaml")
+    monkeypatch.setattr(
+        "opentrap.cli.DEFAULT_CONFIG_PATH",
+        tmp_path / ".opentrap" / "opentrap.yaml",
+    )
+    monkeypatch.setattr("opentrap.cli.DEFAULT_SAMPLES_DIR", tmp_path / ".opentrap" / "samples")
 
     code = main(["attack"])
 
@@ -175,11 +191,12 @@ def test_attack_single_runs_selected_trap(
     _write_stub_contract(tmp_path / "traps", "reasoning/chain-trap")
     _write_stub_contract(tmp_path / "traps", "memory/context-overflow")
 
-    config_path = tmp_path / "opentrap.yaml"
+    config_path = tmp_path / ".opentrap" / "opentrap.yaml"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "shared": {
             "scenario": "summarize docs",
-            "content_type": "docs",
+            "content_style": "docs",
             "attack_intent": "rewrite negatives",
             "seed": None,
         },
@@ -193,6 +210,7 @@ def test_attack_single_runs_selected_trap(
     monkeypatch.setattr("opentrap.cli.DEFAULT_TRAPS_DIR", tmp_path / "traps")
     monkeypatch.setattr("opentrap.cli.DEFAULT_CONFIG_PATH", config_path)
     monkeypatch.setattr("opentrap.cli.DEFAULT_RUNS_DIR", tmp_path / "runs")
+    monkeypatch.setattr("opentrap.cli.DEFAULT_SAMPLES_DIR", tmp_path / ".opentrap" / "samples")
 
     report_path = tmp_path / "runs" / "single.json"
     code = main(["attack", "reasoning/chain-trap", "--output", str(report_path)])
@@ -208,17 +226,55 @@ def test_attack_single_runs_selected_trap(
     assert report["outcome"] == "success"
 
     artifact_path = Path(report["results"][0]["artifact_path"])
-    assert artifact_path.read_text(encoding="utf-8") == "reasoning/chain-trap|summarize docs|7"
+    assert artifact_path.read_text(encoding="utf-8") == "reasoning/chain-trap|summarize docs|7|0"
+
+
+def test_attack_passes_loaded_samples_to_trap(capsys, tmp_path: Path, monkeypatch) -> None:
+    _write_stub_contract(tmp_path / "traps", "reasoning/chain-trap")
+    config_path = tmp_path / ".opentrap" / "opentrap.yaml"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "shared": {
+            "scenario": "summarize docs",
+            "content_style": "docs",
+            "attack_intent": "rewrite negatives",
+            "seed": None,
+        },
+        "traps": {
+            "reasoning/chain-trap": {"knob": 7},
+        },
+    }
+    config_path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
+    samples_dir = tmp_path / ".opentrap" / "samples"
+    samples_dir.mkdir(parents=True)
+    (samples_dir / "example.html").write_text("<html>sample</html>", encoding="utf-8")
+
+    monkeypatch.setattr("opentrap.cli.DEFAULT_TRAPS_DIR", tmp_path / "traps")
+    monkeypatch.setattr("opentrap.cli.DEFAULT_CONFIG_PATH", config_path)
+    monkeypatch.setattr("opentrap.cli.DEFAULT_RUNS_DIR", tmp_path / "runs")
+    monkeypatch.setattr("opentrap.cli.DEFAULT_SAMPLES_DIR", samples_dir)
+
+    report_path = tmp_path / "runs" / "single.json"
+    code = main(["attack", "reasoning/chain-trap", "--output", str(report_path)])
+
+    captured = capsys.readouterr()
+    assert code == 0
+    assert captured.out.strip() == str(report_path)
+
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    artifact_path = Path(report["results"][0]["artifact_path"])
+    assert artifact_path.read_text(encoding="utf-8") == "reasoning/chain-trap|summarize docs|7|1"
 
 
 def test_attack_rejects_unknown_trap_key_in_yaml(capsys, tmp_path: Path, monkeypatch) -> None:
     _write_stub_contract(tmp_path / "traps", "reasoning/chain-trap")
 
-    config_path = tmp_path / "opentrap.yaml"
+    config_path = tmp_path / ".opentrap" / "opentrap.yaml"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "shared": {
             "scenario": "summarize docs",
-            "content_type": "docs",
+            "content_style": "docs",
             "attack_intent": "rewrite negatives",
             "seed": None,
         },
@@ -231,6 +287,7 @@ def test_attack_rejects_unknown_trap_key_in_yaml(capsys, tmp_path: Path, monkeyp
 
     monkeypatch.setattr("opentrap.cli.DEFAULT_TRAPS_DIR", tmp_path / "traps")
     monkeypatch.setattr("opentrap.cli.DEFAULT_CONFIG_PATH", config_path)
+    monkeypatch.setattr("opentrap.cli.DEFAULT_SAMPLES_DIR", tmp_path / ".opentrap" / "samples")
 
     code = main(["attack"])
 

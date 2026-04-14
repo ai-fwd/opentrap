@@ -10,11 +10,18 @@ MISSING_DEFAULT = object()
 
 
 @dataclass(frozen=True)
+class SampleBoundary:
+    path: str
+    content: str
+
+
+@dataclass(frozen=True)
 class SharedConfig:
     scenario: str
-    content_type: str
+    content_style: str
     attack_intent: str
     seed: int | None
+    samples: tuple[SampleBoundary, ...] = ()
 
 
 @dataclass(frozen=True)

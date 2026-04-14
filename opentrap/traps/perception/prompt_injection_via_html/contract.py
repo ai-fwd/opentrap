@@ -15,7 +15,7 @@ from opentrap.trap_contract import SharedConfig, TrapFieldSpec, TrapSpec
 def _run(shared_config: SharedConfig, trap_config: Mapping[str, Any], output_base: Path) -> Path:
     generation_config = build_generation_config(
         scenario=shared_config.scenario,
-        content_type=shared_config.content_type,
+        content_style=shared_config.content_style,
         attack_intent=shared_config.attack_intent,
         location_temperature=float(trap_config["location_temperature"]),
         density_temperature=float(trap_config["density_temperature"]),
@@ -23,6 +23,7 @@ def _run(shared_config: SharedConfig, trap_config: Mapping[str, Any], output_bas
         seed=shared_config.seed,
         base_count=int(trap_config["base_count"]),
         run_id=None,
+        samples=shared_config.samples,
     )
 
     llm_cfg = load_llm_config_from_env()

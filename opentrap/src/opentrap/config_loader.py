@@ -1,11 +1,17 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
-from opentrap.trap_contract import MISSING_DEFAULT, SharedConfig, TrapFieldSpec, TrapSpec
+from opentrap.trap_contract import (
+    MISSING_DEFAULT,
+    SampleBoundary,
+    SharedConfig,
+    TrapFieldSpec,
+    TrapSpec,
+)
 
 
 class AttackConfigError(ValueError):
@@ -36,14 +42,57 @@ def _is_number(value: Any) -> bool:
     return isinstance(value, int | float) and not isinstance(value, bool)
 
 
+SAMPLE_EXTENSIONS = {".html", ".htm", ".txt", ".md", ".json", ".xml", ".csv"}
+
+
+def load_sample_boundaries(samples_dir: Path) -> tuple[SampleBoundary, ...]:
+    if not samples_dir.exists():
+        return ()
+    if not samples_dir.is_dir():
+        raise AttackConfigError(f"samples path '{samples_dir}' must be a directory")
+
+    discovered = sorted(
+        (
+            sample_path
+            for sample_path in samples_dir.rglob("*")
+            if sample_path.is_file() and sample_path.suffix.lower() in SAMPLE_EXTENSIONS
+        ),
+        key=lambda path: path.relative_to(samples_dir).as_posix(),
+    )
+
+    samples: list[SampleBoundary] = []
+    for sample_path in discovered:
+        try:
+            content = sample_path.read_text(encoding="utf-8")
+        except UnicodeDecodeError as exc:
+            rel = sample_path.relative_to(samples_dir).as_posix()
+            raise AttackConfigError(
+                f"sample file '{rel}' is not valid UTF-8 in {samples_dir}"
+            ) from exc
+        except OSError as exc:
+            rel = sample_path.relative_to(samples_dir).as_posix()
+            raise AttackConfigError(
+                f"sample file '{rel}' could not be read from {samples_dir}: {exc}"
+            ) from exc
+
+        samples.append(
+            SampleBoundary(
+                path=sample_path.relative_to(samples_dir).as_posix(),
+                content=content,
+            )
+        )
+
+    return tuple(samples)
+
+
 def _validate_shared_config(raw: Mapping[str, Any]) -> SharedConfig:
-    allowed_keys = {"scenario", "content_type", "attack_intent", "seed"}
+    allowed_keys = {"scenario", "content_style", "attack_intent", "seed"}
     unknown_keys = sorted(set(raw) - allowed_keys)
     if unknown_keys:
         raise AttackConfigError(f"shared has unknown key(s): {', '.join(unknown_keys)}")
 
     values: dict[str, str] = {}
-    for field_name in ("scenario", "content_type", "attack_intent"):
+    for field_name in ("scenario", "content_style", "attack_intent"):
         value = raw.get(field_name)
         if not isinstance(value, str):
             raise AttackConfigError(f"shared.{field_name} must be a string")
@@ -61,7 +110,7 @@ def _validate_shared_config(raw: Mapping[str, Any]) -> SharedConfig:
 
     return SharedConfig(
         scenario=values["scenario"],
-        content_type=values["content_type"],
+        content_style=values["content_style"],
         attack_intent=values["attack_intent"],
         seed=seed,
     )
@@ -154,7 +203,7 @@ def build_initial_config(shared: SharedConfig, registry: Mapping[str, TrapSpec])
     return {
         "shared": {
             "scenario": shared.scenario,
-            "content_type": shared.content_type,
+            "content_style": shared.content_style,
             "attack_intent": shared.attack_intent,
             "seed": shared.seed,
         },
@@ -167,7 +216,11 @@ def write_attack_config(path: Path, payload: Mapping[str, Any]) -> None:
     path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
 
 
-def load_attack_config(path: Path, registry: Mapping[str, TrapSpec]) -> LoadedAttackConfig:
+def load_attack_config(
+    path: Path,
+    registry: Mapping[str, TrapSpec],
+    samples_dir: Path | None = None,
+) -> LoadedAttackConfig:
     yaml = _yaml_module()
 
     if not path.exists():
@@ -194,6 +247,9 @@ def load_attack_config(path: Path, registry: Mapping[str, TrapSpec]) -> LoadedAt
     traps_raw = raw.get("traps", {})
     if not isinstance(traps_raw, dict):
         raise AttackConfigError("traps section must be a mapping")
+
+    sample_boundaries = load_sample_boundaries(samples_dir or Path(".opentrap/samples"))
+    shared = replace(shared, samples=sample_boundaries)
 
     unknown_traps = sorted(set(traps_raw) - set(registry))
     if unknown_traps:

@@ -19,7 +19,9 @@ from opentrap.trap_registry import TrapRegistryError, build_trap_registry
 
 DEFAULT_TRAPS_DIR = Path(__file__).resolve().parents[2] / "traps"
 DEFAULT_RUNS_DIR = Path("runs")
-DEFAULT_CONFIG_PATH = Path("opentrap.yaml")
+DEFAULT_STATE_DIR = Path(".opentrap")
+DEFAULT_CONFIG_PATH = DEFAULT_STATE_DIR / "opentrap.yaml"
+DEFAULT_SAMPLES_DIR = DEFAULT_STATE_DIR / "samples"
 
 
 def _resolve_trap_ref(trap_ref: str) -> str:
@@ -101,7 +103,7 @@ def cmd_init(_: argparse.Namespace) -> int:
 
     shared = SharedConfig(
         scenario=_prompt_non_empty("Scenario: "),
-        content_type=_prompt_non_empty("Content type: "),
+        content_style=_prompt_non_empty("Content style: "),
         attack_intent=_prompt_non_empty("Attack intent: "),
         seed=_prompt_seed("Seed (optional integer): "),
     )
@@ -112,8 +114,15 @@ def cmd_init(_: argparse.Namespace) -> int:
         print(str(exc), file=sys.stderr)
         return 1
 
+    DEFAULT_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
     write_attack_config(DEFAULT_CONFIG_PATH, payload)
-    print(str(DEFAULT_CONFIG_PATH))
+    DEFAULT_SAMPLES_DIR.mkdir(parents=True, exist_ok=True)
+    print(f"Created config file: {DEFAULT_CONFIG_PATH}")
+    print(f"Created samples directory: {DEFAULT_SAMPLES_DIR}")
+    print(
+        "Add one or more representative source examples to the samples directory. "
+        "Examples are optional; if present, they guide generation style and structure."
+    )
     return 0
 
 
@@ -141,7 +150,11 @@ def cmd_attack(args: argparse.Namespace) -> int:
         default_output = DEFAULT_RUNS_DIR / f"{resolved.replace('/', '__')}.json"
 
     try:
-        loaded = load_attack_config(DEFAULT_CONFIG_PATH, registry)
+        loaded = load_attack_config(
+            DEFAULT_CONFIG_PATH,
+            registry,
+            samples_dir=DEFAULT_SAMPLES_DIR,
+        )
     except AttackConfigError as exc:
         print(str(exc), file=sys.stderr)
         return 1
@@ -181,7 +194,7 @@ def build_parser() -> argparse.ArgumentParser:
     list_parser.add_argument("--target", default=None)
     list_parser.set_defaults(handler=cmd_list)
 
-    init_parser = subparsers.add_parser("init", help="Create opentrap.yaml")
+    init_parser = subparsers.add_parser("init", help="Create .opentrap/opentrap.yaml")
     init_parser.set_defaults(handler=cmd_init)
 
     attack_parser = subparsers.add_parser(

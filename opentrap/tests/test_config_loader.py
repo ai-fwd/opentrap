@@ -32,7 +32,7 @@ def test_load_attack_config_applies_trap_defaults(tmp_path: Path) -> None:
     payload = {
         "shared": {
             "scenario": "summarize docs",
-            "content_type": "docs",
+            "content_style": "docs",
             "attack_intent": "rewrite negatives",
             "seed": None,
         },
@@ -40,10 +40,12 @@ def test_load_attack_config_applies_trap_defaults(tmp_path: Path) -> None:
     }
     config_path = tmp_path / "opentrap.yaml"
     config_path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
+    samples_dir = tmp_path / ".opentrap" / "samples"
 
-    loaded = load_attack_config(config_path, _registry())
+    loaded = load_attack_config(config_path, _registry(), samples_dir=samples_dir)
 
     assert loaded.shared.seed is None
+    assert loaded.shared.samples == ()
     assert loaded.trap_configs["reasoning/chain-trap"] == {
         "temperature": 0.0,
         "base_count": 3,
@@ -54,7 +56,7 @@ def test_load_attack_config_rejects_unknown_trap_id(tmp_path: Path) -> None:
     payload = {
         "shared": {
             "scenario": "summarize docs",
-            "content_type": "docs",
+            "content_style": "docs",
             "attack_intent": "rewrite negatives",
             "seed": 10,
         },
@@ -67,14 +69,14 @@ def test_load_attack_config_rejects_unknown_trap_id(tmp_path: Path) -> None:
     config_path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
 
     with pytest.raises(AttackConfigError, match="unknown trap id"):
-        load_attack_config(config_path, _registry())
+        load_attack_config(config_path, _registry(), samples_dir=tmp_path / ".opentrap/samples")
 
 
 def test_load_attack_config_rejects_unknown_trap_field(tmp_path: Path) -> None:
     payload = {
         "shared": {
             "scenario": "summarize docs",
-            "content_type": "docs",
+            "content_style": "docs",
             "attack_intent": "rewrite negatives",
             "seed": 10,
         },
@@ -84,14 +86,14 @@ def test_load_attack_config_rejects_unknown_trap_field(tmp_path: Path) -> None:
     config_path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
 
     with pytest.raises(AttackConfigError, match="unknown key"):
-        load_attack_config(config_path, _registry())
+        load_attack_config(config_path, _registry(), samples_dir=tmp_path / ".opentrap/samples")
 
 
 def test_load_attack_config_rejects_invalid_seed(tmp_path: Path) -> None:
     payload = {
         "shared": {
             "scenario": "summarize docs",
-            "content_type": "docs",
+            "content_style": "docs",
             "attack_intent": "rewrite negatives",
             "seed": "not-int",
         },
@@ -101,14 +103,14 @@ def test_load_attack_config_rejects_invalid_seed(tmp_path: Path) -> None:
     config_path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
 
     with pytest.raises(AttackConfigError, match="shared.seed"):
-        load_attack_config(config_path, _registry())
+        load_attack_config(config_path, _registry(), samples_dir=tmp_path / ".opentrap/samples")
 
 
 def test_load_attack_config_enforces_numeric_range(tmp_path: Path) -> None:
     payload = {
         "shared": {
             "scenario": "summarize docs",
-            "content_type": "docs",
+            "content_style": "docs",
             "attack_intent": "rewrite negatives",
             "seed": 123,
         },
@@ -118,14 +120,14 @@ def test_load_attack_config_enforces_numeric_range(tmp_path: Path) -> None:
     config_path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
 
     with pytest.raises(AttackConfigError, match="<= 1.0"):
-        load_attack_config(config_path, _registry())
+        load_attack_config(config_path, _registry(), samples_dir=tmp_path / ".opentrap/samples")
 
 
 def test_load_attack_config_rejects_unknown_top_level_key(tmp_path: Path) -> None:
     payload = {
         "shared": {
             "scenario": "summarize docs",
-            "content_type": "docs",
+            "content_style": "docs",
             "attack_intent": "rewrite negatives",
             "seed": 123,
         },
@@ -136,4 +138,51 @@ def test_load_attack_config_rejects_unknown_top_level_key(tmp_path: Path) -> Non
     config_path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
 
     with pytest.raises(AttackConfigError, match="unknown top-level"):
-        load_attack_config(config_path, _registry())
+        load_attack_config(config_path, _registry(), samples_dir=tmp_path / ".opentrap/samples")
+
+
+def test_load_attack_config_loads_samples_recursively(tmp_path: Path) -> None:
+    samples_dir = tmp_path / ".opentrap" / "samples"
+    (samples_dir / "nested").mkdir(parents=True)
+    (samples_dir / "b.html").write_text("<html>b</html>", encoding="utf-8")
+    (samples_dir / "nested" / "a.md").write_text("# sample", encoding="utf-8")
+    (samples_dir / "nested" / "ignore.bin").write_bytes(b"\x00\x01")
+
+    payload = {
+        "shared": {
+            "scenario": "summarize docs",
+            "content_style": "docs",
+            "attack_intent": "rewrite negatives",
+            "seed": 123,
+        },
+        "traps": {"reasoning/chain-trap": {}},
+    }
+    config_path = tmp_path / "opentrap.yaml"
+    config_path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
+
+    loaded = load_attack_config(config_path, _registry(), samples_dir=samples_dir)
+
+    assert [sample.path for sample in loaded.shared.samples] == ["b.html", "nested/a.md"]
+    assert loaded.shared.samples[0].content == "<html>b</html>"
+    assert loaded.shared.samples[1].content == "# sample"
+
+
+def test_load_attack_config_rejects_non_utf8_sample(tmp_path: Path) -> None:
+    samples_dir = tmp_path / ".opentrap" / "samples"
+    samples_dir.mkdir(parents=True)
+    (samples_dir / "bad.html").write_bytes(b"\xff\xfe")
+
+    payload = {
+        "shared": {
+            "scenario": "summarize docs",
+            "content_style": "docs",
+            "attack_intent": "rewrite negatives",
+            "seed": 123,
+        },
+        "traps": {"reasoning/chain-trap": {}},
+    }
+    config_path = tmp_path / "opentrap.yaml"
+    config_path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
+
+    with pytest.raises(AttackConfigError, match="not valid UTF-8"):
+        load_attack_config(config_path, _registry(), samples_dir=samples_dir)
