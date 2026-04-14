@@ -46,3 +46,4 @@ runs/
 reports/
 traces/
 opentrap/traps/run/
+opentrap.yaml

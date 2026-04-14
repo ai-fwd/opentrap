@@ -260,6 +260,25 @@ def test_run_generation_uses_injected_generator(tmp_path: Path) -> None:
     ]
 
 
+def test_bootstrap_openai_url_normalization_and_defaults(monkeypatch) -> None:
+    bootstrap_module = _load_module("bootstrap.py", "prompt_injection_via_html_bootstrap")
+
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("OPENAI_MODEL", "gpt-test")
+
+    monkeypatch.setenv("OPENAI_URL", "https://api.openai.com")
+    assert bootstrap_module.load_llm_config_from_env().base_url == "https://api.openai.com/v1"
+
+    monkeypatch.setenv("OPENAI_URL", "https://api.openai.com/v1")
+    assert bootstrap_module.load_llm_config_from_env().base_url == "https://api.openai.com/v1"
+
+    monkeypatch.setenv("OPENAI_URL", "https://api.openai.com/v1/responses")
+    assert bootstrap_module.load_llm_config_from_env().base_url == "https://api.openai.com/v1"
+
+    monkeypatch.delenv("OPENAI_URL", raising=False)
+    assert bootstrap_module.load_llm_config_from_env().base_url == "https://api.openai.com/v1"
+
+
 def test_file_naming_is_sequential_and_deterministic(tmp_path: Path) -> None:
     config_module = _load_module("config.py", "prompt_injection_via_html_config")
     generator_module = _load_module("generate.py", "prompt_injection_via_html_generate")
@@ -286,7 +305,7 @@ def test_bootstrap_requires_openai_env(monkeypatch) -> None:
     bootstrap_module = _load_module("bootstrap.py", "prompt_injection_via_html_bootstrap")
 
     monkeypatch.setattr(bootstrap_module, "_load_dotenv_if_available", lambda: None)
-    for name in ("OPENAI_API_KEY", "OPENAI_BASE_URL", "OPENAI_MODEL"):
+    for name in ("OPENAI_API_KEY", "OPENAI_URL", "OPENAI_MODEL"):
         monkeypatch.delenv(name, raising=False)
 
     try:
@@ -295,5 +314,4 @@ def test_bootstrap_requires_openai_env(monkeypatch) -> None:
     except RuntimeError as exc:
         message = str(exc)
         assert "OPENAI_API_KEY" in message
-        assert "OPENAI_BASE_URL" in message
         assert "OPENAI_MODEL" in message

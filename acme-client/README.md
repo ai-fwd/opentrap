@@ -1,6 +1,6 @@
 # Acme Client Inbox Assistant
 
-A lightweight inbox assistant demo with a Lovable-style frontend and Bun backend.
+A lightweight inbox assistant demo.
 
 ## What It Does
 
@@ -59,8 +59,6 @@ Open `http://localhost:3000`.
 This app now uses committed static fixtures only:
 - `fixtures/inbox.json`
 - `fixtures/emails/*.html`
-
-They are derived from the Lovable sample dataset and expanded deterministically to 20 emails.
 
 Notes:
 - All email HTML fixtures are stored as full documents (`<!doctype html><html>...`).

@@ -1,19 +1,54 @@
 from __future__ import annotations
 
 import json
+import textwrap
 from pathlib import Path
+
+import yaml
 
 from opentrap.cli import main
 
 
-def _make_scenario_tree(root: Path) -> None:
-    (root / "perception" / "vision-poison").mkdir(parents=True)
-    (root / "reasoning" / "chain-trap").mkdir(parents=True)
-    (root / "memory" / "context-overflow").mkdir(parents=True)
+def _write_stub_contract(root: Path, trap_id: str) -> None:
+    target, trap_name = trap_id.split("/", 1)
+    trap_dir = root / target / trap_name
+    trap_dir.mkdir(parents=True)
+
+    source = f"""
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any, Mapping
+
+from opentrap.trap_contract import SharedConfig, TrapFieldSpec, TrapSpec
 
 
-def test_list_outputs_all_scenarios(capsys, tmp_path: Path, monkeypatch) -> None:
-    _make_scenario_tree(tmp_path)
+def _run(shared_config: SharedConfig, trap_config: Mapping[str, Any], output_base: Path) -> Path:
+    output_base.mkdir(parents=True, exist_ok=True)
+    artifact_path = output_base / "artifact.txt"
+    artifact_path.write_text(
+        "{trap_id}|" + shared_config.scenario + "|" + str(trap_config["knob"]),
+        encoding="utf-8",
+    )
+    return artifact_path
+
+
+def get_trap_spec() -> TrapSpec:
+    return TrapSpec(
+        trap_id="{trap_id}",
+        fields={{
+            "knob": TrapFieldSpec(type="integer", default=1, min=1),
+        }},
+        run=_run,
+    )
+"""
+    (trap_dir / "contract.py").write_text(textwrap.dedent(source), encoding="utf-8")
+
+
+def test_list_outputs_registered_traps(capsys, tmp_path: Path, monkeypatch) -> None:
+    _write_stub_contract(tmp_path, "perception/vision-poison")
+    _write_stub_contract(tmp_path, "reasoning/chain-trap")
+    _write_stub_contract(tmp_path, "memory/context-overflow")
     monkeypatch.setattr("opentrap.cli.DEFAULT_TRAPS_DIR", tmp_path)
 
     code = main(["list"])
@@ -27,86 +62,178 @@ def test_list_outputs_all_scenarios(capsys, tmp_path: Path, monkeypatch) -> None
     ]
 
 
-def test_list_discovers_lowercase_target_directories(capsys, tmp_path: Path, monkeypatch) -> None:
-    (tmp_path / "reasoning" / "prompt_injection_via_html").mkdir(parents=True)
-    monkeypatch.setattr("opentrap.cli.DEFAULT_TRAPS_DIR", tmp_path)
-
-    code = main(["list"])
-
-    captured = capsys.readouterr()
-    assert code == 0
-    assert captured.out.strip().splitlines() == ["reasoning/prompt_injection_via_html"]
-
-
 def test_list_with_target_filters(capsys, tmp_path: Path, monkeypatch) -> None:
-    _make_scenario_tree(tmp_path)
+    _write_stub_contract(tmp_path, "reasoning/chain-trap")
+    _write_stub_contract(tmp_path, "reasoning/prompt-injection")
+    _write_stub_contract(tmp_path, "memory/context-overflow")
     monkeypatch.setattr("opentrap.cli.DEFAULT_TRAPS_DIR", tmp_path)
 
     code = main(["list", "--target", "reasoning"])
 
     captured = capsys.readouterr()
     assert code == 0
-    assert captured.out.strip().splitlines() == ["reasoning/chain-trap"]
-
-
-def test_attack_single_generates_report_file(tmp_path: Path, capsys, monkeypatch) -> None:
-    _make_scenario_tree(tmp_path)
-    monkeypatch.setattr("opentrap.cli.DEFAULT_TRAPS_DIR", tmp_path)
-    output = tmp_path / "runs" / "run.json"
-
-    code = main(
-        [
-            "attack",
-            "reasoning/chain-trap",
-            "--output",
-            str(output),
-        ]
-    )
-
-    captured = capsys.readouterr()
-    assert code == 0
-    assert captured.out.strip() == str(output)
-    payload = json.loads(output.read_text(encoding="utf-8"))
-    assert payload["schema_version"] == "v1"
-    assert payload["requested"] == "reasoning/chain-trap"
-    assert payload["scenario_count"] == 1
-    assert payload["scenario_ids"] == ["reasoning/chain-trap"]
-    assert payload["outcome"] == "unknown"
-
-
-def test_attack_all_runs_all_scenarios(tmp_path: Path, capsys, monkeypatch) -> None:
-    _make_scenario_tree(tmp_path)
-    monkeypatch.setattr("opentrap.cli.DEFAULT_TRAPS_DIR", tmp_path)
-    output = tmp_path / "runs" / "all.json"
-    code = main(["attack", "--output", str(output)])
-
-    captured = capsys.readouterr()
-    assert code == 0
-    assert captured.out.strip() == str(output)
-    payload = json.loads(output.read_text(encoding="utf-8"))
-    assert payload["requested"] is None
-    assert payload["scenario_count"] == 3
-    assert payload["scenario_ids"] == [
-        "memory/context-overflow",
-        "perception/vision-poison",
+    assert captured.out.strip().splitlines() == [
         "reasoning/chain-trap",
+        "reasoning/prompt-injection",
     ]
 
 
-def test_attack_fails_when_scenario_is_missing(tmp_path: Path, capsys, monkeypatch) -> None:
-    _make_scenario_tree(tmp_path)
+def test_list_fails_when_discovered_trap_has_no_contract(
+    capsys,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _write_stub_contract(tmp_path, "reasoning/chain-trap")
+    (tmp_path / "memory" / "context-overflow").mkdir(parents=True)
     monkeypatch.setattr("opentrap.cli.DEFAULT_TRAPS_DIR", tmp_path)
-    code = main(["attack", "memory/does-not-exist"])
+
+    code = main(["list"])
 
     captured = capsys.readouterr()
     assert code == 1
-    assert "was not found" in captured.err
+    assert "missing contract.py" in captured.err
+    assert "memory/context-overflow" in captured.err
 
 
-def test_attack_requires_target_and_name_format(tmp_path: Path, capsys, monkeypatch) -> None:
-    _make_scenario_tree(tmp_path)
+def test_init_writes_yaml_with_shared_and_trap_defaults(
+    capsys,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _write_stub_contract(tmp_path, "reasoning/chain-trap")
+    _write_stub_contract(tmp_path, "perception/vision-poison")
+    config_path = tmp_path / "opentrap.yaml"
+
+    responses = iter(
+        [
+            "summarize hotel reviews",
+            "reviews",
+            "turn all bad reviews into positive reviews",
+            "",
+        ]
+    )
+    monkeypatch.setattr("builtins.input", lambda _prompt: next(responses))
     monkeypatch.setattr("opentrap.cli.DEFAULT_TRAPS_DIR", tmp_path)
-    code = main(["attack", "chain-trap"])
+    monkeypatch.setattr("opentrap.cli.DEFAULT_CONFIG_PATH", config_path)
+
+    code = main(["init"])
+
+    captured = capsys.readouterr()
+    assert code == 0
+    assert captured.out.strip() == str(config_path)
+
+    payload = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    assert payload["shared"] == {
+        "scenario": "summarize hotel reviews",
+        "content_type": "reviews",
+        "attack_intent": "turn all bad reviews into positive reviews",
+        "seed": None,
+    }
+    assert payload["traps"] == {
+        "perception/vision-poison": {"knob": 1},
+        "reasoning/chain-trap": {"knob": 1},
+    }
+
+
+def test_init_always_overwrites_existing_file(capsys, tmp_path: Path, monkeypatch) -> None:
+    _write_stub_contract(tmp_path, "reasoning/chain-trap")
+    config_path = tmp_path / "opentrap.yaml"
+    config_path.write_text("old: true\n", encoding="utf-8")
+
+    responses = iter(["summarize docs", "docs", "bias output", "42"])
+    monkeypatch.setattr("builtins.input", lambda _prompt: next(responses))
+    monkeypatch.setattr("opentrap.cli.DEFAULT_TRAPS_DIR", tmp_path)
+    monkeypatch.setattr("opentrap.cli.DEFAULT_CONFIG_PATH", config_path)
+
+    code = main(["init"])
+
+    captured = capsys.readouterr()
+    assert code == 0
+    assert captured.out.strip() == str(config_path)
+    payload = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    assert payload["shared"]["scenario"] == "summarize docs"
+    assert payload["shared"]["seed"] == 42
+
+
+def test_attack_fails_when_config_is_missing(capsys, tmp_path: Path, monkeypatch) -> None:
+    _write_stub_contract(tmp_path, "reasoning/chain-trap")
+    monkeypatch.setattr("opentrap.cli.DEFAULT_TRAPS_DIR", tmp_path)
+    monkeypatch.setattr("opentrap.cli.DEFAULT_CONFIG_PATH", tmp_path / "missing.yaml")
+
+    code = main(["attack"])
+
     captured = capsys.readouterr()
     assert code == 1
-    assert "target/name" in captured.err
+    assert "config file was not found" in captured.err
+
+
+def test_attack_single_runs_selected_trap(
+    tmp_path: Path,
+    capsys,
+    monkeypatch,
+) -> None:
+    _write_stub_contract(tmp_path / "traps", "reasoning/chain-trap")
+    _write_stub_contract(tmp_path / "traps", "memory/context-overflow")
+
+    config_path = tmp_path / "opentrap.yaml"
+    payload = {
+        "shared": {
+            "scenario": "summarize docs",
+            "content_type": "docs",
+            "attack_intent": "rewrite negatives",
+            "seed": None,
+        },
+        "traps": {
+            "reasoning/chain-trap": {"knob": 7},
+            "memory/context-overflow": {"knob": 2},
+        },
+    }
+    config_path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
+
+    monkeypatch.setattr("opentrap.cli.DEFAULT_TRAPS_DIR", tmp_path / "traps")
+    monkeypatch.setattr("opentrap.cli.DEFAULT_CONFIG_PATH", config_path)
+    monkeypatch.setattr("opentrap.cli.DEFAULT_RUNS_DIR", tmp_path / "runs")
+
+    report_path = tmp_path / "runs" / "single.json"
+    code = main(["attack", "reasoning/chain-trap", "--output", str(report_path)])
+
+    captured = capsys.readouterr()
+    assert code == 0
+    assert captured.out.strip() == str(report_path)
+
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert report["requested"] == "reasoning/chain-trap"
+    assert report["trap_count"] == 1
+    assert report["trap_ids"] == ["reasoning/chain-trap"]
+    assert report["outcome"] == "success"
+
+    artifact_path = Path(report["results"][0]["artifact_path"])
+    assert artifact_path.read_text(encoding="utf-8") == "reasoning/chain-trap|summarize docs|7"
+
+
+def test_attack_rejects_unknown_trap_key_in_yaml(capsys, tmp_path: Path, monkeypatch) -> None:
+    _write_stub_contract(tmp_path / "traps", "reasoning/chain-trap")
+
+    config_path = tmp_path / "opentrap.yaml"
+    payload = {
+        "shared": {
+            "scenario": "summarize docs",
+            "content_type": "docs",
+            "attack_intent": "rewrite negatives",
+            "seed": None,
+        },
+        "traps": {
+            "reasoning/chain-trap": {"knob": 7},
+            "memory/context-overflow": {"knob": 1},
+        },
+    }
+    config_path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
+
+    monkeypatch.setattr("opentrap.cli.DEFAULT_TRAPS_DIR", tmp_path / "traps")
+    monkeypatch.setattr("opentrap.cli.DEFAULT_CONFIG_PATH", config_path)
+
+    code = main(["attack"])
+
+    captured = capsys.readouterr()
+    assert code == 1
+    assert "unknown trap id" in captured.err

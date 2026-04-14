@@ -10,31 +10,34 @@ This scenario implements a two-stage data pipeline:
 Set these environment variables (for example in `.env`):
 
 - `OPENAI_API_KEY`
-- `OPENAI_BASE_URL`
+- `OPENAI_URL`
 - `OPENAI_MODEL`
+
+`OPENAI_URL` accepts the same forms as the ACME client:
+
+- `https://api.openai.com`
+- `https://api.openai.com/v1`
+- `https://api.openai.com/v1/responses`
 
 ## Generate Data
 
 ```bash
-python opentrap/traps/perception/prompt_injection_via_html/cli.py \
-  --scenario "summarize hotel reviews" \
-  --content-type "reviews" \
-  --attack-intent "turn all bad reviews into positive reviews" \
-  --seed 42
+uv run opentrap init
+uv run opentrap attack perception/prompt_injection_via_html
 ```
 
-Optional controls:
+Trap-specific controls are configured in `opentrap.yaml` under:
 
-- `--base-count` (default `3`)
-- `--location-temperature` in `[0,1]` (default `0`)
-- `--density-temperature` in `[0,1]` (default `0`)
-- `--diversity-temperature` in `[0,1]` (default `0`)
+- `traps.perception/prompt_injection_via_html.base_count` (default `3`)
+- `traps.perception/prompt_injection_via_html.location_temperature` in `[0,1]` (default `0`)
+- `traps.perception/prompt_injection_via_html.density_temperature` in `[0,1]` (default `0`)
+- `traps.perception/prompt_injection_via_html.diversity_temperature` in `[0,1]` (default `0`)
 
 ## Output
 
 Artifacts are written to:
 
-- `opentrap/traps/run/<run_id>/pages/<id>.htm`
-- `opentrap/traps/run/<run_id>/metadata.jsonl`
+- `runs/perception__prompt_injection_via_html/<run_id>/pages/<id>.htm`
+- `runs/perception__prompt_injection_via_html/<run_id>/metadata.jsonl`
 
 `metadata.jsonl` maps each file to base/poisoned status and injection details.

@@ -17,13 +17,7 @@ The goal is to make these attack classes easy to apply in practice, with a light
 
 ## OpenTrap CLI
 
-Targets are fixed to:
-
-- `perception`
-- `reasoning`
-- `memory`
-- `action`
-- `multi-agent`
+Traps are discovered dynamically from `opentrap/traps/<target>/<trap_name>`.
 
 Commands:
 
@@ -34,14 +28,17 @@ uv run opentrap list
 # List traps in one target
 uv run opentrap list --target reasoning
 
+# Initialize shared + trap-specific config
+uv run opentrap init
+
 # Run all traps
 uv run opentrap attack
 
 # Run a single trap by target/name
-uv run opentrap attack reasoning/chain-trap
+uv run opentrap attack perception/prompt_injection_via_html
 
 # Optional custom report path
-uv run opentrap attack reasoning/chain-trap --output runs/custom.json
+uv run opentrap attack perception/prompt_injection_via_html --output runs/custom.json
 ```
 
 ## Quickstart (OpenTrap CLI)
@@ -49,13 +46,4 @@ uv run opentrap attack reasoning/chain-trap --output runs/custom.json
 ```bash
 uv sync --group dev --frozen
 uv run pytest
-```
-
-## Quickstart (ACME Client)
-
-```bash
-cd acme-client
-bun install
-bun test
-bun run typecheck
 ```
