@@ -232,8 +232,8 @@ def run_generation(
 
     run_id = config.run_id or uuid.uuid4().hex
     run_dir = output_base / run_id
-    pages_dir = run_dir / "pages"
-    pages_dir.mkdir(parents=True, exist_ok=False)
+    data_dir = run_dir / "data"
+    data_dir.mkdir(parents=True, exist_ok=False)
 
     insertion_count = compute_insertion_count(config.density_temperature)
     distinct_count = compute_distinct_count(config.diversity_temperature, insertion_count)
@@ -255,7 +255,7 @@ def run_generation(
             base_file_id = _format_file_id(file_number)
             file_number += 1
             base_filename = f"{base_file_id}.htm"
-            (pages_dir / base_filename).write_text(base_html, encoding="utf-8")
+            (data_dir / base_filename).write_text(base_html, encoding="utf-8")
 
             _write_metadata_record(
                 metadata_file,
@@ -299,7 +299,7 @@ def run_generation(
                 poisoned_file_id = _format_file_id(file_number)
                 file_number += 1
                 poisoned_filename = f"{poisoned_file_id}.htm"
-                (pages_dir / poisoned_filename).write_text(poisoned_html, encoding="utf-8")
+                (data_dir / poisoned_filename).write_text(poisoned_html, encoding="utf-8")
 
                 _write_metadata_record(
                     metadata_file,

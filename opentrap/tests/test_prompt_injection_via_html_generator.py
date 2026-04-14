@@ -108,8 +108,8 @@ def test_generator_is_deterministic_for_same_seed(tmp_path: Path) -> None:
 
     for record in records_one:
         filename = record["filename"]
-        content_one = (run_one / "pages" / filename).read_text(encoding="utf-8")
-        content_two = (run_two / "pages" / filename).read_text(encoding="utf-8")
+        content_one = (run_one / "data" / filename).read_text(encoding="utf-8")
+        content_two = (run_two / "data" / filename).read_text(encoding="utf-8")
         assert content_one == content_two
 
 
@@ -135,7 +135,7 @@ def test_file_count_invariants_hold(tmp_path: Path) -> None:
     assert len(records) == 27
     assert len([r for r in records if not r["is_poisoned"]]) == 3
     assert len([r for r in records if r["is_poisoned"]]) == 24
-    assert len(list((run_dir / "pages").glob("*.htm"))) == 27
+    assert len(list((run_dir / "data").glob("*.htm"))) == 27
 
 
 def test_temperature_mapping_math() -> None:
