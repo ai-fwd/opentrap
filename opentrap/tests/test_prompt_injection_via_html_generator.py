@@ -262,6 +262,7 @@ def test_run_generation_uses_injected_generator(tmp_path: Path) -> None:
 
 def test_bootstrap_openai_url_normalization_and_defaults(monkeypatch) -> None:
     bootstrap_module = _load_module("bootstrap.py", "prompt_injection_via_html_bootstrap")
+    monkeypatch.setattr(bootstrap_module, "load_layered_env", lambda: None)
 
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
     monkeypatch.setenv("OPENAI_MODEL", "gpt-test")
@@ -304,7 +305,7 @@ def test_file_naming_is_sequential_and_deterministic(tmp_path: Path) -> None:
 def test_bootstrap_requires_openai_env(monkeypatch) -> None:
     bootstrap_module = _load_module("bootstrap.py", "prompt_injection_via_html_bootstrap")
 
-    monkeypatch.setattr(bootstrap_module, "_load_dotenv_if_available", lambda: None)
+    monkeypatch.setattr(bootstrap_module, "load_layered_env", lambda: None)
     for name in ("OPENAI_API_KEY", "OPENAI_URL", "OPENAI_MODEL"):
         monkeypatch.delenv(name, raising=False)
 

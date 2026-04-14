@@ -41,6 +41,16 @@ uv run opentrap attack perception/prompt_injection_via_html
 uv run opentrap attack perception/prompt_injection_via_html --output runs/custom.json
 ```
 
+## Shared Environment
+
+Use a shared root env file for cross-project OpenAI settings:
+
+```bash
+cp .env.shared.example .env.shared
+```
+
+Project-specific `.env` files can override shared values.
+
 ## Quickstart (OpenTrap CLI)
 
 ```bash

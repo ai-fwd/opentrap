@@ -7,11 +7,16 @@ This scenario implements a two-stage data pipeline:
 
 ## Environment
 
-Set these environment variables (for example in `.env`):
+Set these environment variables in the repo root:
 
 - `OPENAI_API_KEY`
 - `OPENAI_URL`
 - `OPENAI_MODEL`
+
+OpenTrap loads env files in this order:
+
+1. `./.env.shared`
+2. `./.env` (overrides values loaded from `.env.shared`)
 
 `OPENAI_URL` accepts the same forms as the ACME client:
 

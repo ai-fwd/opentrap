@@ -1,18 +1,39 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 from llm_config import LLMConfig
 
 DEFAULT_OPENAI_URL = "https://api.openai.com"
 
 
-def _load_dotenv_if_available() -> None:
+def load_layered_env() -> None:
     try:
-        from dotenv import load_dotenv
+        from dotenv import dotenv_values
     except ImportError:
         return
-    load_dotenv()
+
+    project_root = Path(__file__).resolve().parents[4]
+
+    shared = {
+        k: v
+        for k, v in dotenv_values(project_root / ".env.shared").items()
+        if v is not None
+    }
+    local = {
+        k: v
+        for k, v in dotenv_values(project_root / ".env").items()
+        if v is not None
+    }
+
+    merged = {
+        **shared,
+        **local,
+        **os.environ,
+    }
+
+    os.environ.update(merged)
 
 
 def _build_openai_base_url(openai_url: str) -> str:
@@ -25,7 +46,7 @@ def _build_openai_base_url(openai_url: str) -> str:
 
 
 def load_llm_config_from_env() -> LLMConfig:
-    _load_dotenv_if_available()
+    load_layered_env()
     api_key = os.environ.get("OPENAI_API_KEY")
     openai_url = os.environ.get("OPENAI_URL") or DEFAULT_OPENAI_URL
     model = os.environ.get("OPENAI_MODEL")
