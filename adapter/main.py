@@ -11,6 +11,12 @@ from pathlib import Path
 
 from opentrap.runtime import emit_event, end_session, start_session
 
+STATUS_PREFIX = "[adapter]"
+
+
+def _status(message: str) -> None:
+    print(f"{STATUS_PREFIX} {message}", file=sys.stderr)
+
 
 def _load_trap_ids(manifest_path: str) -> list[str]:
     try:
@@ -120,6 +126,7 @@ def main(argv: list[str] | None = None) -> int:
 
         def _on_stop(_signal_num: int, _frame: object | None) -> None:
             del _signal_num, _frame
+            _status("Signal received; flushing and finalizing")
             stop_event.set()
 
         previous_handlers = {
@@ -128,11 +135,13 @@ def main(argv: list[str] | None = None) -> int:
         }
         signal.signal(signal.SIGTERM, _on_stop)
         signal.signal(signal.SIGINT, _on_stop)
+        bound_host, bound_port = server.server_address
+        _status(f"Host started on {bound_host}:{bound_port}; waiting for signal")
 
         while not stop_event.is_set():
             server.handle_request()
     except Exception as exc:  # noqa: BLE001
-        print(f"adapter host failed: {exc}", file=sys.stderr)
+        _status(f"Shutdown failure: adapter host failed: {exc}")
         exit_code = 1
     finally:
         try:
@@ -141,8 +150,10 @@ def main(argv: list[str] | None = None) -> int:
             if session_started and not session_finalized:
                 end_session()
                 session_finalized = True
+            if session_finalized:
+                _status("Shutdown complete")
         except Exception as exc:  # noqa: BLE001
-            print(f"adapter shutdown failed: {exc}", file=sys.stderr)
+            _status(f"Shutdown failure: adapter shutdown failed: {exc}")
             exit_code = 1
         if previous_handlers is not None:
             signal.signal(signal.SIGTERM, previous_handlers[signal.SIGTERM])

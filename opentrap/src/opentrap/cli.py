@@ -196,16 +196,27 @@ def _wait_for_adapter_exit(
         while process.poll() is None:
             time.sleep(0.1)
     except KeyboardInterrupt:
+        _status("Interrupt received; stopping adapter...")
         if process.poll() is None:
+            _status("Sending SIGTERM to adapter...")
             process.terminate()
             try:
                 process.wait(timeout=terminate_timeout_seconds)
             except subprocess.TimeoutExpired:
+                _status("Adapter did not stop in time; force killing...")
                 process.kill()
                 try:
                     process.wait(timeout=terminate_timeout_seconds)
                 except subprocess.TimeoutExpired:
+                    _status("Adapter still did not stop after force kill timeout")
+                    _status("OpenTrap shutting down")
                     return
+        _status("Adapter stopped")
+        _status("OpenTrap shutting down")
+        return
+
+    _status("Adapter stopped")
+    _status("OpenTrap shutting down")
 
 
 def build_parser() -> argparse.ArgumentParser:
