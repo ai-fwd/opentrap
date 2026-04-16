@@ -28,6 +28,12 @@ DEFAULT_CONFIG_PATH = DEFAULT_STATE_DIR / "opentrap.yaml"
 DEFAULT_SAMPLES_DIR = DEFAULT_STATE_DIR / "samples"
 DEFAULT_DATASET_DIR = DEFAULT_STATE_DIR / "dataset"
 DEFAULT_ADAPTER_ENTRYPOINT = DEFAULT_REPO_ROOT / "adapter" / "main.py"
+STATUS_PREFIX = "[opentrap]"
+
+
+def _status(message: str) -> None:
+    """Emit one user-facing status line for trap runs."""
+    print(f"{STATUS_PREFIX} {message}", file=sys.stderr)
 
 
 def _resolve_trap_ref(trap_ref: str) -> str:
@@ -124,20 +130,25 @@ def cmd_init(_: argparse.Namespace) -> int:
 
 def cmd_trap(args: argparse.Namespace) -> int:
     """Execute a single trap id and print the resulting run manifest path."""
+    trap_ref = args.trap
+    _status(f"Starting trap run: {trap_ref}")
+    _status("Validating trap id and loading trap registry...")
+
     registry = _load_registry()
     if registry is None:
+        _status("Failed during trap validation: could not load trap registry")
         return 1
 
-    trap_ref = args.trap
     try:
         resolved = _resolve_trap_ref(trap_ref)
     except ValueError as exc:
-        print(str(exc), file=sys.stderr)
+        _status(f"Failed during trap validation: {exc}")
         return 1
     if resolved not in registry:
-        print(f"trap '{resolved}' was not found", file=sys.stderr)
+        _status(f"Failed during trap validation: trap '{resolved}' was not found")
         return 1
 
+    _status(f"Loading config: {DEFAULT_CONFIG_PATH}")
     try:
         loaded = load_attack_config(
             DEFAULT_CONFIG_PATH,
@@ -145,7 +156,7 @@ def cmd_trap(args: argparse.Namespace) -> int:
             samples_dir=DEFAULT_SAMPLES_DIR,
         )
     except AttackConfigError as exc:
-        print(str(exc), file=sys.stderr)
+        _status(f"Failed during config load: {exc}")
         return 1
 
     environment = RunEnvironment(
@@ -162,9 +173,10 @@ def cmd_trap(args: argparse.Namespace) -> int:
             trap_config=loaded.trap_configs[resolved],
             registry=registry,
             environment=environment,
+            status_callback=_status,
         )
     except Exception as exc:  # noqa: BLE001
-        print(str(exc), file=sys.stderr)
+        _status(str(exc))
         return 1
 
     print(str(run_manifest_path))

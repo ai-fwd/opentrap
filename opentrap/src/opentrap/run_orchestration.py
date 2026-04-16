@@ -10,7 +10,7 @@ import subprocess
 import sys
 import time
 import uuid
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -21,6 +21,9 @@ from opentrap.trap_contract import SharedConfig, TrapSpec
 
 SESSION_START_TIMEOUT_SECONDS = 10.0
 SESSION_POLL_INTERVAL_SECONDS = 0.1
+STATUS_HEARTBEAT_INTERVAL_SECONDS = 3.0
+
+StatusCallback = Callable[[str], None]
 
 
 @dataclass(frozen=True)
@@ -51,19 +54,33 @@ def _launch_adapter(manifest_path: Path, environment: RunEnvironment) -> subproc
     return subprocess.Popen(command, cwd=environment.repo_root)
 
 
-def _wait_for_session_start(manifest_path: Path, process: subprocess.Popen[Any]) -> str:
+def _wait_for_session_start(
+    manifest_path: Path,
+    process: subprocess.Popen[Any],
+    *,
+    heartbeat_interval_seconds: float = STATUS_HEARTBEAT_INTERVAL_SECONDS,
+    on_wait_heartbeat: Callable[[float], None] | None = None,
+) -> str:
     """Wait until runtime sets `active_session_id` in the manifest.
 
     Raises:
         RuntimeError: Adapter exits early or session start timeout is reached.
     """
-    deadline = time.monotonic() + SESSION_START_TIMEOUT_SECONDS
+    started = time.monotonic()
+    deadline = started + SESSION_START_TIMEOUT_SECONDS
+    next_heartbeat = started + heartbeat_interval_seconds
     while time.monotonic() < deadline:
         manifest = load_json_maybe(manifest_path)
         if manifest is not None:
             session_id = manifest.get("active_session_id")
             if isinstance(session_id, str) and session_id:
                 return session_id
+
+        if on_wait_heartbeat is not None and heartbeat_interval_seconds > 0:
+            now = time.monotonic()
+            if now >= next_heartbeat:
+                on_wait_heartbeat(now - started)
+                next_heartbeat += heartbeat_interval_seconds
 
         exit_code = process.poll()
         if exit_code is not None:
@@ -81,6 +98,7 @@ def run_single_trap(
     trap_config: Mapping[str, Any],
     registry: Mapping[str, TrapSpec],
     environment: RunEnvironment,
+    status_callback: StatusCallback,
 ) -> Path:
     """Run a single trap and return the run manifest path when ready.
 
@@ -105,6 +123,7 @@ def run_single_trap(
     }
     write_json(run_manifest_path, run_manifest)
 
+    status_callback("Resolving dataset cache...")
     try:
         dataset = resolve_cached_dataset(
             trap_id=trap_id,
@@ -113,9 +132,17 @@ def run_single_trap(
             trap_config=trap_config,
             registry=registry,
             dataset_dir=environment.dataset_dir,
+            heartbeat_interval_seconds=STATUS_HEARTBEAT_INTERVAL_SECONDS,
+            on_cache_hit=lambda fingerprint: status_callback(f"Dataset cache hit: {fingerprint[:12]}"),
+            on_cache_miss=lambda: status_callback("Cache miss; generating dataset..."),
+            on_generation_heartbeat=lambda elapsed: status_callback(
+                f"Generating dataset... still working ({int(elapsed)}s)"
+            ),
         )
     except Exception as exc:  # noqa: BLE001
-        raise RuntimeError(f"trap run '{trap_id}' failed: {exc}") from exc
+        raise RuntimeError(f"Failed during dataset generation: {exc}") from exc
+
+    status_callback(f"Dataset ready: {len(dataset.data_items)} items")
 
     trap_entry = {
         "trap_id": trap_id,
@@ -129,16 +156,35 @@ def run_single_trap(
 
     process: subprocess.Popen[Any] | None = None
     try:
-        process = _launch_adapter(run_manifest_path, environment)
-        _wait_for_session_start(run_manifest_path, process)
+        status_callback(f"Launching adapter: {environment.adapter_entrypoint}")
+        try:
+            process = _launch_adapter(run_manifest_path, environment)
+        except Exception as exc:  # noqa: BLE001
+            raise RuntimeError(f"Failed during adapter launch: {exc}") from exc
+
+        status_callback("Waiting for adapter session start...")
+        try:
+            session_id = _wait_for_session_start(
+                run_manifest_path,
+                process,
+                heartbeat_interval_seconds=STATUS_HEARTBEAT_INTERVAL_SECONDS,
+                on_wait_heartbeat=lambda elapsed: status_callback(
+                    f"Waiting for adapter session start... ({int(elapsed)}s)"
+                ),
+            )
+        except Exception as exc:  # noqa: BLE001
+            raise RuntimeError(f"Failed during adapter session startup: {exc}") from exc
     except Exception:
         if process is not None and process.poll() is None:
             process.terminate()
         raise
+
+    status_callback(f"Session active: {session_id}")
 
     ready_manifest = load_json_maybe(run_manifest_path) or run_manifest
     ready_manifest["status"] = "ready"
     ready_manifest["adapter_pid"] = process.pid
     ready_manifest["ready_at_utc"] = utc_now_iso()
     write_json(run_manifest_path, ready_manifest)
+    status_callback("Run ready")
     return run_manifest_path

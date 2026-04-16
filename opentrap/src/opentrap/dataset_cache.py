@@ -7,12 +7,13 @@ reuse prior datasets.
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, TimeoutError
 import hashlib
 import json
 import shutil
 import time
 import uuid
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -186,6 +187,27 @@ def _wait_for_cached_dataset_snapshot(cache_dir: Path) -> DatasetSnapshot | None
     return None
 
 
+def _run_generation_with_heartbeat(
+    *,
+    generate: Callable[[], Path],
+    heartbeat_interval_seconds: float,
+    on_generation_heartbeat: Callable[[float], None] | None,
+) -> Path:
+    """Execute generation and emit periodic heartbeats while waiting."""
+    if heartbeat_interval_seconds <= 0:
+        return generate()
+
+    started = time.monotonic()
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(generate)
+        while True:
+            try:
+                return future.result(timeout=heartbeat_interval_seconds)
+            except TimeoutError:
+                if on_generation_heartbeat is not None:
+                    on_generation_heartbeat(time.monotonic() - started)
+
+
 def resolve_cached_dataset(
     *,
     trap_id: str,
@@ -194,6 +216,10 @@ def resolve_cached_dataset(
     trap_config: Mapping[str, Any],
     registry: Mapping[str, TrapSpec],
     dataset_dir: Path,
+    heartbeat_interval_seconds: float = 3.0,
+    on_cache_hit: Callable[[str], None] | None = None,
+    on_cache_miss: Callable[[], None] | None = None,
+    on_generation_heartbeat: Callable[[float], None] | None = None,
 ) -> DatasetSnapshot:
     """Resolve dataset snapshot by reusing cache or generating and publishing once.
 
@@ -208,6 +234,8 @@ def resolve_cached_dataset(
 
     cached_snapshot = _read_cached_dataset_snapshot(cache_dir)
     if cached_snapshot is not None:
+        if on_cache_hit is not None:
+            on_cache_hit(fingerprint)
         return DatasetSnapshot(
             dataset_fingerprint=fingerprint,
             dataset_cache_dir=cached_snapshot.dataset_cache_dir,
@@ -225,7 +253,13 @@ def resolve_cached_dataset(
 
     published = False
     try:
-        generated_artifact = registry[trap_id].run(shared, dict(trap_config), output_base)
+        if on_cache_miss is not None:
+            on_cache_miss()
+        generated_artifact = _run_generation_with_heartbeat(
+            generate=lambda: registry[trap_id].run(shared, dict(trap_config), output_base),
+            heartbeat_interval_seconds=heartbeat_interval_seconds,
+            on_generation_heartbeat=on_generation_heartbeat,
+        )
         staged_artifact = staging_dir / "artifact"
         generated_artifact.replace(staged_artifact)
 
