@@ -46,9 +46,13 @@ def _read_run_manifest(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def _wait_for_stub(port: int, process: subprocess.Popen[str], timeout_seconds: float = 5.0) -> dict:
+def _wait_for_health(
+    port: int,
+    process: subprocess.Popen[str],
+    timeout_seconds: float = 5.0,
+) -> dict:
     deadline = time.monotonic() + timeout_seconds
-    url = f"http://127.0.0.1:{port}/__opentrap/stub"
+    url = f"http://127.0.0.1:{port}/__opentrap/health"
     last_error: Exception | None = None
     while time.monotonic() < deadline:
         if process.poll() is not None:
@@ -62,10 +66,10 @@ def _wait_for_stub(port: int, process: subprocess.Popen[str], timeout_seconds: f
         except (URLError, TimeoutError, json.JSONDecodeError) as exc:
             last_error = exc
             time.sleep(0.05)
-    raise AssertionError(f"stub route never became ready: {last_error}")
+    raise AssertionError(f"health route never became ready: {last_error}")
 
 
-def test_adapter_host_starts_serves_stub_and_stays_alive(tmp_path: Path) -> None:
+def test_adapter_host_starts_serves_health_and_stays_alive(tmp_path: Path) -> None:
     run_dir = tmp_path / "run"
     run_dir.mkdir()
     manifest_path = run_dir / "run.json"
@@ -89,7 +93,7 @@ def test_adapter_host_starts_serves_stub_and_stays_alive(tmp_path: Path) -> None
     )
 
     try:
-        payload = _wait_for_stub(port, process)
+        payload = _wait_for_health(port, process)
         assert payload["ok"] is True
         assert payload["trap_ids"] == ["reasoning/chain-trap"]
         assert process.poll() is None
@@ -99,7 +103,7 @@ def test_adapter_host_starts_serves_stub_and_stays_alive(tmp_path: Path) -> None
         process.wait(timeout=5)
 
 
-def test_adapter_host_exits_cleanly_on_sigterm(tmp_path: Path) -> None:
+def test_adapter_host_emits_http_exchange_evidence_on_shutdown(tmp_path: Path) -> None:
     run_dir = tmp_path / "run"
     run_dir.mkdir()
     manifest_path = run_dir / "run.json"
@@ -123,42 +127,8 @@ def test_adapter_host_exits_cleanly_on_sigterm(tmp_path: Path) -> None:
     )
 
     try:
-        _wait_for_stub(port, process)
-        process.send_signal(signal.SIGTERM)
-        exit_code = process.wait(timeout=5)
-        assert exit_code == 0
-    finally:
-        if process.poll() is None:
-            process.kill()
-        process.wait(timeout=5)
-
-
-def test_adapter_host_flushes_captured_events_on_shutdown(tmp_path: Path) -> None:
-    run_dir = tmp_path / "run"
-    run_dir.mkdir()
-    manifest_path = run_dir / "run.json"
-    _write_manifest(manifest_path)
-
-    port = _find_free_port()
-    process = subprocess.Popen(
-        [
-            sys.executable,
-            str(_adapter_main_path()),
-            "--manifest",
-            str(manifest_path),
-            "--host",
-            "127.0.0.1",
-            "--port",
-            str(port),
-        ],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
-
-    try:
-        _wait_for_stub(port, process)
-        with urlopen(f"http://127.0.0.1:{port}/__opentrap/stub", timeout=0.2) as response:  # noqa: S310
+        _wait_for_health(port, process)
+        with urlopen(f"http://127.0.0.1:{port}/__opentrap/health", timeout=0.2) as response:  # noqa: S310
             assert response.status == 200
 
         process.send_signal(signal.SIGTERM)
@@ -203,8 +173,8 @@ def test_adapter_host_finalizes_run_artifacts_on_shutdown(tmp_path: Path) -> Non
     )
 
     try:
-        _wait_for_stub(port, process)
-        with urlopen(f"http://127.0.0.1:{port}/__opentrap/stub", timeout=0.2) as response:  # noqa: S310
+        _wait_for_health(port, process)
+        with urlopen(f"http://127.0.0.1:{port}/__opentrap/health", timeout=0.2) as response:  # noqa: S310
             assert response.status == 200
 
         process.send_signal(signal.SIGTERM)

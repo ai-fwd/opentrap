@@ -23,6 +23,7 @@ This file is a durable context anchor for future chats and agent sessions.
 ## Tooling Defaults
 
 - Python: `uv`, `ruff`, `pytest`
+- Run Python tests via module execution when using uv: `uv run python -m pytest` (prefer this over `uv run pytest`).
 - TypeScript: Bun + strict TypeScript + `bun:test`
 - All dependency declarations must use exact versions (no `^`, `~`, `>=`, or wildcard ranges).
 - Commit and maintain lockfiles (`uv.lock`, `acme-client/bun.lock`); dependency upgrades require explicit user approval.

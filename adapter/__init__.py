@@ -1,0 +1,1 @@
+"""OpenTrap adapter host package."""

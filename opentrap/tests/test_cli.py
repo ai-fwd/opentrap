@@ -13,6 +13,10 @@ import opentrap.cli as cli_module
 from opentrap.cli import main
 
 
+def _repo_root() -> Path:
+    return Path(__file__).resolve().parents[2]
+
+
 def _write_stub_contract(root: Path, trap_id: str) -> None:
     target, trap_name = trap_id.split("/", 1)
     trap_dir = root / target / trap_name
@@ -93,6 +97,71 @@ def main() -> int:
     args = parser.parse_args()
     start_session(args.manifest)
     time.sleep({seconds})
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+"""
+    path.write_text(textwrap.dedent(source), encoding="utf-8")
+
+
+def _write_fastapi_smoke_adapter(path: Path, *, seconds: float) -> None:
+    source = f"""
+from __future__ import annotations
+
+import argparse
+import signal
+import sys
+import threading
+import time
+from pathlib import Path
+
+import uvicorn
+
+sys.path.insert(0, {str(_repo_root())!r})
+from adapter.host import create_app
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--manifest", required=True)
+    parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--port", type=int, default=0)
+    args = parser.parse_args()
+
+    app = create_app(manifest_path=Path(args.manifest), routes=[], upstreams=[])
+    config = uvicorn.Config(
+        app,
+        host=args.host,
+        port=args.port,
+        log_level="warning",
+        access_log=False,
+    )
+    server = uvicorn.Server(config)
+    server.install_signal_handlers = lambda: None
+
+    def _stop_later() -> None:
+        time.sleep({seconds})
+        server.should_exit = True
+
+    def _on_stop(_signal_num: int, _frame: object | None) -> None:
+        del _signal_num, _frame
+        server.should_exit = True
+
+    previous_handlers = {{
+        signal.SIGTERM: signal.getsignal(signal.SIGTERM),
+        signal.SIGINT: signal.getsignal(signal.SIGINT),
+    }}
+    signal.signal(signal.SIGTERM, _on_stop)
+    signal.signal(signal.SIGINT, _on_stop)
+    threading.Thread(target=_stop_later, daemon=True).start()
+
+    try:
+        server.run()
+    finally:
+        signal.signal(signal.SIGTERM, previous_handlers[signal.SIGTERM])
+        signal.signal(signal.SIGINT, previous_handlers[signal.SIGINT])
     return 0
 
 
@@ -347,6 +416,43 @@ def test_trap_run_stays_attached_while_adapter_is_alive(
     thread.join(timeout=5)
     assert not thread.is_alive()
     assert result["code"] == 0
+
+
+def test_trap_run_with_fastapi_adapter_smoke(capsys, tmp_path: Path, monkeypatch) -> None:
+    _write_stub_contract(tmp_path / "traps", "reasoning/chain-trap")
+    adapter_path = tmp_path / "adapter-main.py"
+    _write_fastapi_smoke_adapter(adapter_path, seconds=0.8)
+
+    config_path = tmp_path / ".opentrap" / "opentrap.yaml"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(yaml.safe_dump(_base_payload(), sort_keys=False), encoding="utf-8")
+
+    _configure_trap_run_paths(
+        monkeypatch=monkeypatch,
+        tmp_path=tmp_path,
+        config_path=config_path,
+        samples_dir=tmp_path / ".opentrap" / "samples",
+        adapter_path=adapter_path,
+    )
+
+    code = main(["reasoning/chain-trap"])
+
+    captured = capsys.readouterr()
+    assert code == 0
+    run_manifest_path = Path(captured.out.strip())
+    assert run_manifest_path.exists()
+
+    run_manifest = json.loads(run_manifest_path.read_text(encoding="utf-8"))
+    assert run_manifest["status"] == "finalized"
+    assert run_manifest["active_session_id"] is None
+    assert isinstance(run_manifest.get("report_path"), str)
+    report_path = Path(run_manifest["report_path"])
+    assert report_path.exists()
+
+    sessions = run_manifest["sessions"]
+    assert isinstance(sessions, list)
+    assert len(sessions) == 1
+    assert sessions[0]["ended_at_utc"] is not None
 
 
 def test_wait_for_adapter_exit_terminates_process_on_interrupt(monkeypatch) -> None:
@@ -610,4 +716,3 @@ def test_trap_run_regenerates_dataset_when_samples_change(
 
     assert trap_1["dataset_fingerprint"] != trap_2["dataset_fingerprint"]
     assert trap_1["dataset_cache_dir"] != trap_2["dataset_cache_dir"]
-
