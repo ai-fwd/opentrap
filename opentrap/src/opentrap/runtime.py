@@ -1,7 +1,46 @@
-"""Runtime session state machine used by the adapter process during trap runs.
+"""OpenTrap adapter runtime API.
 
-This module exposes session lifecycle and evidence APIs consumed by adapters so run
-manifests, evidence logs, and reports are emitted in a consistent contract shape.
+Public API for adapter implementations:
+
+Lifecycle:
+- Call `start_session(manifest_path)` once before processing trap data.
+- Call `emit_event(...)` zero or more times while processing.
+- Call `end_session()` once when work is complete.
+- Single-process / single-active-session model: only one live session at a time.
+
+Functions:
+- `start_session(manifest_path: str | Path) -> str`
+  Inputs: path to run manifest (`run.json`).
+  Output: newly allocated `session_id`.
+  Side effects:
+  - creates `session-<id>.json` and `session-<id>.jsonl` in the run directory
+  - appends a session entry to `manifest["sessions"]`
+  - sets `manifest["active_session_id"]` and `manifest["status"] = "session_active"`
+
+- `list_data_items() -> list[DataItem]`
+  Output: all trap data items registered in the manifest.
+  Raises: `RuntimeError` if no active session.
+
+- `get_data_item(item_id: str) -> DataItem`
+  Output: one data item with `id` and filesystem `path`.
+  Raises: `RuntimeError` if no active session; `KeyError` for unknown item id.
+
+- `emit_event(event_type: str, payload: Mapping[str, Any]) -> None`
+  Effect: appends one JSONL evidence event to the active session log.
+  Raises: `RuntimeError` if no active session or event type is empty.
+
+- `end_session() -> FinalizeResult`
+  Output: `FinalizeResult(run_id, session_id, report_path)`.
+  Side effects:
+  - updates session record with end time and event count
+  - clears `manifest["active_session_id"]`
+  - sets `manifest["status"] = "finalized"`
+  - writes `report.json` and `manifest["report_path"]`
+  Raises: `RuntimeError` if no active session.
+
+Data types:
+- `DataItem(id: str, path: str)`
+- `FinalizeResult(run_id: str, session_id: str, report_path: str)`
 """
 
 from __future__ import annotations
