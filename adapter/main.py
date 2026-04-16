@@ -35,6 +35,10 @@ def _load_trap_ids(manifest_path: str) -> list[str]:
 
 
 class _AdapterServer(ThreadingHTTPServer):
+    # TCPServer.server_bind reads this attribute during initialization; setting
+    # it on the class is the standard way to enable SO_REUSEADDR before bind.
+    allow_reuse_address = True
+
     def __init__(self, host: str, port: int, *, trap_ids: list[str]) -> None:
         super().__init__((host, port), _StubRequestHandler)
         self.trap_ids = trap_ids
@@ -91,7 +95,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Generated adapter entrypoint")
     parser.add_argument("--manifest", required=True)
     parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--port", type=int, default=8080)
+    # Port 0 tells the OS to pick any available ephemeral port.
+    parser.add_argument("--port", type=int, default=0)
     return parser
 
 

@@ -7,7 +7,9 @@ orchestration modules so command parsing and UX remain easy to reason about.
 from __future__ import annotations
 
 import argparse
+import subprocess
 import sys
+import time
 from pathlib import Path
 
 from opentrap.config_loader import (
@@ -29,6 +31,7 @@ DEFAULT_SAMPLES_DIR = DEFAULT_STATE_DIR / "samples"
 DEFAULT_DATASET_DIR = DEFAULT_STATE_DIR / "dataset"
 DEFAULT_ADAPTER_ENTRYPOINT = DEFAULT_REPO_ROOT / "adapter" / "main.py"
 STATUS_PREFIX = "[opentrap]"
+ADAPTER_TERMINATE_TIMEOUT_SECONDS = 3.0
 
 
 def _status(message: str) -> None:
@@ -166,7 +169,7 @@ def cmd_trap(args: argparse.Namespace) -> int:
         adapter_entrypoint=DEFAULT_ADAPTER_ENTRYPOINT,
     )
     try:
-        run_manifest_path = run_single_trap(
+        run_ready = run_single_trap(
             trap_id=resolved,
             requested_trap_ref=trap_ref,
             shared=loaded.shared,
@@ -179,8 +182,30 @@ def cmd_trap(args: argparse.Namespace) -> int:
         _status(str(exc))
         return 1
 
-    print(str(run_manifest_path))
+    print(str(run_ready.run_manifest_path))
+    _wait_for_adapter_exit(run_ready.adapter_process)
     return 0
+
+
+def _wait_for_adapter_exit(
+    process: subprocess.Popen[object],
+    *,
+    terminate_timeout_seconds: float = ADAPTER_TERMINATE_TIMEOUT_SECONDS,
+) -> None:
+    try:
+        while process.poll() is None:
+            time.sleep(0.1)
+    except KeyboardInterrupt:
+        if process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=terminate_timeout_seconds)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                try:
+                    process.wait(timeout=terminate_timeout_seconds)
+                except subprocess.TimeoutExpired:
+                    return
 
 
 def build_parser() -> argparse.ArgumentParser:

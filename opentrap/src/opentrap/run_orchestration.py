@@ -36,6 +36,14 @@ class RunEnvironment:
     adapter_entrypoint: Path
 
 
+@dataclass(frozen=True)
+class TrapRunReady:
+    """Trap run state when adapter session is active and orchestration is attached."""
+
+    run_manifest_path: Path
+    adapter_process: subprocess.Popen[Any]
+
+
 def _launch_adapter(manifest_path: Path, environment: RunEnvironment) -> subprocess.Popen[Any]:
     """Start the adapter process pointing at the given run manifest.
 
@@ -121,8 +129,8 @@ def run_single_trap(
     registry: Mapping[str, TrapSpec],
     environment: RunEnvironment,
     status_callback: StatusCallback,
-) -> Path:
-    """Run a single trap and return the run manifest path when ready.
+) -> TrapRunReady:
+    """Run a single trap and return attached run state when ready.
 
     The function creates a run manifest, resolves dataset cache for the trap input,
     launches the adapter, and marks the run ready once a session id is active.
@@ -201,11 +209,14 @@ def run_single_trap(
             process.terminate()
         raise
 
+    if process is None:
+        raise RuntimeError("adapter process handle was unexpectedly missing after startup")
+
     ready_manifest = load_json_maybe(run_manifest_path) or run_manifest
     if ready_manifest.get("status") == "finalized":
         status_callback(f"Session active: {session_id}")
         status_callback("Run finalized")
-        return run_manifest_path
+        return TrapRunReady(run_manifest_path=run_manifest_path, adapter_process=process)
 
     status_callback(f"Session active: {session_id}")
     ready_manifest["status"] = "ready"
@@ -213,4 +224,4 @@ def run_single_trap(
     ready_manifest["ready_at_utc"] = utc_now_iso()
     write_json(run_manifest_path, ready_manifest)
     status_callback("Run ready")
-    return run_manifest_path
+    return TrapRunReady(run_manifest_path=run_manifest_path, adapter_process=process)

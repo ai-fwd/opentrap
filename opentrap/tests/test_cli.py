@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import textwrap
+import threading
+import time
 from pathlib import Path
 
 import yaml
 
+import opentrap.cli as cli_module
 from opentrap.cli import main
 
 
@@ -64,6 +68,31 @@ def main() -> int:
     parser.add_argument("--manifest", required=True)
     args = parser.parse_args()
     start_session(args.manifest)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+"""
+    path.write_text(textwrap.dedent(source), encoding="utf-8")
+
+
+def _write_stub_adapter_sleep(path: Path, *, seconds: float) -> None:
+    source = f"""
+from __future__ import annotations
+
+import argparse
+import time
+
+from opentrap.runtime import start_session
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--manifest", required=True)
+    args = parser.parse_args()
+    start_session(args.manifest)
+    time.sleep({seconds})
     return 0
 
 
@@ -285,6 +314,101 @@ def test_trap_run_single_runs_selected_trap(
     assert not (run_dir / "report.json").exists()
 
 
+def test_trap_run_stays_attached_while_adapter_is_alive(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _write_stub_contract(tmp_path / "traps", "reasoning/chain-trap")
+    adapter_path = tmp_path / "adapter-main.py"
+    _write_stub_adapter_sleep(adapter_path, seconds=0.8)
+
+    config_path = tmp_path / ".opentrap" / "opentrap.yaml"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(yaml.safe_dump(_base_payload(), sort_keys=False), encoding="utf-8")
+
+    _configure_trap_run_paths(
+        monkeypatch=monkeypatch,
+        tmp_path=tmp_path,
+        config_path=config_path,
+        samples_dir=tmp_path / ".opentrap" / "samples",
+        adapter_path=adapter_path,
+    )
+
+    result: dict[str, int] = {}
+
+    def _run() -> None:
+        result["code"] = main(["reasoning/chain-trap"])
+
+    thread = threading.Thread(target=_run)
+    thread.start()
+    time.sleep(0.2)
+    assert thread.is_alive()
+
+    thread.join(timeout=5)
+    assert not thread.is_alive()
+    assert result["code"] == 0
+
+
+def test_wait_for_adapter_exit_terminates_process_on_interrupt(monkeypatch) -> None:
+    class _Process:
+        def __init__(self) -> None:
+            self.terminated = False
+
+        def poll(self) -> None:
+            return None
+
+        def terminate(self) -> None:
+            self.terminated = True
+
+        def wait(self, timeout: float | None = None) -> int:
+            del timeout
+            return 0
+
+    process = _Process()
+
+    def _sleep_then_interrupt(_seconds: float) -> None:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr("opentrap.cli.time.sleep", _sleep_then_interrupt)
+    cli_module._wait_for_adapter_exit(process)  # type: ignore[arg-type]
+    assert process.terminated
+
+
+def test_wait_for_adapter_exit_kills_process_when_terminate_wait_times_out(monkeypatch) -> None:
+    class _Process:
+        def __init__(self) -> None:
+            self.terminated = False
+            self.killed = False
+            self.wait_calls = 0
+
+        def poll(self) -> None | int:
+            return None
+
+        def terminate(self) -> None:
+            self.terminated = True
+
+        def wait(self, timeout: float | None = None) -> int:
+            self.wait_calls += 1
+            if timeout is not None:
+                if self.wait_calls == 1:
+                    raise subprocess.TimeoutExpired(cmd="adapter", timeout=timeout)
+                return 0
+            return 0
+
+        def kill(self) -> None:
+            self.killed = True
+
+    process = _Process()
+
+    def _sleep_then_interrupt(_seconds: float) -> None:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr("opentrap.cli.time.sleep", _sleep_then_interrupt)
+    cli_module._wait_for_adapter_exit(process)  # type: ignore[arg-type]
+    assert process.terminated
+    assert process.killed
+
+
 def test_trap_run_passes_loaded_samples_to_trap(capsys, tmp_path: Path, monkeypatch) -> None:
     _write_stub_contract(tmp_path / "traps", "reasoning/chain-trap")
     adapter_path = tmp_path / "adapter-main.py"
@@ -486,3 +610,4 @@ def test_trap_run_regenerates_dataset_when_samples_change(
 
     assert trap_1["dataset_fingerprint"] != trap_2["dataset_fingerprint"]
     assert trap_1["dataset_cache_dir"] != trap_2["dataset_cache_dir"]
+
