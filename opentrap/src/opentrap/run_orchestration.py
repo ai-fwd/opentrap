@@ -61,19 +61,31 @@ def _wait_for_session_start(
     heartbeat_interval_seconds: float = STATUS_HEARTBEAT_INTERVAL_SECONDS,
     on_wait_heartbeat: Callable[[float], None] | None = None,
 ) -> str:
-    """Wait until runtime sets `active_session_id` in the manifest.
+    """Wait until runtime records a session entry in the run manifest.
 
     Raises:
         RuntimeError: Adapter exits early or session start timeout is reached.
     """
+    def _extract_session_id(manifest: Mapping[str, Any]) -> str | None:
+        sessions = manifest.get("sessions")
+        if not isinstance(sessions, list):
+            return None
+        for session in reversed(sessions):
+            if not isinstance(session, dict):
+                continue
+            session_id = session.get("session_id")
+            if isinstance(session_id, str) and session_id:
+                return session_id
+        return None
+
     started = time.monotonic()
     deadline = started + SESSION_START_TIMEOUT_SECONDS
     next_heartbeat = started + heartbeat_interval_seconds
     while time.monotonic() < deadline:
         manifest = load_json_maybe(manifest_path)
         if manifest is not None:
-            session_id = manifest.get("active_session_id")
-            if isinstance(session_id, str) and session_id:
+            session_id = _extract_session_id(manifest)
+            if session_id is not None:
                 return session_id
 
         if on_wait_heartbeat is not None and heartbeat_interval_seconds > 0:
@@ -84,9 +96,19 @@ def _wait_for_session_start(
 
         exit_code = process.poll()
         if exit_code is not None:
+            manifest = load_json_maybe(manifest_path)
+            if manifest is not None:
+                session_id = _extract_session_id(manifest)
+                if session_id is not None:
+                    return session_id
             raise RuntimeError(f"adapter exited before session start (exit code {exit_code})")
         time.sleep(SESSION_POLL_INTERVAL_SECONDS)
 
+    manifest = load_json_maybe(manifest_path)
+    if manifest is not None:
+        session_id = _extract_session_id(manifest)
+        if session_id is not None:
+            return session_id
     raise RuntimeError("timed out waiting for adapter session start")
 
 
@@ -179,9 +201,13 @@ def run_single_trap(
             process.terminate()
         raise
 
-    status_callback(f"Session active: {session_id}")
-
     ready_manifest = load_json_maybe(run_manifest_path) or run_manifest
+    if ready_manifest.get("status") == "finalized":
+        status_callback(f"Session active: {session_id}")
+        status_callback("Run finalized")
+        return run_manifest_path
+
+    status_callback(f"Session active: {session_id}")
     ready_manifest["status"] = "ready"
     ready_manifest["adapter_pid"] = process.pid
     ready_manifest["ready_at_utc"] = utc_now_iso()

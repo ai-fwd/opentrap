@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import argparse
 
-from opentrap.runtime import start_session
+from opentrap.runtime import end_session, start_session
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -15,6 +15,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     start_session(args.manifest)
+    end_session()
     return 0
 
 
