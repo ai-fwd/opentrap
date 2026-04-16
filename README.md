@@ -31,14 +31,8 @@ uv run opentrap list --target reasoning
 # Initialize shared + trap-specific config
 uv run opentrap init
 
-# Run all traps
-uv run opentrap attack
-
 # Run a single trap by target/name
-uv run opentrap attack perception/prompt_injection_via_html
-
-# Optional custom report path
-uv run opentrap attack perception/prompt_injection_via_html --output runs/custom.json
+uv run opentrap perception/prompt_injection_via_html
 ```
 
 ## Shared Environment

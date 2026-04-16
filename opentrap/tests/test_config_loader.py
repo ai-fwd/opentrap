@@ -33,7 +33,7 @@ def test_load_attack_config_applies_trap_defaults(tmp_path: Path) -> None:
         "shared": {
             "scenario": "summarize docs",
             "content_style": "docs",
-            "attack_intent": "rewrite negatives",
+            "trap_intent": "rewrite negatives",
             "seed": None,
         },
         "traps": {"reasoning/chain-trap": {}},
@@ -57,7 +57,7 @@ def test_load_attack_config_rejects_unknown_trap_id(tmp_path: Path) -> None:
         "shared": {
             "scenario": "summarize docs",
             "content_style": "docs",
-            "attack_intent": "rewrite negatives",
+            "trap_intent": "rewrite negatives",
             "seed": 10,
         },
         "traps": {
@@ -77,7 +77,7 @@ def test_load_attack_config_rejects_unknown_trap_field(tmp_path: Path) -> None:
         "shared": {
             "scenario": "summarize docs",
             "content_style": "docs",
-            "attack_intent": "rewrite negatives",
+            "trap_intent": "rewrite negatives",
             "seed": 10,
         },
         "traps": {"reasoning/chain-trap": {"unexpected": 1}},
@@ -94,7 +94,7 @@ def test_load_attack_config_rejects_invalid_seed(tmp_path: Path) -> None:
         "shared": {
             "scenario": "summarize docs",
             "content_style": "docs",
-            "attack_intent": "rewrite negatives",
+            "trap_intent": "rewrite negatives",
             "seed": "not-int",
         },
         "traps": {"reasoning/chain-trap": {}},
@@ -111,7 +111,7 @@ def test_load_attack_config_enforces_numeric_range(tmp_path: Path) -> None:
         "shared": {
             "scenario": "summarize docs",
             "content_style": "docs",
-            "attack_intent": "rewrite negatives",
+            "trap_intent": "rewrite negatives",
             "seed": 123,
         },
         "traps": {"reasoning/chain-trap": {"temperature": 2.0}},
@@ -128,7 +128,7 @@ def test_load_attack_config_rejects_unknown_top_level_key(tmp_path: Path) -> Non
         "shared": {
             "scenario": "summarize docs",
             "content_style": "docs",
-            "attack_intent": "rewrite negatives",
+            "trap_intent": "rewrite negatives",
             "seed": 123,
         },
         "traps": {"reasoning/chain-trap": {}},
@@ -152,7 +152,7 @@ def test_load_attack_config_loads_samples_recursively(tmp_path: Path) -> None:
         "shared": {
             "scenario": "summarize docs",
             "content_style": "docs",
-            "attack_intent": "rewrite negatives",
+            "trap_intent": "rewrite negatives",
             "seed": 123,
         },
         "traps": {"reasoning/chain-trap": {}},
@@ -176,7 +176,7 @@ def test_load_attack_config_rejects_non_utf8_sample(tmp_path: Path) -> None:
         "shared": {
             "scenario": "summarize docs",
             "content_style": "docs",
-            "attack_intent": "rewrite negatives",
+            "trap_intent": "rewrite negatives",
             "seed": 123,
         },
         "traps": {"reasoning/chain-trap": {}},

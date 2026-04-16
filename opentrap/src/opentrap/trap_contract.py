@@ -19,7 +19,7 @@ class SampleBoundary:
 class SharedConfig:
     scenario: str
     content_style: str
-    attack_intent: str
+    trap_intent: str
     seed: int | None
     samples: tuple[SampleBoundary, ...] = ()
 

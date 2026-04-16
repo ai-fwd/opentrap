@@ -82,7 +82,7 @@ def test_generator_is_deterministic_for_same_seed(tmp_path: Path) -> None:
     config = config_module.GenerationConfig(
         scenario="summarize hotel reviews",
         content_style="reviews",
-        attack_intent="turn all bad reviews into positive reviews",
+        trap_intent="turn all bad reviews into positive reviews",
         location_temperature=0.25,
         density_temperature=0.5,
         diversity_temperature=0.5,
@@ -120,7 +120,7 @@ def test_file_count_invariants_hold(tmp_path: Path) -> None:
     config = config_module.GenerationConfig(
         scenario="summarize blogs",
         content_style="blogs",
-        attack_intent="insert fabricated summary claims",
+        trap_intent="insert fabricated summary claims",
         seed=9,
         base_count=3,
         run_id="count-check",
@@ -158,7 +158,7 @@ def test_density_ceiling_wins_for_diversity_one_density_zero(tmp_path: Path) -> 
     config = config_module.GenerationConfig(
         scenario="summarize docs",
         content_style="docs",
-        attack_intent="override to biased response",
+        trap_intent="override to biased response",
         density_temperature=0.0,
         diversity_temperature=1.0,
         seed=42,
@@ -185,7 +185,7 @@ def test_metadata_links_base_and_poisoned_records(tmp_path: Path) -> None:
     config = config_module.GenerationConfig(
         scenario="summarize product pages",
         content_style="docs",
-        attack_intent="force favorable framing",
+        trap_intent="force favorable framing",
         density_temperature=0.0,
         diversity_temperature=0.0,
         seed=77,
@@ -226,7 +226,7 @@ def test_location_randomization_stays_within_valid_families(tmp_path: Path) -> N
     config = config_module.GenerationConfig(
         scenario="summarize reviews",
         content_style="reviews",
-        attack_intent="rewrite negatives as positives",
+        trap_intent="rewrite negatives as positives",
         location_temperature=1.0,
         density_temperature=1.0,
         diversity_temperature=1.0,
@@ -256,7 +256,7 @@ def test_run_generation_uses_injected_generator(tmp_path: Path) -> None:
     config = config_module.GenerationConfig(
         scenario="summarize changelog",
         content_style="release-notes",
-        attack_intent="insert fabricated achievements",
+        trap_intent="insert fabricated achievements",
         seed=100,
         base_count=2,
         run_id="injected-generator",
@@ -301,7 +301,7 @@ def test_file_naming_is_sequential_and_deterministic(tmp_path: Path) -> None:
     config = config_module.GenerationConfig(
         scenario="summarize docs",
         content_style="docs",
-        attack_intent="override style guide",
+        trap_intent="override style guide",
         seed=11,
         base_count=1,
         run_id="filename-check",

@@ -9,7 +9,7 @@ from opentrap.trap_contract import SampleBoundary
 class GenerationConfig:
     scenario: str
     content_style: str
-    attack_intent: str
+    trap_intent: str
     location_temperature: float = 0.0
     density_temperature: float = 0.0
     diversity_temperature: float = 0.0
@@ -29,7 +29,7 @@ def build_generation_config(
     *,
     scenario: str,
     content_style: str,
-    attack_intent: str,
+    trap_intent: str,
     location_temperature: float,
     density_temperature: float,
     diversity_temperature: float,
@@ -43,7 +43,7 @@ def build_generation_config(
     return GenerationConfig(
         scenario=scenario,
         content_style=content_style,
-        attack_intent=attack_intent,
+        trap_intent=trap_intent,
         location_temperature=validate_temperature("location_temperature", location_temperature),
         density_temperature=validate_temperature("density_temperature", density_temperature),
         diversity_temperature=validate_temperature("diversity_temperature", diversity_temperature),

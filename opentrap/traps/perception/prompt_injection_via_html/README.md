@@ -28,7 +28,7 @@ OpenTrap loads env files in this order:
 
 ```bash
 uv run opentrap init
-uv run opentrap attack perception/prompt_injection_via_html
+uv run opentrap perception/prompt_injection_via_html
 ```
 
 Trap-specific controls are configured in `.opentrap/opentrap.yaml` under:

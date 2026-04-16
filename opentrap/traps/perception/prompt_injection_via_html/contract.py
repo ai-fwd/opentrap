@@ -16,7 +16,7 @@ def _run(shared_config: SharedConfig, trap_config: Mapping[str, Any], output_bas
     generation_config = build_generation_config(
         scenario=shared_config.scenario,
         content_style=shared_config.content_style,
-        attack_intent=shared_config.attack_intent,
+        trap_intent=shared_config.trap_intent,
         location_temperature=float(trap_config["location_temperature"]),
         density_temperature=float(trap_config["density_temperature"]),
         diversity_temperature=float(trap_config["diversity_temperature"]),

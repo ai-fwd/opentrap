@@ -86,13 +86,13 @@ def load_sample_boundaries(samples_dir: Path) -> tuple[SampleBoundary, ...]:
 
 
 def _validate_shared_config(raw: Mapping[str, Any]) -> SharedConfig:
-    allowed_keys = {"scenario", "content_style", "attack_intent", "seed"}
+    allowed_keys = {"scenario", "content_style", "trap_intent", "seed"}
     unknown_keys = sorted(set(raw) - allowed_keys)
     if unknown_keys:
         raise AttackConfigError(f"shared has unknown key(s): {', '.join(unknown_keys)}")
 
     values: dict[str, str] = {}
-    for field_name in ("scenario", "content_style", "attack_intent"):
+    for field_name in ("scenario", "content_style", "trap_intent"):
         value = raw.get(field_name)
         if not isinstance(value, str):
             raise AttackConfigError(f"shared.{field_name} must be a string")
@@ -111,7 +111,7 @@ def _validate_shared_config(raw: Mapping[str, Any]) -> SharedConfig:
     return SharedConfig(
         scenario=values["scenario"],
         content_style=values["content_style"],
-        attack_intent=values["attack_intent"],
+        trap_intent=values["trap_intent"],
         seed=seed,
     )
 
@@ -204,7 +204,7 @@ def build_initial_config(shared: SharedConfig, registry: Mapping[str, TrapSpec])
         "shared": {
             "scenario": shared.scenario,
             "content_style": shared.content_style,
-            "attack_intent": shared.attack_intent,
+            "trap_intent": shared.trap_intent,
             "seed": shared.seed,
         },
         "traps": traps_payload,
