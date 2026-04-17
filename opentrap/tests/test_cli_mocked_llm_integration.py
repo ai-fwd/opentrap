@@ -26,7 +26,7 @@ def _repo_root() -> Path:
 
 def _traps_root() -> Path:
     """Return the repository trap root used by real integration runs."""
-    return _repo_root() / "opentrap" / "traps"
+    return _repo_root() / "opentrap" / "src" / "traps"
 
 
 def _base_payload(*, trap_intent: str = "rewrite negatives", base_count: int = 1) -> dict:

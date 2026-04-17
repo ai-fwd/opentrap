@@ -22,7 +22,7 @@ from opentrap.run_orchestration import RunEnvironment, run_single_trap
 from opentrap.trap_contract import SharedConfig, TrapSpec
 from opentrap.trap_registry import TrapRegistryError, build_trap_registry
 
-DEFAULT_TRAPS_DIR = Path(__file__).resolve().parents[2] / "traps"
+DEFAULT_TRAPS_DIR = Path(__file__).resolve().parents[1] / "traps"
 DEFAULT_REPO_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_RUNS_DIR = Path("runs")
 DEFAULT_STATE_DIR = Path(".opentrap")

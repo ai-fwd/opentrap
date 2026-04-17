@@ -13,11 +13,11 @@ The goal is to make these attack classes easy to apply in practice, with a light
 - `acme-client/`: TypeScript product-under-test (Bun + strict TypeScript + bun:test).
 - `opentrap/`: Python red-team engine (CLI-first, production-quality defaults with uv + ruff + pytest).
 - `adapter/`: Implementation-agnostic adapter contract (`adapter.md`, and conformance harness).
-- `opentrap/traps/`: Manually curated attack scenarios grouped by target subdirectory.
+- `opentrap/src/traps/`: Manually curated attack scenarios grouped by target subdirectory.
 
 ## OpenTrap CLI
 
-Traps are discovered dynamically from `opentrap/traps/<target>/<trap_name>`.
+Traps are discovered dynamically from `opentrap/src/traps/<target>/<trap_name>`.
 
 Commands:
 
@@ -59,5 +59,5 @@ Any supported text-like file in this directory tree is ingested and provided to 
 
 ```bash
 uv sync --group dev --frozen
-uv run pytest
+uv run python -m pytest
 ```

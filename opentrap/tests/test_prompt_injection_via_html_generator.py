@@ -10,6 +10,7 @@ def _trap_dir() -> Path:
     return (
         Path(__file__).resolve().parents[2]
         / "opentrap"
+        / "src"
         / "traps"
         / "perception"
         / "prompt_injection_via_html"

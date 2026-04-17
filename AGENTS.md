@@ -15,7 +15,7 @@ This file is a durable context anchor for future chats and agent sessions.
   - `adapter/` (implementation-agnostic contract assets)
 - `acme-client` must remain product-like and must not be aware of the red-team internals.
 - Adapter contract uses `adapter/adapter.md`, JSON Schemas, vectors, and conformance tests.
-- Trap assets live in `opentrap/traps/`.
+- Trap assets live in `opentrap/src/traps/`.
 - Keep only these initial automated tests:
   - `opentrap/` unit tests
   - `adapter/` contract tests
