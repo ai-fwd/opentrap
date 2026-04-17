@@ -226,6 +226,41 @@ def test_llm_mocked_run_reuses_dataset_when_inputs_are_unchanged(
     assert trap_1["dataset_cache_dir"] == trap_2["dataset_cache_dir"]
 
 
+def test_llm_mocked_run_uses_final_cache_paths_for_manifest_data_items(
+    capsys,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """Ensure manifest data item paths point at the finalized cache artifact, not staging."""
+    adapter_path = tmp_path / "adapter-main.py"
+    _write_adapter_start_session(adapter_path)
+    _prepare_llm_trap_run(
+        monkeypatch=monkeypatch,
+        tmp_path=tmp_path,
+        adapter_path=adapter_path,
+        payload=_base_payload(),
+    )
+
+    code1 = main([TRAP_ID])
+    captured1 = capsys.readouterr()
+    assert code1 == 0
+    trap_1 = _read_trap_entry(Path(captured1.out.strip()))
+
+    code2 = main([TRAP_ID])
+    captured2 = capsys.readouterr()
+    assert code2 == 0
+    trap_2 = _read_trap_entry(Path(captured2.out.strip()))
+
+    for trap in (trap_1, trap_2):
+        data_dir = Path(trap["data_dir"])
+        assert Path(trap["artifact_path"]) == Path(trap["dataset_cache_dir"])
+        assert data_dir == Path(trap["dataset_cache_dir"]) / "data"
+        assert trap["data_items"]
+        for item in trap["data_items"]:
+            assert "_tmp" not in item["path"]
+            assert Path(item["path"]).parent == data_dir
+
+
 def test_llm_mocked_run_regenerates_when_shared_or_trap_config_changes(
     capsys,
     tmp_path: Path,

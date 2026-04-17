@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -293,6 +294,32 @@ def test_bootstrap_openai_url_normalization_and_defaults(monkeypatch) -> None:
 
     monkeypatch.delenv("OPENAI_URL", raising=False)
     assert bootstrap_module.load_llm_config_from_env().base_url == "https://api.openai.com/v1"
+
+
+def test_bootstrap_load_layered_env_reads_repo_root_env_files(monkeypatch) -> None:
+    bootstrap_module = _load_module("bootstrap.py", "prompt_injection_via_html_bootstrap")
+
+    seen_paths: list[Path] = []
+
+    def _fake_dotenv_values(path: Path) -> dict[str, str]:
+        seen_paths.append(path)
+        if path.name == ".env.shared":
+            return {"OPENAI_API_KEY": "shared-key", "OPENAI_MODEL": "shared-model"}
+        if path.name == ".env":
+            return {"OPENAI_MODEL": "local-model"}
+        return {}
+
+    monkeypatch.setitem(sys.modules, "dotenv", type("_DotenvModule", (), {"dotenv_values": _fake_dotenv_values}))
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_MODEL", raising=False)
+
+    bootstrap_module.load_layered_env()
+
+    expected_root = Path(__file__).resolve().parents[2]
+    assert seen_paths == [expected_root / ".env.shared", expected_root / ".env"]
+    assert "OPENAI_API_KEY" in os.environ
+    assert os.environ["OPENAI_API_KEY"] == "shared-key"
+    assert os.environ["OPENAI_MODEL"] == "local-model"
 
 
 def test_file_naming_is_sequential_and_deterministic(tmp_path: Path) -> None:

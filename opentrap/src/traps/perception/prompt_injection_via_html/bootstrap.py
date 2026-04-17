@@ -8,13 +8,21 @@ from llm_config import LLMConfig
 DEFAULT_OPENAI_URL = "https://api.openai.com"
 
 
+def _find_project_root() -> Path:
+    current = Path(__file__).resolve()
+    for candidate in current.parents:
+        if (candidate / "pyproject.toml").exists():
+            return candidate
+    raise RuntimeError("Could not locate repository root from trap bootstrap path")
+
+
 def load_layered_env() -> None:
     try:
         from dotenv import dotenv_values
     except ImportError:
         return
 
-    project_root = Path(__file__).resolve().parents[4]
+    project_root = _find_project_root()
 
     shared = {
         k: v

@@ -620,6 +620,7 @@ def test_trap_run_reuses_dataset_when_config_is_unchanged(
     assert trap_1["dataset_fingerprint"] == trap_2["dataset_fingerprint"]
     assert trap_1["dataset_cache_dir"] == trap_2["dataset_cache_dir"]
     assert trap_1["artifact_path"] == trap_2["artifact_path"]
+    assert Path(trap_1["artifact_path"]).parent == Path(trap_1["dataset_cache_dir"])
 
 
 def test_trap_run_regenerates_dataset_when_shared_or_trap_config_changes(

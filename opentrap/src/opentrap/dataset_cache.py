@@ -51,6 +51,13 @@ class DatasetSnapshot:
         }
 
 
+@dataclass(frozen=True)
+class _CachedArtifactLayout:
+    artifact_path: Path
+    metadata_path: Path
+    data_dir: Path
+
+
 def _canonical_json_bytes(payload: Any) -> bytes:
     """Encode JSON payload into deterministic bytes for hashing."""
     return json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode(
@@ -149,29 +156,59 @@ def _extract_data_items(artifact_path: Path) -> list[dict[str, str]]:
     return collected
 
 
+def _resolve_cached_artifact_layout(
+    cache_dir: Path,
+    cache_metadata: Mapping[str, Any],
+) -> _CachedArtifactLayout | None:
+    """Resolve cached artifact paths from the flattened cache layout."""
+    artifact_kind = cache_metadata.get("artifact_kind")
+    artifact_name = cache_metadata.get("artifact_name")
+
+    if artifact_kind == "directory":
+        return _CachedArtifactLayout(
+            artifact_path=cache_dir,
+            metadata_path=cache_dir / "metadata.jsonl",
+            data_dir=cache_dir / "data",
+        )
+
+    if artifact_kind == "file" and isinstance(artifact_name, str) and artifact_name:
+        artifact_path = cache_dir / artifact_name
+        return _CachedArtifactLayout(
+            artifact_path=artifact_path,
+            metadata_path=artifact_path / "metadata.jsonl",
+            data_dir=artifact_path / "data",
+        )
+
+    return None
+
+
 def _read_cached_dataset_snapshot(cache_dir: Path) -> DatasetSnapshot | None:
     """Load dataset snapshot when cache metadata and artifact are fully available."""
     cache_metadata_path = cache_dir / "cache.json"
-    artifact_path = cache_dir / "artifact"
-
-    if not cache_metadata_path.exists() or not artifact_path.exists():
+    if not cache_metadata_path.exists():
         return None
 
     cache_metadata = load_json_maybe(cache_metadata_path)
     if cache_metadata is None:
         return None
 
-    data_items = _normalize_data_items(cache_metadata.get("data_items"))
+    layout = _resolve_cached_artifact_layout(cache_dir, cache_metadata)
+    if layout is None or not layout.artifact_path.exists():
+        return None
+
+    # Always prefer paths derived from the finalized cached artifact. Cache metadata
+    # may contain stale absolute paths captured before staging was moved into cache.
+    data_items = _extract_data_items(layout.artifact_path)
     if not data_items:
-        data_items = _extract_data_items(artifact_path)
+        data_items = _normalize_data_items(cache_metadata.get("data_items"))
 
     return DatasetSnapshot(
         dataset_fingerprint=str(cache_metadata.get("dataset_fingerprint", "")),
         dataset_cache_dir=str(cache_dir),
         dataset_source="cache_hit",
-        artifact_path=str(artifact_path),
-        metadata_path=str(artifact_path / "metadata.jsonl"),
-        data_dir=str(artifact_path / "data"),
+        artifact_path=str(layout.artifact_path),
+        metadata_path=str(layout.metadata_path),
+        data_dir=str(layout.data_dir),
         data_items=data_items,
     )
 
@@ -206,6 +243,19 @@ def _run_generation_with_heartbeat(
             except TimeoutError:
                 if on_generation_heartbeat is not None:
                     on_generation_heartbeat(time.monotonic() - started)
+
+
+def _stage_generated_artifact(staging_dir: Path, generated_artifact: Path) -> tuple[Path, str, str]:
+    """Move the generated artifact into the flattened staging layout."""
+    if generated_artifact.is_dir():
+        for child in generated_artifact.iterdir():
+            child.replace(staging_dir / child.name)
+        return staging_dir, "directory", ""
+
+    artifact_name = f"artifact{generated_artifact.suffix}"
+    staged_artifact = staging_dir / artifact_name
+    generated_artifact.replace(staged_artifact)
+    return staged_artifact, "file", artifact_name
 
 
 def resolve_cached_dataset(
@@ -245,6 +295,8 @@ def resolve_cached_dataset(
             data_dir=cached_snapshot.data_dir,
             data_items=cached_snapshot.data_items,
         )
+    if cache_dir.exists():
+        shutil.rmtree(cache_dir, ignore_errors=True)
 
     tmp_root = dataset_dir / "_tmp" / uuid.uuid4().hex
     output_base = tmp_root / "output" / trap_slug
@@ -260,8 +312,10 @@ def resolve_cached_dataset(
             heartbeat_interval_seconds=heartbeat_interval_seconds,
             on_generation_heartbeat=on_generation_heartbeat,
         )
-        staged_artifact = staging_dir / "artifact"
-        generated_artifact.replace(staged_artifact)
+        staged_artifact, artifact_kind, artifact_name = _stage_generated_artifact(
+            staging_dir,
+            generated_artifact,
+        )
 
         dataset_items = _extract_data_items(staged_artifact)
         cache_payload = {
@@ -270,6 +324,8 @@ def resolve_cached_dataset(
             "dataset_fingerprint": fingerprint,
             "created_at_utc": utc_now_iso(),
             "fingerprint_payload": fingerprint_payload,
+            "artifact_kind": artifact_kind,
+            "artifact_name": artifact_name,
             "data_items": dataset_items,
         }
         write_json(staging_dir / "cache.json", cache_payload)

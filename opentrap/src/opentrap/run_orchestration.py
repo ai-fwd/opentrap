@@ -143,6 +143,7 @@ def run_single_trap(
 
     run_manifest: dict[str, Any] = {
         "run_id": run_id,
+        "repo_root": str(environment.repo_root.resolve()),
         "created_at_utc": utc_now_iso(),
         "requested": requested_trap_ref,
         "status": "creating",

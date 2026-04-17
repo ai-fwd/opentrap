@@ -93,7 +93,18 @@ def _require_active_session() -> _ActiveSession:
     return _active_session
 
 
-def _load_data_items_from_manifest(manifest: dict[str, Any]) -> dict[str, DataItem]:
+def _resolve_manifest_repo_root(manifest: dict[str, Any]) -> Path:
+    repo_root = manifest.get("repo_root")
+    if isinstance(repo_root, str) and repo_root.strip():
+        return Path(repo_root)
+    return Path.cwd()
+
+
+def _load_data_items_from_manifest(
+    manifest: dict[str, Any],
+    *,
+    repo_root: Path,
+) -> dict[str, DataItem]:
     """Load item-id to item-path mapping from trap entries in the run manifest."""
     traps = manifest.get("traps", [])
     if not isinstance(traps, list):
@@ -113,7 +124,10 @@ def _load_data_items_from_manifest(manifest: dict[str, Any]) -> dict[str, DataIt
             path = trap_item.get("path")
             if not isinstance(item_id, str) or not isinstance(path, str):
                 continue
-            items[item_id] = DataItem(id=item_id, path=path)
+            item_path = Path(path)
+            if not item_path.is_absolute():
+                item_path = repo_root / item_path
+            items[item_id] = DataItem(id=item_id, path=str(item_path))
     return items
 
 
@@ -132,6 +146,7 @@ def start_session(manifest_path: str | Path) -> str:
     run_id = manifest.get("run_id")
     if not isinstance(run_id, str) or not run_id:
         raise RuntimeError("manifest.run_id must be a non-empty string")
+    repo_root = _resolve_manifest_repo_root(manifest)
 
     if manifest.get("active_session_id"):
         raise RuntimeError("manifest already has an active session")
@@ -174,7 +189,7 @@ def start_session(manifest_path: str | Path) -> str:
         session_id=session_id,
         session_path=session_path,
         evidence_path=evidence_path,
-        data_items=_load_data_items_from_manifest(manifest),
+        data_items=_load_data_items_from_manifest(manifest, repo_root=repo_root),
         started_at_utc=started_at_utc,
     )
     return session_id

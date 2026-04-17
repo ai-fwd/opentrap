@@ -74,12 +74,13 @@ class RouteSpec:
 class _RuntimeMetadata:
     run_id: str
     trap_ids: tuple[str, ...]
+    repo_root: Path
 
 
 class DataItems:
-    def __init__(self, *, runtime: RuntimeProtocol, run_dir: Path) -> None:
+    def __init__(self, *, runtime: RuntimeProtocol, base_dir: Path) -> None:
         self._runtime = runtime
-        self._run_dir = run_dir
+        self._base_dir = base_dir
 
     def list_ids(self) -> tuple[str, ...]:
         ids: list[str] = []
@@ -103,7 +104,7 @@ class DataItems:
         path = Path(relative_path)
         if path.is_absolute():
             return path
-        return self._run_dir / path
+        return self._base_dir / path
 
 
 def _load_manifest_metadata(manifest_path: Path) -> _RuntimeMetadata:
@@ -125,7 +126,13 @@ def _load_manifest_metadata(manifest_path: Path) -> _RuntimeMetadata:
             if isinstance(trap_id, str) and trap_id:
                 trap_ids.append(trap_id)
 
-    return _RuntimeMetadata(run_id=run_id, trap_ids=tuple(trap_ids))
+    repo_root = payload.get("repo_root")
+    if isinstance(repo_root, str) and repo_root.strip():
+        base_dir = Path(repo_root)
+    else:
+        base_dir = Path.cwd()
+
+    return _RuntimeMetadata(run_id=run_id, trap_ids=tuple(trap_ids), repo_root=base_dir)
 
 
 def _build_upstream_map(upstreams: Iterable[UpstreamSpec]) -> dict[str, UpstreamSpec]:
@@ -305,7 +312,7 @@ async def _dispatch_route(*, app: FastAPI, request: Request, route: RouteSpec) -
         request_id=cast(str, request.state.request_id),
         data_items=DataItems(
             runtime=cast(RuntimeProtocol, app.state.runtime),
-            run_dir=cast(Path, app.state.run_dir),
+            base_dir=cast(Path, app.state.repo_root),
         ),
     )
 
@@ -352,6 +359,7 @@ def create_app(
     async def lifespan(app: FastAPI):
         app.state.manifest_path = manifest_path
         app.state.run_dir = manifest_path.parent
+        app.state.repo_root = metadata.repo_root
         app.state.run_id = metadata.run_id
         app.state.trap_ids = metadata.trap_ids
         app.state.runtime = runtime_impl

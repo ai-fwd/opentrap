@@ -310,3 +310,71 @@ def test_unknown_named_upstream_is_rejected(tmp_path: Path) -> None:
             upstreams=[UpstreamSpec(name="origin", base_url="https://origin.test")],
             runtime=FakeRuntime(),
         )
+
+
+def test_data_items_resolve_repo_relative_paths_from_manifest_repo_root(tmp_path: Path) -> None:
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    data_file = repo_root / "dataset" / "item-00001.txt"
+    data_file.parent.mkdir(parents=True)
+    data_file.write_text("hello from dataset", encoding="utf-8")
+
+    manifest_path = tmp_path / "run.json"
+    payload = {
+        "run_id": "test-run-id",
+        "repo_root": str(repo_root),
+        "created_at_utc": "2026-01-01T00:00:00+00:00",
+        "requested": "reasoning/chain-trap",
+        "status": "armed",
+        "scorer_status": "pending",
+        "active_session_id": None,
+        "sessions": [],
+        "traps": [
+            {
+                "trap_id": "reasoning/chain-trap",
+                "data_items": [
+                    {
+                        "id": "00001",
+                        "path": "dataset/item-00001.txt",
+                    }
+                ],
+            }
+        ],
+    }
+    manifest_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+
+    class _ItemRuntime(FakeRuntime):
+        def list_data_items(self) -> list[object]:
+            return [type("_Item", (), {"id": "00001", "path": "dataset/item-00001.txt"})()]
+
+        def get_data_item(self, item_id: str) -> object:
+            if item_id != "00001":
+                raise KeyError(item_id)
+            return type("_Item", (), {"id": "00001", "path": "dataset/item-00001.txt"})()
+
+    runtime = _ItemRuntime()
+
+    async def intercept_handler(ctx: RequestContext) -> Response:
+        return JSONResponse({"content": ctx.data_items.read_text("00001")})
+
+    app = create_app(
+        manifest_path=manifest_path,
+        routes=[
+            RouteSpec(
+                name="read-item",
+                path="/read-item",
+                methods=(HTTPMethod.GET,),
+                mode="intercept",
+                handler=intercept_handler,
+                upstream=None,
+            )
+        ],
+        upstreams=[],
+        runtime=runtime,
+    )
+
+    with TestClient(app) as client:
+        response = client.get("/read-item")
+
+    assert response.status_code == 200
+    assert response.json() == {"content": "hello from dataset"}
