@@ -27,8 +27,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Generated adapter entrypoint")
     parser.add_argument("--manifest", required=True)
     parser.add_argument("--host", default="127.0.0.1")
-    # Port 0 tells the OS to pick any available ephemeral port.
-    parser.add_argument("--port", type=int, default=0)
+    parser.add_argument("--port", type=int, default=7860)
     return parser
 
 
