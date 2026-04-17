@@ -6,7 +6,7 @@ import time
 import uuid
 from collections.abc import Awaitable, Callable, Iterable, Mapping
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from http import HTTPMethod
 from pathlib import Path
 from typing import Any, Literal, Protocol, cast
@@ -16,6 +16,7 @@ from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse
 
 RouteMode = Literal["intercept", "passthrough", "observe"]
+EventEmitter = Callable[[str, Mapping[str, Any]], None]
 
 
 class RuntimeProtocol(Protocol):
@@ -47,12 +48,40 @@ class UpstreamSpec:
 
 
 @dataclass(frozen=True)
+class DataItemView:
+    id: str
+    path: Path
+
+
+@dataclass(frozen=True)
+class ManifestTrapView:
+    trap_id: str
+    artifact_path: Path | None
+    metadata_path: Path | None
+    data_dir: Path | None
+    data_items: tuple[DataItemView, ...]
+
+
+@dataclass(frozen=True)
+class ManifestView:
+    manifest_path: Path
+    repo_root: Path
+    requested: str | None
+    traps: tuple[ManifestTrapView, ...]
+
+
+@dataclass(frozen=True)
 class RequestContext:
     request: Request
     run_id: str
     session_id: str
     request_id: str
+    manifest: ManifestView
     data_items: DataItems
+    _event_emitter: EventEmitter = field(repr=False, compare=False)
+
+    def emit_event(self, event_type: str, payload: Mapping[str, Any]) -> None:
+        self._event_emitter(event_type, payload)
 
 
 InterceptHandler = Callable[[RequestContext], Awaitable[Response]]
@@ -74,7 +103,7 @@ class RouteSpec:
 class _RuntimeMetadata:
     run_id: str
     trap_ids: tuple[str, ...]
-    repo_root: Path
+    manifest: ManifestView
 
 
 class DataItems:
@@ -82,29 +111,120 @@ class DataItems:
         self._runtime = runtime
         self._base_dir = base_dir
 
+    def list(self) -> tuple[DataItemView, ...]:
+        return tuple(
+            self._coerce_item(item)
+            for item in self._runtime.list_data_items()
+        )
+
     def list_ids(self) -> tuple[str, ...]:
-        ids: list[str] = []
-        for item in self._runtime.list_data_items():
-            item_id = getattr(item, "id", None)
-            if isinstance(item_id, str):
-                ids.append(item_id)
-        return tuple(ids)
+        return tuple(item.id for item in self.list())
+
+    def get(self, item_id: str) -> DataItemView:
+        return self._coerce_item(self._runtime.get_data_item(item_id), expected_id=item_id)
 
     def read_text(self, item_id: str, *, encoding: str = "utf-8") -> str:
-        return self._resolve_path(item_id).read_text(encoding=encoding)
+        return self.get(item_id).path.read_text(encoding=encoding)
 
     def read_bytes(self, item_id: str) -> bytes:
-        return self._resolve_path(item_id).read_bytes()
+        return self.get(item_id).path.read_bytes()
 
-    def _resolve_path(self, item_id: str) -> Path:
-        item = self._runtime.get_data_item(item_id)
+    def _coerce_item(self, item: object, *, expected_id: str | None = None) -> DataItemView:
+        item_id = getattr(item, "id", None)
+        if not isinstance(item_id, str) or not item_id:
+            raise RuntimeError("data item has invalid id")
+        if expected_id is not None and item_id != expected_id:
+            raise RuntimeError(
+                f"data item lookup mismatch: expected '{expected_id}', got '{item_id}'"
+            )
         relative_path = getattr(item, "path", None)
         if not isinstance(relative_path, str) or not relative_path:
             raise RuntimeError(f"data item '{item_id}' has invalid path")
         path = Path(relative_path)
         if path.is_absolute():
-            return path
-        return self._base_dir / path
+            return DataItemView(id=item_id, path=path)
+        return DataItemView(id=item_id, path=self._base_dir / path)
+
+
+def _resolve_repo_root(payload: Mapping[str, Any]) -> Path:
+    repo_root = payload.get("repo_root")
+    if isinstance(repo_root, str) and repo_root.strip():
+        return Path(repo_root)
+    return Path.cwd()
+
+
+def _resolve_manifest_path(path_value: object, *, repo_root: Path) -> Path | None:
+    if not isinstance(path_value, str) or not path_value.strip():
+        return None
+    path = Path(path_value)
+    if path.is_absolute():
+        return path
+    return repo_root / path
+
+
+def _load_manifest_data_items(
+    trap_payload: Mapping[str, Any],
+    *,
+    repo_root: Path,
+) -> tuple[DataItemView, ...]:
+    raw_items = trap_payload.get("data_items")
+    if not isinstance(raw_items, list):
+        return ()
+
+    items: list[DataItemView] = []
+    for raw_item in raw_items:
+        if not isinstance(raw_item, dict):
+            continue
+        item_id = raw_item.get("id")
+        path_value = raw_item.get("path")
+        if not isinstance(item_id, str) or not item_id:
+            continue
+        resolved_path = _resolve_manifest_path(path_value, repo_root=repo_root)
+        if resolved_path is None:
+            continue
+        items.append(DataItemView(id=item_id, path=resolved_path))
+    return tuple(items)
+
+
+def _load_manifest_view(manifest_path: Path, payload: Mapping[str, Any]) -> ManifestView:
+    repo_root = _resolve_repo_root(payload)
+    requested = payload.get("requested")
+    requested_value = requested if isinstance(requested, str) and requested else None
+
+    traps_payload = payload.get("traps")
+    traps: list[ManifestTrapView] = []
+    if isinstance(traps_payload, list):
+        for raw_trap in traps_payload:
+            if not isinstance(raw_trap, dict):
+                continue
+            trap_id = raw_trap.get("trap_id")
+            if not isinstance(trap_id, str) or not trap_id:
+                continue
+            traps.append(
+                ManifestTrapView(
+                    trap_id=trap_id,
+                    artifact_path=_resolve_manifest_path(
+                        raw_trap.get("artifact_path"),
+                        repo_root=repo_root,
+                    ),
+                    metadata_path=_resolve_manifest_path(
+                        raw_trap.get("metadata_path"),
+                        repo_root=repo_root,
+                    ),
+                    data_dir=_resolve_manifest_path(
+                        raw_trap.get("data_dir"),
+                        repo_root=repo_root,
+                    ),
+                    data_items=_load_manifest_data_items(raw_trap, repo_root=repo_root),
+                )
+            )
+
+    return ManifestView(
+        manifest_path=manifest_path,
+        repo_root=repo_root,
+        requested=requested_value,
+        traps=tuple(traps),
+    )
 
 
 def _load_manifest_metadata(manifest_path: Path) -> _RuntimeMetadata:
@@ -116,23 +236,10 @@ def _load_manifest_metadata(manifest_path: Path) -> _RuntimeMetadata:
     if not isinstance(run_id, str) or not run_id:
         raise RuntimeError("manifest.run_id must be a non-empty string")
 
-    trap_ids: list[str] = []
-    traps = payload.get("traps")
-    if isinstance(traps, list):
-        for entry in traps:
-            if not isinstance(entry, dict):
-                continue
-            trap_id = entry.get("trap_id")
-            if isinstance(trap_id, str) and trap_id:
-                trap_ids.append(trap_id)
+    manifest = _load_manifest_view(manifest_path, payload)
+    trap_ids = tuple(trap.trap_id for trap in manifest.traps)
 
-    repo_root = payload.get("repo_root")
-    if isinstance(repo_root, str) and repo_root.strip():
-        base_dir = Path(repo_root)
-    else:
-        base_dir = Path.cwd()
-
-    return _RuntimeMetadata(run_id=run_id, trap_ids=tuple(trap_ids), repo_root=base_dir)
+    return _RuntimeMetadata(run_id=run_id, trap_ids=trap_ids, manifest=manifest)
 
 
 def _build_upstream_map(upstreams: Iterable[UpstreamSpec]) -> dict[str, UpstreamSpec]:
@@ -310,10 +417,12 @@ async def _dispatch_route(*, app: FastAPI, request: Request, route: RouteSpec) -
         run_id=cast(str, app.state.run_id),
         session_id=cast(str, app.state.session_id),
         request_id=cast(str, request.state.request_id),
+        manifest=cast(ManifestView, app.state.manifest),
         data_items=DataItems(
             runtime=cast(RuntimeProtocol, app.state.runtime),
             base_dir=cast(Path, app.state.repo_root),
         ),
+        _event_emitter=cast(EventEmitter, app.state.event_emitter),
     )
 
     # Scenario: intercept routes are fully owned by generated handler logic.
@@ -359,10 +468,12 @@ def create_app(
     async def lifespan(app: FastAPI):
         app.state.manifest_path = manifest_path
         app.state.run_dir = manifest_path.parent
-        app.state.repo_root = metadata.repo_root
+        app.state.manifest = metadata.manifest
+        app.state.repo_root = metadata.manifest.repo_root
         app.state.run_id = metadata.run_id
         app.state.trap_ids = metadata.trap_ids
         app.state.runtime = runtime_impl
+        app.state.event_emitter = runtime_impl.emit_event
         app.state.upstream_map = upstream_map
 
         if forward_client is None:

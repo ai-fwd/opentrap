@@ -23,6 +23,8 @@ Functions:
 
 - `get_data_item(item_id: str) -> DataItem`
   Output: one data item with `id` and filesystem `path`.
+  Note: when manifest item paths are relative, they are resolved against `manifest["repo_root"]`
+  when present, otherwise against the current working directory.
   Raises: `RuntimeError` if no active session; `KeyError` for unknown item id.
 
 - `emit_event(event_type: str, payload: Mapping[str, Any]) -> None`

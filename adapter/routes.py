@@ -4,5 +4,5 @@ from adapter.host import RouteSpec
 
 
 def get_routes() -> list[RouteSpec]:
-    """Return generated route declarations consumed by the fixed adapter host."""
+    """Return trap-specific route declarations consumed by the fixed adapter host."""
     return []
