@@ -1,3 +1,5 @@
+# OpenTrap trap generator tests.
+# Verifies prompt_injection_via_html generation behavior and environment loading.
 from __future__ import annotations
 
 import importlib.util
@@ -309,7 +311,11 @@ def test_bootstrap_load_layered_env_reads_repo_root_env_files(monkeypatch) -> No
             return {"OPENAI_MODEL": "local-model"}
         return {}
 
-    monkeypatch.setitem(sys.modules, "dotenv", type("_DotenvModule", (), {"dotenv_values": _fake_dotenv_values}))
+    monkeypatch.setitem(
+        sys.modules,
+        "dotenv",
+        type("_DotenvModule", (), {"dotenv_values": _fake_dotenv_values}),
+    )
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("OPENAI_MODEL", raising=False)
 

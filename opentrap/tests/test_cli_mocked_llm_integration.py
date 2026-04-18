@@ -1,3 +1,5 @@
+# OpenTrap real-trap CLI integration tests.
+# Verifies cache/orchestration with deterministic mocked OpenAI responses.
 """CLI integration coverage for cache/orchestration using deterministic mocked LLM output.
 
 These tests execute real trap runs through `opentrap.cli.main(...)` while injecting a fake
@@ -49,72 +51,44 @@ def _base_payload(*, trap_intent: str = "rewrite negatives", base_count: int = 1
     }
 
 
-def _write_adapter_start_session(path: Path) -> None:
-    """Write adapter script that immediately starts a runtime session."""
-    source = """
+def _write_generated_adapter(
+    generated_root: Path,
+    *,
+    product: str = "default",
+    handlers_prelude: str = "",
+) -> None:
+    generated_dir = generated_root / product
+    generated_dir.mkdir(parents=True, exist_ok=True)
+
+    handlers_source = f"""
 from __future__ import annotations
 
-import argparse
-
-from opentrap.runtime import start_session
-
-
-def main() -> int:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--manifest", required=True)
-    args = parser.parse_args()
-    start_session(args.manifest)
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
+{handlers_prelude}
 """
-    path.write_text(textwrap.dedent(source), encoding="utf-8")
 
-
-def _write_adapter_exit_immediately(path: Path) -> None:
-    """Write adapter script that exits before setting `active_session_id`."""
-    source = """
+    routes_source = """
 from __future__ import annotations
 
-import argparse
+from opentrap.adapter import RouteSpec
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--manifest", required=True)
-    parser.parse_args()
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
+def get_routes() -> list[RouteSpec]:
+    return []
 """
-    path.write_text(textwrap.dedent(source), encoding="utf-8")
 
-
-def _write_adapter_sleep(path: Path, *, seconds: float) -> None:
-    """Write adapter script that blocks long enough to trigger startup timeout."""
-    source = f"""
+    upstreams_source = """
 from __future__ import annotations
 
-import argparse
-import time
+from opentrap.adapter import UpstreamSpec
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--manifest", required=True)
-    parser.parse_args()
-    time.sleep({seconds})
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
+def get_upstreams() -> list[UpstreamSpec]:
+    return []
 """
-    path.write_text(textwrap.dedent(source), encoding="utf-8")
+
+    (generated_dir / "handlers.py").write_text(textwrap.dedent(handlers_source), encoding="utf-8")
+    (generated_dir / "routes.py").write_text(textwrap.dedent(routes_source), encoding="utf-8")
+    (generated_dir / "upstreams.py").write_text(textwrap.dedent(upstreams_source), encoding="utf-8")
 
 
 def _configure_cli_paths(
@@ -123,15 +97,25 @@ def _configure_cli_paths(
     tmp_path: Path,
     config_path: Path,
     samples_dir: Path,
-    adapter_path: Path,
+    generated_root: Path,
+    patch_wait_for_adapter_exit: bool = True,
 ) -> None:
     """Point CLI path defaults to isolated test directories."""
+    monkeypatch.setattr("opentrap.cli.DEFAULT_REPO_ROOT", tmp_path)
     monkeypatch.setattr("opentrap.cli.DEFAULT_TRAPS_DIR", _traps_root())
     monkeypatch.setattr("opentrap.cli.DEFAULT_CONFIG_PATH", config_path)
     monkeypatch.setattr("opentrap.cli.DEFAULT_RUNS_DIR", tmp_path / "runs")
     monkeypatch.setattr("opentrap.cli.DEFAULT_SAMPLES_DIR", samples_dir)
     monkeypatch.setattr("opentrap.cli.DEFAULT_DATASET_DIR", tmp_path / ".opentrap" / "dataset")
-    monkeypatch.setattr("opentrap.cli.DEFAULT_ADAPTER_ENTRYPOINT", adapter_path)
+    monkeypatch.setattr("opentrap.cli.DEFAULT_ADAPTER_GENERATED_ROOT", generated_root)
+
+    if patch_wait_for_adapter_exit:
+        def _stop_adapter_immediately(process) -> None:  # noqa: ANN001
+            if process.poll() is None:
+                process.terminate()
+                process.wait(timeout=5)
+
+        monkeypatch.setattr("opentrap.cli._wait_for_adapter_exit", _stop_adapter_immediately)
 
 
 def _install_fake_openai(monkeypatch) -> None:
@@ -169,7 +153,7 @@ def _prepare_llm_trap_run(
     *,
     monkeypatch,
     tmp_path: Path,
-    adapter_path: Path,
+    generated_root: Path,
     payload: dict,
 ) -> tuple[Path, Path]:
     """Prepare config, env, and deterministic fake openai for integration run."""
@@ -188,7 +172,7 @@ def _prepare_llm_trap_run(
         tmp_path=tmp_path,
         config_path=config_path,
         samples_dir=samples_dir,
-        adapter_path=adapter_path,
+        generated_root=generated_root,
     )
     return config_path, samples_dir
 
@@ -199,12 +183,12 @@ def test_llm_mocked_run_reuses_dataset_when_inputs_are_unchanged(
     monkeypatch,
 ) -> None:
     """Ensure cache hit behavior for identical trap inputs across repeated runs."""
-    adapter_path = tmp_path / "adapter-main.py"
-    _write_adapter_start_session(adapter_path)
+    generated_root = tmp_path / "adapter" / "generated"
+    _write_generated_adapter(generated_root)
     _prepare_llm_trap_run(
         monkeypatch=monkeypatch,
         tmp_path=tmp_path,
-        adapter_path=adapter_path,
+        generated_root=generated_root,
         payload=_base_payload(),
     )
 
@@ -232,12 +216,12 @@ def test_llm_mocked_run_uses_final_cache_paths_for_manifest_data_items(
     monkeypatch,
 ) -> None:
     """Ensure manifest data item paths point at the finalized cache artifact, not staging."""
-    adapter_path = tmp_path / "adapter-main.py"
-    _write_adapter_start_session(adapter_path)
+    generated_root = tmp_path / "adapter" / "generated"
+    _write_generated_adapter(generated_root)
     _prepare_llm_trap_run(
         monkeypatch=monkeypatch,
         tmp_path=tmp_path,
-        adapter_path=adapter_path,
+        generated_root=generated_root,
         payload=_base_payload(),
     )
 
@@ -267,12 +251,12 @@ def test_llm_mocked_run_regenerates_when_shared_or_trap_config_changes(
     monkeypatch,
 ) -> None:
     """Ensure fingerprint invalidation when shared or trap config inputs change."""
-    adapter_path = tmp_path / "adapter-main.py"
-    _write_adapter_start_session(adapter_path)
+    generated_root = tmp_path / "adapter" / "generated"
+    _write_generated_adapter(generated_root)
     config_path, _samples_dir = _prepare_llm_trap_run(
         monkeypatch=monkeypatch,
         tmp_path=tmp_path,
-        adapter_path=adapter_path,
+        generated_root=generated_root,
         payload=_base_payload(),
     )
 
@@ -310,12 +294,12 @@ def test_llm_mocked_run_regenerates_when_samples_change(
     monkeypatch,
 ) -> None:
     """Ensure sample boundary content contributes to dataset fingerprint identity."""
-    adapter_path = tmp_path / "adapter-main.py"
-    _write_adapter_start_session(adapter_path)
+    generated_root = tmp_path / "adapter" / "generated"
+    _write_generated_adapter(generated_root)
     _config_path, samples_dir = _prepare_llm_trap_run(
         monkeypatch=monkeypatch,
         tmp_path=tmp_path,
-        adapter_path=adapter_path,
+        generated_root=generated_root,
         payload=_base_payload(),
     )
     sample_file = samples_dir / "example.html"
@@ -336,17 +320,17 @@ def test_llm_mocked_run_regenerates_when_samples_change(
     assert trap_1["dataset_cache_dir"] != trap_2["dataset_cache_dir"]
 
 
-def test_trap_run_fails_when_adapter_entrypoint_is_missing(
+def test_trap_run_fails_when_generated_adapter_output_is_missing(
     capsys,
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    """Surface explicit adapter-path failure for orchestration troubleshooting."""
-    missing_adapter = tmp_path / "missing-adapter.py"
+    """Surface explicit generated-output failure for orchestration troubleshooting."""
+    missing_generated_root = tmp_path / "missing-generated"
     _prepare_llm_trap_run(
         monkeypatch=monkeypatch,
         tmp_path=tmp_path,
-        adapter_path=missing_adapter,
+        generated_root=missing_generated_root,
         payload=_base_payload(),
     )
 
@@ -354,21 +338,24 @@ def test_trap_run_fails_when_adapter_entrypoint_is_missing(
 
     captured = capsys.readouterr()
     assert code == 1
-    assert "adapter entrypoint was not found" in captured.err
+    assert "generated adapter output was not found" in captured.err
 
 
-def test_trap_run_fails_when_adapter_exits_before_session_start(
+def test_trap_run_fails_when_generated_adapter_import_exits_before_session_start(
     capsys,
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    """Surface early adapter exit failures before runtime session handshake."""
-    adapter_path = tmp_path / "adapter-exit.py"
-    _write_adapter_exit_immediately(adapter_path)
+    """Surface early adapter process exit failures before runtime session handshake."""
+    generated_root = tmp_path / "adapter" / "generated"
+    _write_generated_adapter(
+        generated_root,
+        handlers_prelude="raise RuntimeError('boom before startup')",
+    )
     _prepare_llm_trap_run(
         monkeypatch=monkeypatch,
         tmp_path=tmp_path,
-        adapter_path=adapter_path,
+        generated_root=generated_root,
         payload=_base_payload(),
     )
 
@@ -385,12 +372,15 @@ def test_trap_run_fails_when_adapter_does_not_start_session_before_timeout(
     monkeypatch,
 ) -> None:
     """Surface adapter startup timeout when session id is never published."""
-    adapter_path = tmp_path / "adapter-sleep.py"
-    _write_adapter_sleep(adapter_path, seconds=1.0)
+    generated_root = tmp_path / "adapter" / "generated"
+    _write_generated_adapter(
+        generated_root,
+        handlers_prelude="import time\ntime.sleep(1.0)",
+    )
     _prepare_llm_trap_run(
         monkeypatch=monkeypatch,
         tmp_path=tmp_path,
-        adapter_path=adapter_path,
+        generated_root=generated_root,
         payload=_base_payload(),
     )
     monkeypatch.setattr("opentrap.run_orchestration.SESSION_START_TIMEOUT_SECONDS", 0.1)

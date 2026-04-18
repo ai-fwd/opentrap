@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from adapter.host import UpstreamSpec
+from opentrap.adapter import UpstreamSpec
 
 
 def get_upstreams() -> list[UpstreamSpec]:

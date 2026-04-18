@@ -1,3 +1,5 @@
+# OpenTrap adapter integration tests.
+# Verifies intercept/passthrough/observe with real upstream forwarding and evidence.
 from __future__ import annotations
 
 import json
@@ -99,9 +101,11 @@ def _repo_root() -> Path:
     return Path(__file__).resolve().parents[2]
 
 
-def _write_manifest(path: Path) -> None:
+def _write_manifest(path: Path, *, repo_root: Path, product: str = "default") -> None:
     manifest = {
         "run_id": "integration-run-id",
+        "repo_root": str(repo_root),
+        "product_under_test": product,
         "created_at_utc": "2026-01-01T00:00:00+00:00",
         "requested": "reasoning/chain-trap",
         "status": "armed",
@@ -120,23 +124,24 @@ def _write_manifest(path: Path) -> None:
     path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
 
 
-def _write_temp_adapter(path: Path, *, upstream_base_url: str, observer_marker: Path) -> None:
-    source = f"""
+def _write_generated_adapter(
+    repo_root: Path,
+    *,
+    upstream_base_url: str,
+    observer_marker: Path,
+    product: str = "default",
+) -> None:
+    generated_dir = repo_root / "adapter" / "generated" / product
+    generated_dir.mkdir(parents=True, exist_ok=True)
+
+    handlers_source = f"""
 from __future__ import annotations
 
-import argparse
 import json
-import signal
-import sys
 from pathlib import Path
 
-import uvicorn
 from fastapi.responses import JSONResponse
-
-sys.path.insert(0, {str(_repo_root())!r})
-
-from adapter.host import RequestContext, RouteSpec, UpstreamSpec, create_app
-from http import HTTPMethod
+from opentrap.adapter import RequestContext
 
 
 async def intercept_handler(ctx: RequestContext):
@@ -153,16 +158,19 @@ async def observe_handler(_ctx: RequestContext, snapshot) -> None:
         json.dumps({{"status_code": snapshot.status_code}}) + "\\n",
         encoding="utf-8",
     )
+"""
+
+    routes_source = """
+from __future__ import annotations
+
+from http import HTTPMethod
+
+from handlers import intercept_handler, observe_handler
+from opentrap.adapter import RouteSpec
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--manifest", required=True)
-    parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--port", type=int, default=0)
-    args = parser.parse_args()
-
-    routes = [
+def get_routes() -> list[RouteSpec]:
+    return [
         RouteSpec(
             name="intercept",
             path="/intercept",
@@ -172,11 +180,11 @@ def main() -> int:
         ),
         RouteSpec(
             name="passthrough",
-            path="/passthrough/{{id}}",
+            path="/passthrough/{id}",
             methods=(HTTPMethod.POST,),
             mode="passthrough",
             upstream="origin",
-            upstream_path="/up/{{id}}",
+            upstream_path="/up/{id}",
         ),
         RouteSpec(
             name="observe",
@@ -187,52 +195,26 @@ def main() -> int:
             handler=observe_handler,
         ),
     ]
-    upstreams = [
+"""
+
+    upstreams_source = f"""
+from __future__ import annotations
+
+from opentrap.adapter import UpstreamSpec
+
+
+def get_upstreams() -> list[UpstreamSpec]:
+    return [
         UpstreamSpec(
             name="origin",
             base_url={upstream_base_url!r},
         )
     ]
-
-    app = create_app(
-        manifest_path=Path(args.manifest),
-        routes=routes,
-        upstreams=upstreams,
-    )
-
-    config = uvicorn.Config(
-        app,
-        host=args.host,
-        port=args.port,
-        log_level="warning",
-        access_log=False,
-    )
-    server = uvicorn.Server(config)
-    server.install_signal_handlers = lambda: None
-
-    def _on_stop(_signal_num: int, _frame: object | None) -> None:
-        del _signal_num, _frame
-        server.should_exit = True
-
-    previous_handlers = {{
-        signal.SIGTERM: signal.getsignal(signal.SIGTERM),
-        signal.SIGINT: signal.getsignal(signal.SIGINT),
-    }}
-    signal.signal(signal.SIGTERM, _on_stop)
-    signal.signal(signal.SIGINT, _on_stop)
-    try:
-        server.run()
-    finally:
-        signal.signal(signal.SIGTERM, previous_handlers[signal.SIGTERM])
-        signal.signal(signal.SIGINT, previous_handlers[signal.SIGINT])
-
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
 """
-    path.write_text(textwrap.dedent(source), encoding="utf-8")
+
+    (generated_dir / "handlers.py").write_text(textwrap.dedent(handlers_source), encoding="utf-8")
+    (generated_dir / "routes.py").write_text(textwrap.dedent(routes_source), encoding="utf-8")
+    (generated_dir / "upstreams.py").write_text(textwrap.dedent(upstreams_source), encoding="utf-8")
 
 
 def _wait_for_health(
@@ -271,18 +253,20 @@ def _run_upstream_server(host: str, port: int) -> Iterator[_UpstreamServer]:
 
 
 def test_adapter_process_integrates_route_modes_and_named_upstreams(tmp_path: Path) -> None:
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+
     run_dir = tmp_path / "run"
     run_dir.mkdir()
     manifest_path = run_dir / "run.json"
-    _write_manifest(manifest_path)
+    _write_manifest(manifest_path, repo_root=repo_root)
 
     upstream_port = _find_free_port()
     adapter_port = _find_free_port()
     observer_marker = run_dir / "observe-marker.json"
 
-    adapter_path = tmp_path / "adapter-modes.py"
-    _write_temp_adapter(
-        adapter_path,
+    _write_generated_adapter(
+        repo_root,
         upstream_base_url=f"http://127.0.0.1:{upstream_port}",
         observer_marker=observer_marker,
     )
@@ -291,7 +275,8 @@ def test_adapter_process_integrates_route_modes_and_named_upstreams(tmp_path: Pa
         process = subprocess.Popen(
             [
                 sys.executable,
-                str(adapter_path),
+                "-m",
+                "opentrap.adapter",
                 "--manifest",
                 str(manifest_path),
                 "--host",
@@ -302,6 +287,7 @@ def test_adapter_process_integrates_route_modes_and_named_upstreams(tmp_path: Pa
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            cwd=_repo_root(),
         )
 
         try:

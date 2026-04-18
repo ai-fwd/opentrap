@@ -13,7 +13,7 @@ import time
 from pathlib import Path
 
 from opentrap.config_loader import (
-    AttackConfigError,
+    ConfigError,
     build_initial_config,
     load_attack_config,
     write_attack_config,
@@ -29,7 +29,7 @@ DEFAULT_STATE_DIR = Path(".opentrap")
 DEFAULT_CONFIG_PATH = DEFAULT_STATE_DIR / "opentrap.yaml"
 DEFAULT_SAMPLES_DIR = DEFAULT_STATE_DIR / "samples"
 DEFAULT_DATASET_DIR = DEFAULT_STATE_DIR / "dataset"
-DEFAULT_ADAPTER_ENTRYPOINT = DEFAULT_REPO_ROOT / "adapter" / "main.py"
+DEFAULT_ADAPTER_GENERATED_ROOT = DEFAULT_REPO_ROOT / "adapter" / "generated"
 STATUS_PREFIX = "[opentrap]"
 ADAPTER_TERMINATE_TIMEOUT_SECONDS = 3.0
 
@@ -115,7 +115,7 @@ def cmd_init(_: argparse.Namespace) -> int:
 
     try:
         payload = build_initial_config(shared, registry)
-    except AttackConfigError as exc:
+    except ConfigError as exc:
         print(str(exc), file=sys.stderr)
         return 1
 
@@ -158,7 +158,7 @@ def cmd_trap(args: argparse.Namespace) -> int:
             registry,
             samples_dir=DEFAULT_SAMPLES_DIR,
         )
-    except AttackConfigError as exc:
+    except ConfigError as exc:
         _status(f"Failed during config load: {exc}")
         return 1
 
@@ -166,7 +166,7 @@ def cmd_trap(args: argparse.Namespace) -> int:
         repo_root=DEFAULT_REPO_ROOT,
         runs_dir=DEFAULT_RUNS_DIR,
         dataset_dir=DEFAULT_DATASET_DIR,
-        adapter_entrypoint=DEFAULT_ADAPTER_ENTRYPOINT,
+        adapter_generated_root=DEFAULT_ADAPTER_GENERATED_ROOT,
     )
     try:
         run_ready = run_single_trap(
@@ -176,6 +176,7 @@ def cmd_trap(args: argparse.Namespace) -> int:
             trap_config=loaded.trap_configs[resolved],
             registry=registry,
             environment=environment,
+            product_under_test=loaded.product_under_test,
             status_callback=_status,
         )
     except Exception as exc:  # noqa: BLE001

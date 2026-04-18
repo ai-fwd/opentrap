@@ -1,3 +1,5 @@
+# OpenTrap trap registry tests.
+# Verifies trap discovery, contract loading, and registry validation errors.
 from __future__ import annotations
 
 import textwrap

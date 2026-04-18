@@ -1,22 +1,30 @@
 from __future__ import annotations
 
+import argparse
+import importlib
 import inspect
 import json
+import signal
+import sys
 import time
 import uuid
-from collections.abc import Awaitable, Callable, Iterable, Mapping
-from contextlib import asynccontextmanager
+from collections.abc import Awaitable, Callable, Iterable, Iterator, Mapping
+from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass, field
 from http import HTTPMethod
 from pathlib import Path
+from types import ModuleType
 from typing import Any, Literal, Protocol, cast
 
 import httpx
+import uvicorn
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse
 
 RouteMode = Literal["intercept", "passthrough", "observe"]
 EventEmitter = Callable[[str, Mapping[str, Any]], None]
+STATUS_PREFIX = "[adapter]"
+_GENERATED_MODULE_NAMES = ("handlers", "routes", "upstreams")
 
 
 class RuntimeProtocol(Protocol):
@@ -106,16 +114,21 @@ class _RuntimeMetadata:
     manifest: ManifestView
 
 
+@dataclass(frozen=True)
+class LoadedGeneratedAdapter:
+    product: str
+    generated_dir: Path
+    routes: list[RouteSpec]
+    upstreams: list[UpstreamSpec]
+
+
 class DataItems:
     def __init__(self, *, runtime: RuntimeProtocol, base_dir: Path) -> None:
         self._runtime = runtime
         self._base_dir = base_dir
 
     def list(self) -> tuple[DataItemView, ...]:
-        return tuple(
-            self._coerce_item(item)
-            for item in self._runtime.list_data_items()
-        )
+        return tuple(self._coerce_item(item) for item in self._runtime.list_data_items())
 
     def list_ids(self) -> tuple[str, ...]:
         return tuple(item.id for item in self.list())
@@ -146,11 +159,34 @@ class DataItems:
         return DataItemView(id=item_id, path=self._base_dir / path)
 
 
+def _status(message: str) -> None:
+    print(f"{STATUS_PREFIX} {message}", file=sys.stderr)
+
+
+def _load_manifest_payload(manifest_path: Path) -> dict[str, Any]:
+    payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise RuntimeError("manifest payload must be a JSON object")
+    return payload
+
+
 def _resolve_repo_root(payload: Mapping[str, Any]) -> Path:
     repo_root = payload.get("repo_root")
     if isinstance(repo_root, str) and repo_root.strip():
         return Path(repo_root)
     return Path.cwd()
+
+
+def _resolve_product_under_test(payload: Mapping[str, Any]) -> str:
+    raw_product = payload.get("product_under_test")
+    if raw_product is None:
+        return "default"
+    if not isinstance(raw_product, str) or not raw_product.strip():
+        raise RuntimeError("manifest.product_under_test must be a non-empty string when present")
+    product = raw_product.strip()
+    if product in {".", ".."} or "/" in product or "\\" in product:
+        raise RuntimeError("manifest.product_under_test must not contain path separators")
+    return product
 
 
 def _resolve_manifest_path(path_value: object, *, repo_root: Path) -> Path | None:
@@ -228,9 +264,7 @@ def _load_manifest_view(manifest_path: Path, payload: Mapping[str, Any]) -> Mani
 
 
 def _load_manifest_metadata(manifest_path: Path) -> _RuntimeMetadata:
-    payload = json.loads(manifest_path.read_text(encoding="utf-8"))
-    if not isinstance(payload, dict):
-        raise RuntimeError("manifest payload must be a JSON object")
+    payload = _load_manifest_payload(manifest_path)
 
     run_id = payload.get("run_id")
     if not isinstance(run_id, str) or not run_id:
@@ -240,6 +274,117 @@ def _load_manifest_metadata(manifest_path: Path) -> _RuntimeMetadata:
     trap_ids = tuple(trap.trap_id for trap in manifest.traps)
 
     return _RuntimeMetadata(run_id=run_id, trap_ids=trap_ids, manifest=manifest)
+
+
+def _generated_adapter_dir(manifest_path: Path) -> tuple[str, Path]:
+    payload = _load_manifest_payload(manifest_path)
+    repo_root = _resolve_repo_root(payload)
+    product = _resolve_product_under_test(payload)
+    return product, repo_root / "adapter" / "generated" / product
+
+
+def _require_generated_files(generated_dir: Path) -> None:
+    if not generated_dir.exists() or not generated_dir.is_dir():
+        raise RuntimeError(
+            f"generated adapter directory was not found at {generated_dir}"
+        )
+    for module_name in _GENERATED_MODULE_NAMES:
+        module_path = generated_dir / f"{module_name}.py"
+        if not module_path.exists() or not module_path.is_file():
+            raise RuntimeError(
+                f"generated adapter file was not found: {module_path}"
+            )
+
+
+@contextmanager
+def _generated_import_scope(generated_dir: Path) -> Iterator[None]:
+    previous_path = list(sys.path)
+    previous_modules: dict[str, ModuleType | None] = {
+        name: cast(ModuleType | None, sys.modules.get(name))
+        for name in _GENERATED_MODULE_NAMES
+    }
+
+    try:
+        sys.path.insert(0, str(generated_dir))
+        for module_name in _GENERATED_MODULE_NAMES:
+            sys.modules.pop(module_name, None)
+        importlib.invalidate_caches()
+        yield
+    finally:
+        for module_name, module in previous_modules.items():
+            if module is None:
+                sys.modules.pop(module_name, None)
+            else:
+                sys.modules[module_name] = module
+        sys.path = previous_path
+
+
+def _import_generated_module(module_name: str, generated_dir: Path) -> ModuleType:
+    try:
+        return importlib.import_module(module_name)
+    except Exception as exc:  # noqa: BLE001
+        raise RuntimeError(
+            f"failed to import generated adapter module '{module_name}.py' "
+            f"from {generated_dir}: {exc}"
+        ) from exc
+
+
+def _extract_factory(
+    module: ModuleType,
+    *,
+    module_name: str,
+    factory_name: str,
+) -> Callable[[], object]:
+    factory = getattr(module, factory_name, None)
+    if not callable(factory):
+        raise RuntimeError(
+            f"generated adapter module '{module_name}.py' must define callable {factory_name}()"
+        )
+    return cast(Callable[[], object], factory)
+
+
+def _coerce_routes(value: object) -> list[RouteSpec]:
+    if not isinstance(value, list):
+        raise RuntimeError("generated routes.get_routes() must return a list")
+    for index, item in enumerate(value):
+        if not isinstance(item, RouteSpec):
+            raise RuntimeError(f"generated route at index {index} is not a RouteSpec")
+    return value
+
+
+def _coerce_upstreams(value: object) -> list[UpstreamSpec]:
+    if not isinstance(value, list):
+        raise RuntimeError("generated upstreams.get_upstreams() must return a list")
+    for index, item in enumerate(value):
+        if not isinstance(item, UpstreamSpec):
+            raise RuntimeError(f"generated upstream at index {index} is not an UpstreamSpec")
+    return value
+
+
+def load_generated_adapter(manifest_path: Path) -> LoadedGeneratedAdapter:
+    product, generated_dir = _generated_adapter_dir(manifest_path)
+    _require_generated_files(generated_dir)
+
+    with _generated_import_scope(generated_dir):
+        _import_generated_module("handlers", generated_dir)
+        routes_module = _import_generated_module("routes", generated_dir)
+        upstreams_module = _import_generated_module("upstreams", generated_dir)
+
+    get_routes = _extract_factory(routes_module, module_name="routes", factory_name="get_routes")
+    get_upstreams = _extract_factory(
+        upstreams_module,
+        module_name="upstreams",
+        factory_name="get_upstreams",
+    )
+
+    routes = _coerce_routes(get_routes())
+    upstreams = _coerce_upstreams(get_upstreams())
+    return LoadedGeneratedAdapter(
+        product=product,
+        generated_dir=generated_dir,
+        routes=routes,
+        upstreams=upstreams,
+    )
 
 
 def _build_upstream_map(upstreams: Iterable[UpstreamSpec]) -> dict[str, UpstreamSpec]:
@@ -281,7 +426,8 @@ def _validate_handler_signature(route: RouteSpec) -> None:
 
 
 def _validate_route_specs(
-    routes: Iterable[RouteSpec], upstream_map: Mapping[str, UpstreamSpec]
+    routes: Iterable[RouteSpec],
+    upstream_map: Mapping[str, UpstreamSpec],
 ) -> None:
     for route in routes:
         if not route.name.strip():
@@ -425,18 +571,15 @@ async def _dispatch_route(*, app: FastAPI, request: Request, route: RouteSpec) -
         _event_emitter=cast(EventEmitter, app.state.event_emitter),
     )
 
-    # Scenario: intercept routes are fully owned by generated handler logic.
     if route.mode == "intercept":
         intercept_handler = cast(InterceptHandler, route.handler)
         return await intercept_handler(context)
 
     forwarded_response = await _forward_request(app=app, request=request, route=route)
 
-    # Scenario: passthrough returns upstream response as-is after basic forwarding.
     if route.mode == "passthrough":
         return forwarded_response
 
-    # Scenario: observe routes run side effects after forwarding but never mutate final response.
     observer = cast(ObserveHandler | None, route.handler)
     if observer is not None:
         observer_snapshot = Response(
@@ -545,3 +688,66 @@ def create_app(
         app.add_api_route(route.path, _build_endpoint(route), methods=methods, name=route.name)
 
     return app
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="OpenTrap adapter runtime")
+    parser.add_argument("--manifest", required=True)
+    parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--port", type=int, default=7860)
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+
+    manifest_path = Path(args.manifest)
+    loaded = load_generated_adapter(manifest_path)
+
+    app = create_app(
+        manifest_path=manifest_path,
+        routes=loaded.routes,
+        upstreams=loaded.upstreams,
+    )
+
+    _status(
+        "Host starting on "
+        f"{args.host}:{args.port} for adapter product '{loaded.product}' "
+        f"from {loaded.generated_dir}; waiting for signal"
+    )
+
+    config = uvicorn.Config(
+        app,
+        host=args.host,
+        port=args.port,
+        log_level="warning",
+        access_log=False,
+    )
+    server = uvicorn.Server(config)
+    server.install_signal_handlers = lambda: None
+
+    def _on_stop(_signal_num: int, _frame: object | None) -> None:
+        del _signal_num, _frame
+        _status("Signal received; flushing and finalizing")
+        server.should_exit = True
+
+    previous_handlers = {
+        signal.SIGTERM: signal.getsignal(signal.SIGTERM),
+        signal.SIGINT: signal.getsignal(signal.SIGINT),
+    }
+    signal.signal(signal.SIGTERM, _on_stop)
+    signal.signal(signal.SIGINT, _on_stop)
+
+    exit_code = 0
+    try:
+        server.run()
+    except Exception as exc:  # noqa: BLE001
+        _status(f"Shutdown failure: adapter host failed: {exc}")
+        exit_code = 1
+    finally:
+        signal.signal(signal.SIGTERM, previous_handlers[signal.SIGTERM])
+        signal.signal(signal.SIGINT, previous_handlers[signal.SIGINT])
+        _status("Shutdown complete")
+
+    return exit_code

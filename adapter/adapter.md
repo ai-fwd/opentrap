@@ -8,10 +8,12 @@ The adapter host is HTTP-first. For a non-HTTP app, product, or service, expose 
 
 The product-under-test is out of bounds. Agents should not modify the product or service being tested.
 
-Adapter implementation work should only modify:
-- `adapter/routes.py`
-- `adapter/handlers.py`
-- `adapter/upstreams.py`
+Adapter implementation work should only modify generated output files:
+- `adapter/generated/<product_under_test>/routes.py`
+- `adapter/generated/<product_under_test>/handlers.py`
+- `adapter/generated/<product_under_test>/upstreams.py`
+
+Use `adapter/templates/` as read-only references.
 
 ## Core Concepts
 
@@ -21,15 +23,15 @@ Adapter implementation work should only modify:
 
 ## Upstreams
 
-- Declare every real downstream dependency in `upstreams.py` as a named `UpstreamSpec`.
-- `passthrough` and `observe` routes should point at those named upstreams instead of hardcoding destinations in handlers.
+- Declare every real downstream dependency in generated `upstreams.py` as a named `UpstreamSpec`.
+- `passthrough` and `observe` routes should point at those named upstreams instead of hardcoding destinations in generated handlers.
 - Use `passthrough` when the adapter should preserve the upstream response exactly.
 - Use `observe` when the adapter should preserve the upstream response exactly but also capture evidence about the downstream execution.
 - `intercept` routes do not use an upstream because the adapter owns the response.
 
 ## Authoring Workflow
 
-- Start from `adapter/authoring_worksheet.md` before writing code.
+- Start from `adapter/authoring_worksheet.md` before writing generated code.
 - Complete one worksheet per trap, because route inventory is trap-specific.
 
 - Discover routes from the exercised user task, not by cloning the product’s full API surface.
@@ -37,7 +39,7 @@ Adapter implementation work should only modify:
 - If tests are absent or incomplete, inspect product routers, entrypoints, outbound HTTP - clients, SDK wrappers, and configuration that controls provider or base URL selection.
 - Treat tests as the best evidence of which routes are actually needed, but do not require tests to exist.
 
-- After per-trap review, consolidate the resulting routes and upstreams into the shared adapter files:
+- After per-trap review, consolidate the resulting routes and upstreams into generated files for that product:
   - merge identical routes
   - merge identical upstream declarations
   - keep trap-specific handler logic behind the final consolidated route map
@@ -64,6 +66,25 @@ Adapter implementation work should only modify:
   - `GET /documents/{id}` -> `intercept`
   - `POST /agent/run` -> `observe`
   - `GET /healthz` -> `passthrough`
+
+## OpenTrap Adapter Runtime API
+
+Adapter implementations may only depend on these runtime calls:
+
+- `start_session(manifest_path) -> session_id`
+- `list_data_items() -> list[DataItem]`
+- `get_data_item(item_id) -> DataItem`
+- `emit_event(event_type, payload) -> None`
+- `end_session() -> FinalizeResult`
+
+Rules:
+
+- exactly one active session
+- call start_session once before trap processing
+- call emit_event during processing as needed
+- call end_session once when complete
+- use get_data_item / list_data_items for trap artifacts
+
 
 ## Route Classification Table
 
@@ -95,6 +116,6 @@ Adapter implementation work should only modify:
 - Never hardcode trap file paths; use `ctx.data_items`.
 - `intercept` handlers return product-shaped responses.
 - `observe` handlers must not mutate the forwarded response.
-- `passthrough` routes should rely on named upstream declarations in `upstreams.py`; keep forwarding logic out of handlers.
+- `passthrough` routes should rely on named upstream declarations in generated `upstreams.py`; keep forwarding logic out of generated handlers.
 - Use `request_id` for correlation in adapter-generated errors or logs.
 - Missing trap data should produce controlled 4xx-style responses, not crashes.

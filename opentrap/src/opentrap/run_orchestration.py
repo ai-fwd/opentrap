@@ -33,7 +33,7 @@ class RunEnvironment:
     repo_root: Path
     runs_dir: Path
     dataset_dir: Path
-    adapter_entrypoint: Path
+    adapter_generated_root: Path
 
 
 @dataclass(frozen=True)
@@ -44,18 +44,28 @@ class TrapRunReady:
     adapter_process: subprocess.Popen[Any]
 
 
-def _launch_adapter(manifest_path: Path, environment: RunEnvironment) -> subprocess.Popen[Any]:
-    """Start the adapter process pointing at the given run manifest.
+def _launch_adapter(
+    manifest_path: Path,
+    *,
+    environment: RunEnvironment,
+    product_under_test: str,
+) -> subprocess.Popen[Any]:
+    """Start the adapter runtime process pointing at the given run manifest.
 
     Raises:
-        RuntimeError: Adapter entrypoint script does not exist.
+        RuntimeError: Generated adapter directory for the selected product does not exist.
     """
-    if not environment.adapter_entrypoint.exists():
-        raise RuntimeError(f"adapter entrypoint was not found at {environment.adapter_entrypoint}")
+    generated_dir = environment.adapter_generated_root / product_under_test
+    if not generated_dir.exists() or not generated_dir.is_dir():
+        raise RuntimeError(
+            "generated adapter output was not found at "
+            f"{generated_dir}"
+        )
 
     command = [
         sys.executable,
-        str(environment.adapter_entrypoint),
+        "-m",
+        "opentrap.adapter",
         "--manifest",
         str(manifest_path),
     ]
@@ -128,6 +138,7 @@ def run_single_trap(
     trap_config: Mapping[str, Any],
     registry: Mapping[str, TrapSpec],
     environment: RunEnvironment,
+    product_under_test: str,
     status_callback: StatusCallback,
 ) -> TrapRunReady:
     """Run a single trap and return attached run state when ready.
@@ -144,6 +155,7 @@ def run_single_trap(
     run_manifest: dict[str, Any] = {
         "run_id": run_id,
         "repo_root": str(environment.repo_root.resolve()),
+        "product_under_test": product_under_test,
         "created_at_utc": utc_now_iso(),
         "requested": requested_trap_ref,
         "status": "creating",
@@ -164,7 +176,9 @@ def run_single_trap(
             registry=registry,
             dataset_dir=environment.dataset_dir,
             heartbeat_interval_seconds=STATUS_HEARTBEAT_INTERVAL_SECONDS,
-            on_cache_hit=lambda fingerprint: status_callback(f"Dataset cache hit: {fingerprint[:12]}"),
+            on_cache_hit=lambda fingerprint: status_callback(
+                f"Dataset cache hit: {fingerprint[:12]}"
+            ),
             on_cache_miss=lambda: status_callback("Cache miss; generating dataset..."),
             on_generation_heartbeat=lambda elapsed: status_callback(
                 f"Generating dataset... still working ({int(elapsed)}s)"
@@ -187,9 +201,15 @@ def run_single_trap(
 
     process: subprocess.Popen[Any] | None = None
     try:
-        status_callback(f"Launching adapter: {environment.adapter_entrypoint}")
+        status_callback(
+            f"Launching adapter runtime for product '{product_under_test}'"
+        )
         try:
-            process = _launch_adapter(run_manifest_path, environment)
+            process = _launch_adapter(
+                run_manifest_path,
+                environment=environment,
+                product_under_test=product_under_test,
+            )
         except Exception as exc:  # noqa: BLE001
             raise RuntimeError(f"Failed during adapter launch: {exc}") from exc
 

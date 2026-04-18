@@ -1,3 +1,5 @@
+# OpenTrap config loader tests.
+# Verifies schema validation, defaults, sample loading, and product_under_test handling.
 from __future__ import annotations
 
 from collections.abc import Mapping
@@ -7,7 +9,7 @@ from typing import Any
 import pytest
 import yaml
 
-from opentrap.config_loader import AttackConfigError, load_attack_config
+from opentrap.config_loader import ConfigError, load_attack_config
 from opentrap.trap_contract import SharedConfig, TrapFieldSpec, TrapSpec
 
 
@@ -46,10 +48,52 @@ def test_load_attack_config_applies_trap_defaults(tmp_path: Path) -> None:
 
     assert loaded.shared.seed is None
     assert loaded.shared.samples == ()
+    assert loaded.product_under_test == "default"
     assert loaded.trap_configs["reasoning/chain-trap"] == {
         "temperature": 0.0,
         "base_count": 3,
     }
+
+
+def test_load_attack_config_reads_optional_product_under_test(tmp_path: Path) -> None:
+    payload = {
+        "product_under_test": "acme-client",
+        "shared": {
+            "scenario": "summarize docs",
+            "content_style": "docs",
+            "trap_intent": "rewrite negatives",
+            "seed": None,
+        },
+        "traps": {"reasoning/chain-trap": {}},
+    }
+    config_path = tmp_path / "opentrap.yaml"
+    config_path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
+
+    loaded = load_attack_config(
+        config_path,
+        _registry(),
+        samples_dir=tmp_path / ".opentrap/samples",
+    )
+
+    assert loaded.product_under_test == "acme-client"
+
+
+def test_load_attack_config_rejects_invalid_product_under_test(tmp_path: Path) -> None:
+    payload = {
+        "product_under_test": "nested/path",
+        "shared": {
+            "scenario": "summarize docs",
+            "content_style": "docs",
+            "trap_intent": "rewrite negatives",
+            "seed": None,
+        },
+        "traps": {"reasoning/chain-trap": {}},
+    }
+    config_path = tmp_path / "opentrap.yaml"
+    config_path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
+
+    with pytest.raises(ConfigError, match="product_under_test"):
+        load_attack_config(config_path, _registry(), samples_dir=tmp_path / ".opentrap/samples")
 
 
 def test_load_attack_config_rejects_unknown_trap_id(tmp_path: Path) -> None:
@@ -68,7 +112,7 @@ def test_load_attack_config_rejects_unknown_trap_id(tmp_path: Path) -> None:
     config_path = tmp_path / "opentrap.yaml"
     config_path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
 
-    with pytest.raises(AttackConfigError, match="unknown trap id"):
+    with pytest.raises(ConfigError, match="unknown trap id"):
         load_attack_config(config_path, _registry(), samples_dir=tmp_path / ".opentrap/samples")
 
 
@@ -85,7 +129,7 @@ def test_load_attack_config_rejects_unknown_trap_field(tmp_path: Path) -> None:
     config_path = tmp_path / "opentrap.yaml"
     config_path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
 
-    with pytest.raises(AttackConfigError, match="unknown key"):
+    with pytest.raises(ConfigError, match="unknown key"):
         load_attack_config(config_path, _registry(), samples_dir=tmp_path / ".opentrap/samples")
 
 
@@ -102,7 +146,7 @@ def test_load_attack_config_rejects_invalid_seed(tmp_path: Path) -> None:
     config_path = tmp_path / "opentrap.yaml"
     config_path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
 
-    with pytest.raises(AttackConfigError, match="shared.seed"):
+    with pytest.raises(ConfigError, match="shared.seed"):
         load_attack_config(config_path, _registry(), samples_dir=tmp_path / ".opentrap/samples")
 
 
@@ -119,7 +163,7 @@ def test_load_attack_config_enforces_numeric_range(tmp_path: Path) -> None:
     config_path = tmp_path / "opentrap.yaml"
     config_path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
 
-    with pytest.raises(AttackConfigError, match="<= 1.0"):
+    with pytest.raises(ConfigError, match="<= 1.0"):
         load_attack_config(config_path, _registry(), samples_dir=tmp_path / ".opentrap/samples")
 
 
@@ -137,7 +181,7 @@ def test_load_attack_config_rejects_unknown_top_level_key(tmp_path: Path) -> Non
     config_path = tmp_path / "opentrap.yaml"
     config_path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
 
-    with pytest.raises(AttackConfigError, match="unknown top-level"):
+    with pytest.raises(ConfigError, match="unknown top-level"):
         load_attack_config(config_path, _registry(), samples_dir=tmp_path / ".opentrap/samples")
 
 
@@ -184,5 +228,5 @@ def test_load_attack_config_rejects_non_utf8_sample(tmp_path: Path) -> None:
     config_path = tmp_path / "opentrap.yaml"
     config_path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
 
-    with pytest.raises(AttackConfigError, match="not valid UTF-8"):
+    with pytest.raises(ConfigError, match="not valid UTF-8"):
         load_attack_config(config_path, _registry(), samples_dir=samples_dir)

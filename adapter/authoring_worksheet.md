@@ -1,13 +1,13 @@
 # OpenTrap Adapter Authoring Worksheet
 
-Use this worksheet before writing `routes.py`, `handlers.py`, or upstreams.py.
+Use this worksheet before writing generated `routes.py`, `handlers.py`, or `upstreams.py`.
 
 Complete one worksheet per trap. After all targeted traps have a worksheet, consolidate the shared routes and upstreams into the final adapter files.
 
 The product-under-test is out of bounds. Use this worksheet to decide changes only in:
-- `adapter/routes.py`
-- `adapter/handlers.py`
-- `adapter/upstreams.py`
+- `adapter/generated/<product_under_test>/routes.py`
+- `adapter/generated/<product_under_test>/handlers.py`
+- `adapter/generated/<product_under_test>/upstreams.py`
 
 ## Trap Mapping
 
@@ -58,4 +58,3 @@ The product-under-test is out of bounds. Use this worksheet to decide changes on
 | Route | Mode | Rationale |
 | --- | --- | --- |
 |  |  |  |
-

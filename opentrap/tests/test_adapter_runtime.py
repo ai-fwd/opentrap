@@ -1,3 +1,5 @@
+# OpenTrap adapter runtime unit tests.
+# Verifies route validation, dispatch behavior, and request context/data item access.
 from __future__ import annotations
 
 import json
@@ -7,10 +9,11 @@ from typing import Any
 
 import httpx
 import pytest
-from adapter.host import RequestContext, RouteSpec, UpstreamSpec, create_app
 from fastapi import Request, Response
 from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
+
+from opentrap.adapter import RequestContext, RouteSpec, UpstreamSpec, create_app
 
 
 class FakeRuntime:
@@ -40,8 +43,9 @@ class ItemRuntime(FakeRuntime):
     def __init__(self, *items: object) -> None:
         super().__init__()
         self._items = {
-            getattr(item, "id"): item
+            item.id: item
             for item in items
+            if hasattr(item, "id")
         }
 
     def list_data_items(self) -> list[object]:

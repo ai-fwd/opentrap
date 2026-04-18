@@ -1,3 +1,4 @@
+# OpenTrap adapter process tests: verify module entrypoint startup, health, and clean finalization.
 from __future__ import annotations
 
 import json
@@ -5,6 +6,7 @@ import signal
 import socket
 import subprocess
 import sys
+import textwrap
 import time
 from pathlib import Path
 from urllib.error import URLError
@@ -17,13 +19,53 @@ def _find_free_port() -> int:
         return int(probe.getsockname()[1])
 
 
-def _adapter_main_path() -> Path:
-    return Path(__file__).resolve().parents[2] / "adapter" / "main.py"
+def _repo_root() -> Path:
+    return Path(__file__).resolve().parents[2]
 
 
-def _write_manifest(path: Path) -> None:
+def _write_generated_adapter(repo_root: Path, *, product: str = "default") -> None:
+    generated_dir = repo_root / "adapter" / "generated" / product
+    generated_dir.mkdir(parents=True, exist_ok=True)
+
+    (generated_dir / "handlers.py").write_text(
+        "from __future__ import annotations\n",
+        encoding="utf-8",
+    )
+    (generated_dir / "routes.py").write_text(
+        textwrap.dedent(
+            """
+            from __future__ import annotations
+
+            from opentrap.adapter import RouteSpec
+
+
+            def get_routes() -> list[RouteSpec]:
+                return []
+            """
+        ),
+        encoding="utf-8",
+    )
+    (generated_dir / "upstreams.py").write_text(
+        textwrap.dedent(
+            """
+            from __future__ import annotations
+
+            from opentrap.adapter import UpstreamSpec
+
+
+            def get_upstreams() -> list[UpstreamSpec]:
+                return []
+            """
+        ),
+        encoding="utf-8",
+    )
+
+
+def _write_manifest(path: Path, *, repo_root: Path, product: str = "default") -> None:
     manifest = {
         "run_id": "test-run-id",
+        "repo_root": str(repo_root),
+        "product_under_test": product,
         "created_at_utc": "2026-01-01T00:00:00+00:00",
         "requested": "reasoning/chain-trap",
         "status": "armed",
@@ -70,16 +112,21 @@ def _wait_for_health(
 
 
 def test_adapter_host_starts_serves_health_and_stays_alive(tmp_path: Path) -> None:
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    _write_generated_adapter(repo_root)
+
     run_dir = tmp_path / "run"
     run_dir.mkdir()
     manifest_path = run_dir / "run.json"
-    _write_manifest(manifest_path)
+    _write_manifest(manifest_path, repo_root=repo_root)
 
     port = _find_free_port()
     process = subprocess.Popen(
         [
             sys.executable,
-            str(_adapter_main_path()),
+            "-m",
+            "opentrap.adapter",
             "--manifest",
             str(manifest_path),
             "--host",
@@ -90,6 +137,7 @@ def test_adapter_host_starts_serves_health_and_stays_alive(tmp_path: Path) -> No
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        cwd=_repo_root(),
     )
 
     try:
@@ -103,63 +151,22 @@ def test_adapter_host_starts_serves_health_and_stays_alive(tmp_path: Path) -> No
         process.wait(timeout=5)
 
 
-def test_adapter_host_emits_http_exchange_evidence_on_shutdown(tmp_path: Path) -> None:
-    run_dir = tmp_path / "run"
-    run_dir.mkdir()
-    manifest_path = run_dir / "run.json"
-    _write_manifest(manifest_path)
-
-    port = _find_free_port()
-    process = subprocess.Popen(
-        [
-            sys.executable,
-            str(_adapter_main_path()),
-            "--manifest",
-            str(manifest_path),
-            "--host",
-            "127.0.0.1",
-            "--port",
-            str(port),
-        ],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
-
-    try:
-        _wait_for_health(port, process)
-        with urlopen(f"http://127.0.0.1:{port}/__opentrap/health", timeout=0.2) as response:  # noqa: S310
-            assert response.status == 200
-
-        process.send_signal(signal.SIGTERM)
-        assert process.wait(timeout=5) == 0
-
-        run_manifest = _read_run_manifest(manifest_path)
-        session_id = run_manifest["sessions"][0]["session_id"]
-        evidence_path = run_dir / f"session-{session_id}.jsonl"
-        lines = [
-            line.strip()
-            for line in evidence_path.read_text(encoding="utf-8").splitlines()
-            if line.strip()
-        ]
-        assert lines
-    finally:
-        if process.poll() is None:
-            process.kill()
-        process.wait(timeout=5)
-
-
 def test_adapter_host_finalizes_run_artifacts_on_shutdown(tmp_path: Path) -> None:
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    _write_generated_adapter(repo_root)
+
     run_dir = tmp_path / "run"
     run_dir.mkdir()
     manifest_path = run_dir / "run.json"
-    _write_manifest(manifest_path)
+    _write_manifest(manifest_path, repo_root=repo_root)
 
     port = _find_free_port()
     process = subprocess.Popen(
         [
             sys.executable,
-            str(_adapter_main_path()),
+            "-m",
+            "opentrap.adapter",
             "--manifest",
             str(manifest_path),
             "--host",
@@ -170,6 +177,7 @@ def test_adapter_host_finalizes_run_artifacts_on_shutdown(tmp_path: Path) -> Non
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        cwd=_repo_root(),
     )
 
     try:

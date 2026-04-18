@@ -1,3 +1,5 @@
+# OpenTrap runtime API tests.
+# Verifies session lifecycle, data item resolution, event emission, and finalization artifacts.
 from __future__ import annotations
 
 import json

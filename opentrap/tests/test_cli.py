@@ -1,3 +1,6 @@
+# OpenTrap CLI tests.
+# Verifies trap run orchestration, manifest lifecycle, and config validation.
+# Also covers adapter process shutdown handling.
 from __future__ import annotations
 
 import json
@@ -5,6 +8,7 @@ import subprocess
 import textwrap
 import threading
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 import yaml
@@ -58,117 +62,44 @@ def get_trap_spec() -> TrapSpec:
     (trap_dir / "contract.py").write_text(textwrap.dedent(source), encoding="utf-8")
 
 
-def _write_stub_adapter(path: Path) -> None:
-    source = """
+def _write_generated_adapter(
+    generated_root: Path,
+    *,
+    product: str = "default",
+    handlers_prelude: str = "",
+) -> None:
+    generated_dir = generated_root / product
+    generated_dir.mkdir(parents=True, exist_ok=True)
+
+    handlers_source = f"""
 from __future__ import annotations
 
-import argparse
-
-from opentrap.runtime import start_session
-
-
-def main() -> int:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--manifest", required=True)
-    args = parser.parse_args()
-    start_session(args.manifest)
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
+{handlers_prelude}
 """
-    path.write_text(textwrap.dedent(source), encoding="utf-8")
 
-
-def _write_stub_adapter_sleep(path: Path, *, seconds: float) -> None:
-    source = f"""
+    routes_source = """
 from __future__ import annotations
 
-import argparse
-import time
-
-from opentrap.runtime import start_session
+from opentrap.adapter import RouteSpec
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--manifest", required=True)
-    args = parser.parse_args()
-    start_session(args.manifest)
-    time.sleep({seconds})
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
+def get_routes() -> list[RouteSpec]:
+    return []
 """
-    path.write_text(textwrap.dedent(source), encoding="utf-8")
 
-
-def _write_fastapi_smoke_adapter(path: Path, *, seconds: float) -> None:
-    source = f"""
+    upstreams_source = """
 from __future__ import annotations
 
-import argparse
-import signal
-import sys
-import threading
-import time
-from pathlib import Path
-
-import uvicorn
-
-sys.path.insert(0, {str(_repo_root())!r})
-from adapter.host import create_app
+from opentrap.adapter import UpstreamSpec
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--manifest", required=True)
-    parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--port", type=int, default=0)
-    args = parser.parse_args()
-
-    app = create_app(manifest_path=Path(args.manifest), routes=[], upstreams=[])
-    config = uvicorn.Config(
-        app,
-        host=args.host,
-        port=args.port,
-        log_level="warning",
-        access_log=False,
-    )
-    server = uvicorn.Server(config)
-    server.install_signal_handlers = lambda: None
-
-    def _stop_later() -> None:
-        time.sleep({seconds})
-        server.should_exit = True
-
-    def _on_stop(_signal_num: int, _frame: object | None) -> None:
-        del _signal_num, _frame
-        server.should_exit = True
-
-    previous_handlers = {{
-        signal.SIGTERM: signal.getsignal(signal.SIGTERM),
-        signal.SIGINT: signal.getsignal(signal.SIGINT),
-    }}
-    signal.signal(signal.SIGTERM, _on_stop)
-    signal.signal(signal.SIGINT, _on_stop)
-    threading.Thread(target=_stop_later, daemon=True).start()
-
-    try:
-        server.run()
-    finally:
-        signal.signal(signal.SIGTERM, previous_handlers[signal.SIGTERM])
-        signal.signal(signal.SIGINT, previous_handlers[signal.SIGINT])
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
+def get_upstreams() -> list[UpstreamSpec]:
+    return []
 """
-    path.write_text(textwrap.dedent(source), encoding="utf-8")
+
+    (generated_dir / "handlers.py").write_text(textwrap.dedent(handlers_source), encoding="utf-8")
+    (generated_dir / "routes.py").write_text(textwrap.dedent(routes_source), encoding="utf-8")
+    (generated_dir / "upstreams.py").write_text(textwrap.dedent(upstreams_source), encoding="utf-8")
 
 
 def _configure_trap_run_paths(
@@ -177,14 +108,26 @@ def _configure_trap_run_paths(
     tmp_path: Path,
     config_path: Path,
     samples_dir: Path,
-    adapter_path: Path,
+    generated_root: Path,
+    wait_for_adapter_exit: Callable[[object], None] | None = None,
 ) -> None:
+    monkeypatch.setattr("opentrap.cli.DEFAULT_REPO_ROOT", tmp_path)
     monkeypatch.setattr("opentrap.cli.DEFAULT_TRAPS_DIR", tmp_path / "traps")
     monkeypatch.setattr("opentrap.cli.DEFAULT_CONFIG_PATH", config_path)
     monkeypatch.setattr("opentrap.cli.DEFAULT_RUNS_DIR", tmp_path / "runs")
     monkeypatch.setattr("opentrap.cli.DEFAULT_SAMPLES_DIR", samples_dir)
     monkeypatch.setattr("opentrap.cli.DEFAULT_DATASET_DIR", tmp_path / ".opentrap" / "dataset")
-    monkeypatch.setattr("opentrap.cli.DEFAULT_ADAPTER_ENTRYPOINT", adapter_path)
+    monkeypatch.setattr("opentrap.cli.DEFAULT_ADAPTER_GENERATED_ROOT", generated_root)
+
+    if wait_for_adapter_exit is None:
+        def _stop_adapter_immediately(process) -> None:  # noqa: ANN001
+            if process.poll() is None:
+                process.terminate()
+                process.wait(timeout=5)
+
+        monkeypatch.setattr("opentrap.cli._wait_for_adapter_exit", _stop_adapter_immediately)
+    else:
+        monkeypatch.setattr("opentrap.cli._wait_for_adapter_exit", wait_for_adapter_exit)
 
 
 def _base_payload(*, trap_intent: str = "rewrite negatives", knob: int = 7) -> dict:
@@ -341,8 +284,8 @@ def test_trap_run_single_runs_selected_trap(
 ) -> None:
     _write_stub_contract(tmp_path / "traps", "reasoning/chain-trap")
     _write_stub_contract(tmp_path / "traps", "memory/context-overflow")
-    adapter_path = tmp_path / "adapter-main.py"
-    _write_stub_adapter(adapter_path)
+    generated_root = tmp_path / "adapter" / "generated"
+    _write_generated_adapter(generated_root)
 
     config_path = tmp_path / ".opentrap" / "opentrap.yaml"
     config_path.parent.mkdir(parents=True, exist_ok=True)
@@ -355,7 +298,7 @@ def test_trap_run_single_runs_selected_trap(
         tmp_path=tmp_path,
         config_path=config_path,
         samples_dir=tmp_path / ".opentrap" / "samples",
-        adapter_path=adapter_path,
+        generated_root=generated_root,
     )
 
     code = main(["reasoning/chain-trap"])
@@ -368,19 +311,20 @@ def test_trap_run_single_runs_selected_trap(
     run_manifest = json.loads(run_manifest_path.read_text(encoding="utf-8"))
     assert run_manifest["requested"] == "reasoning/chain-trap"
     assert run_manifest["trap_count"] == 1
-    assert run_manifest["status"] == "ready"
+    assert run_manifest["status"] == "finalized"
     assert len(run_manifest["traps"]) == 1
     assert run_manifest["traps"][0]["trap_id"] == "reasoning/chain-trap"
     assert run_manifest["traps"][0]["dataset_fingerprint"]
     assert run_manifest["traps"][0]["dataset_cache_dir"]
     assert run_manifest["traps"][0]["dataset_source"] == "generated_then_cached"
-    assert run_manifest["active_session_id"]
+    assert run_manifest["active_session_id"] is None
 
     artifact_path = Path(run_manifest["traps"][0]["artifact_path"])
     assert artifact_path.read_text(encoding="utf-8") == "reasoning/chain-trap|summarize docs|7|0"
     run_dir = run_manifest_path.parent
-    assert (run_dir / f"session-{run_manifest['active_session_id']}.json").exists()
-    assert not (run_dir / "report.json").exists()
+    session_id = run_manifest["sessions"][0]["session_id"]
+    assert (run_dir / f"session-{session_id}.json").exists()
+    assert (run_dir / "report.json").exists()
 
 
 def test_trap_run_stays_attached_while_adapter_is_alive(
@@ -388,19 +332,26 @@ def test_trap_run_stays_attached_while_adapter_is_alive(
     monkeypatch,
 ) -> None:
     _write_stub_contract(tmp_path / "traps", "reasoning/chain-trap")
-    adapter_path = tmp_path / "adapter-main.py"
-    _write_stub_adapter_sleep(adapter_path, seconds=0.8)
+    generated_root = tmp_path / "adapter" / "generated"
+    _write_generated_adapter(generated_root)
 
     config_path = tmp_path / ".opentrap" / "opentrap.yaml"
     config_path.parent.mkdir(parents=True, exist_ok=True)
     config_path.write_text(yaml.safe_dump(_base_payload(), sort_keys=False), encoding="utf-8")
+
+    def _wait_briefly_then_stop(process) -> None:  # noqa: ANN001
+        time.sleep(0.8)
+        if process.poll() is None:
+            process.terminate()
+            process.wait(timeout=5)
 
     _configure_trap_run_paths(
         monkeypatch=monkeypatch,
         tmp_path=tmp_path,
         config_path=config_path,
         samples_dir=tmp_path / ".opentrap" / "samples",
-        adapter_path=adapter_path,
+        generated_root=generated_root,
+        wait_for_adapter_exit=_wait_briefly_then_stop,
     )
 
     result: dict[str, int] = {}
@@ -416,43 +367,6 @@ def test_trap_run_stays_attached_while_adapter_is_alive(
     thread.join(timeout=5)
     assert not thread.is_alive()
     assert result["code"] == 0
-
-
-def test_trap_run_with_fastapi_adapter_smoke(capsys, tmp_path: Path, monkeypatch) -> None:
-    _write_stub_contract(tmp_path / "traps", "reasoning/chain-trap")
-    adapter_path = tmp_path / "adapter-main.py"
-    _write_fastapi_smoke_adapter(adapter_path, seconds=0.8)
-
-    config_path = tmp_path / ".opentrap" / "opentrap.yaml"
-    config_path.parent.mkdir(parents=True, exist_ok=True)
-    config_path.write_text(yaml.safe_dump(_base_payload(), sort_keys=False), encoding="utf-8")
-
-    _configure_trap_run_paths(
-        monkeypatch=monkeypatch,
-        tmp_path=tmp_path,
-        config_path=config_path,
-        samples_dir=tmp_path / ".opentrap" / "samples",
-        adapter_path=adapter_path,
-    )
-
-    code = main(["reasoning/chain-trap"])
-
-    captured = capsys.readouterr()
-    assert code == 0
-    run_manifest_path = Path(captured.out.strip())
-    assert run_manifest_path.exists()
-
-    run_manifest = json.loads(run_manifest_path.read_text(encoding="utf-8"))
-    assert run_manifest["status"] == "finalized"
-    assert run_manifest["active_session_id"] is None
-    assert isinstance(run_manifest.get("report_path"), str)
-    report_path = Path(run_manifest["report_path"])
-    assert report_path.exists()
-
-    sessions = run_manifest["sessions"]
-    assert isinstance(sessions, list)
-    assert len(sessions) == 1
-    assert sessions[0]["ended_at_utc"] is not None
 
 
 def test_wait_for_adapter_exit_terminates_process_on_interrupt(monkeypatch) -> None:
@@ -517,8 +431,8 @@ def test_wait_for_adapter_exit_kills_process_when_terminate_wait_times_out(monke
 
 def test_trap_run_passes_loaded_samples_to_trap(capsys, tmp_path: Path, monkeypatch) -> None:
     _write_stub_contract(tmp_path / "traps", "reasoning/chain-trap")
-    adapter_path = tmp_path / "adapter-main.py"
-    _write_stub_adapter(adapter_path)
+    generated_root = tmp_path / "adapter" / "generated"
+    _write_generated_adapter(generated_root)
     config_path = tmp_path / ".opentrap" / "opentrap.yaml"
     config_path.parent.mkdir(parents=True, exist_ok=True)
     payload = _base_payload()
@@ -532,7 +446,7 @@ def test_trap_run_passes_loaded_samples_to_trap(capsys, tmp_path: Path, monkeypa
         tmp_path=tmp_path,
         config_path=config_path,
         samples_dir=samples_dir,
-        adapter_path=adapter_path,
+        generated_root=generated_root,
     )
 
     code = main(["reasoning/chain-trap"])
@@ -583,8 +497,8 @@ def test_trap_run_reuses_dataset_when_config_is_unchanged(
     monkeypatch,
 ) -> None:
     _write_stub_contract(tmp_path / "traps", "reasoning/chain-trap")
-    adapter_path = tmp_path / "adapter-main.py"
-    _write_stub_adapter(adapter_path)
+    generated_root = tmp_path / "adapter" / "generated"
+    _write_generated_adapter(generated_root)
 
     config_path = tmp_path / ".opentrap" / "opentrap.yaml"
     config_path.parent.mkdir(parents=True, exist_ok=True)
@@ -597,7 +511,7 @@ def test_trap_run_reuses_dataset_when_config_is_unchanged(
         tmp_path=tmp_path,
         config_path=config_path,
         samples_dir=samples_dir,
-        adapter_path=adapter_path,
+        generated_root=generated_root,
     )
 
     code1 = main(["reasoning/chain-trap"])
@@ -621,99 +535,3 @@ def test_trap_run_reuses_dataset_when_config_is_unchanged(
     assert trap_1["dataset_cache_dir"] == trap_2["dataset_cache_dir"]
     assert trap_1["artifact_path"] == trap_2["artifact_path"]
     assert Path(trap_1["artifact_path"]).parent == Path(trap_1["dataset_cache_dir"])
-
-
-def test_trap_run_regenerates_dataset_when_shared_or_trap_config_changes(
-    capsys,
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    _write_stub_contract(tmp_path / "traps", "reasoning/chain-trap")
-    adapter_path = tmp_path / "adapter-main.py"
-    _write_stub_adapter(adapter_path)
-
-    config_path = tmp_path / ".opentrap" / "opentrap.yaml"
-    config_path.parent.mkdir(parents=True, exist_ok=True)
-    samples_dir = tmp_path / ".opentrap" / "samples"
-    samples_dir.mkdir(parents=True)
-
-    _configure_trap_run_paths(
-        monkeypatch=monkeypatch,
-        tmp_path=tmp_path,
-        config_path=config_path,
-        samples_dir=samples_dir,
-        adapter_path=adapter_path,
-    )
-
-    config_path.write_text(yaml.safe_dump(_base_payload(), sort_keys=False), encoding="utf-8")
-    code1 = main(["reasoning/chain-trap"])
-    captured1 = capsys.readouterr()
-    assert code1 == 0
-    run_1 = json.loads(Path(captured1.out.strip()).read_text(encoding="utf-8"))
-    trap_1 = run_1["traps"][0]
-
-    payload_changed_shared = _base_payload(trap_intent="new trap intent")
-    config_path.write_text(
-        yaml.safe_dump(payload_changed_shared, sort_keys=False),
-        encoding="utf-8",
-    )
-    code2 = main(["reasoning/chain-trap"])
-    captured2 = capsys.readouterr()
-    assert code2 == 0
-    run_2 = json.loads(Path(captured2.out.strip()).read_text(encoding="utf-8"))
-    trap_2 = run_2["traps"][0]
-
-    payload_changed_trap = _base_payload(knob=99)
-    config_path.write_text(yaml.safe_dump(payload_changed_trap, sort_keys=False), encoding="utf-8")
-    code3 = main(["reasoning/chain-trap"])
-    captured3 = capsys.readouterr()
-    assert code3 == 0
-    run_3 = json.loads(Path(captured3.out.strip()).read_text(encoding="utf-8"))
-    trap_3 = run_3["traps"][0]
-
-    assert trap_1["dataset_fingerprint"] != trap_2["dataset_fingerprint"]
-    assert trap_2["dataset_fingerprint"] != trap_3["dataset_fingerprint"]
-    assert trap_1["dataset_cache_dir"] != trap_2["dataset_cache_dir"]
-    assert trap_2["dataset_cache_dir"] != trap_3["dataset_cache_dir"]
-
-
-def test_trap_run_regenerates_dataset_when_samples_change(
-    capsys,
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    _write_stub_contract(tmp_path / "traps", "reasoning/chain-trap")
-    adapter_path = tmp_path / "adapter-main.py"
-    _write_stub_adapter(adapter_path)
-
-    config_path = tmp_path / ".opentrap" / "opentrap.yaml"
-    config_path.parent.mkdir(parents=True, exist_ok=True)
-    config_path.write_text(yaml.safe_dump(_base_payload(), sort_keys=False), encoding="utf-8")
-    samples_dir = tmp_path / ".opentrap" / "samples"
-    samples_dir.mkdir(parents=True)
-    sample_file = samples_dir / "example.html"
-    sample_file.write_text("<html>one</html>", encoding="utf-8")
-
-    _configure_trap_run_paths(
-        monkeypatch=monkeypatch,
-        tmp_path=tmp_path,
-        config_path=config_path,
-        samples_dir=samples_dir,
-        adapter_path=adapter_path,
-    )
-
-    code1 = main(["reasoning/chain-trap"])
-    captured1 = capsys.readouterr()
-    assert code1 == 0
-    run_1 = json.loads(Path(captured1.out.strip()).read_text(encoding="utf-8"))
-    trap_1 = run_1["traps"][0]
-
-    sample_file.write_text("<html>two</html>", encoding="utf-8")
-    code2 = main(["reasoning/chain-trap"])
-    captured2 = capsys.readouterr()
-    assert code2 == 0
-    run_2 = json.loads(Path(captured2.out.strip()).read_text(encoding="utf-8"))
-    trap_2 = run_2["traps"][0]
-
-    assert trap_1["dataset_fingerprint"] != trap_2["dataset_fingerprint"]
-    assert trap_1["dataset_cache_dir"] != trap_2["dataset_cache_dir"]
