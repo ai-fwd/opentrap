@@ -221,3 +221,20 @@ def test_load_generated_adapter_fails_when_intercept_handler_is_missing(tmp_path
 
     with pytest.raises(RuntimeError, match="missing required handler"):
         load_generated_adapter(manifest_path)
+
+
+def test_runtime_module_reexports_expected_public_symbols() -> None:
+    import opentrap.adapter.runtime as runtime_module
+
+    expected_names = (
+        "create_app",
+        "load_generated_adapter",
+        "build_parser",
+        "main",
+        "RequestContext",
+        "RouteSpec",
+        "UpstreamSpec",
+        "DataItems",
+    )
+    for name in expected_names:
+        assert hasattr(runtime_module, name)
