@@ -9,9 +9,12 @@ The adapter host is HTTP-first. For a non-HTTP app, product, or service, expose 
 The product-under-test is out of bounds. Agents should not modify the product or service being tested.
 
 Adapter implementation work should only modify generated output files:
-- `adapter/generated/default/routes.py`
+- `adapter/generated/default/adapter.yaml`
 - `adapter/generated/default/handlers.py`
-- `adapter/generated/default/upstreams.py`
+
+Generated `adapter.yaml` shape:
+- `upstreams`: mapping of `upstream_key: base_url`
+- `routes`: list of route declarations with `name`, `path`, `methods`, `mode`, optional `upstream`, optional `upstream_path`
 
 Use `adapter/templates/` as read-only references.
 
@@ -23,8 +26,8 @@ Use `adapter/templates/` as read-only references.
 
 ## Upstreams
 
-- Declare every real downstream dependency in generated `upstreams.py` as a named `UpstreamSpec`.
-- `passthrough` and `observe` routes should point at those named upstreams instead of hardcoding destinations in generated handlers.
+- Declare every real downstream dependency in generated `adapter.yaml` under the `upstreams` mapping.
+- `passthrough` and `observe` routes should point at those named upstream keys instead of hardcoding destinations in generated handlers.
 - Use `passthrough` when the adapter should preserve the upstream response exactly.
 - Use `observe` when the adapter should preserve the upstream response exactly but also capture evidence about the downstream execution.
 - `intercept` routes do not use an upstream because the adapter owns the response.
@@ -40,10 +43,10 @@ Use `adapter/templates/` as read-only references.
 - If tests are absent or incomplete, inspect product routers, entrypoints, outbound HTTP - clients, SDK wrappers, and configuration that controls provider or base URL selection.
 - Treat tests as the best evidence of which routes are actually needed, but do not require tests to exist.
 
-- After per-trap review, consolidate the resulting routes and upstreams into generated files for that product:
+- After per-trap review, consolidate the resulting routes and upstreams into `adapter.yaml` for that product:
   - merge identical routes
   - merge identical upstream declarations
-  - keep trap-specific handler logic behind the final consolidated route map
+- keep trap-specific handler logic in `handlers.py` behind the final consolidated route map
 - Inventory the real user task end to end before defining routes.
 - Identify the product's:
   - content ingress routes
@@ -107,6 +110,6 @@ Rules:
 - Never hardcode trap file paths; use `ctx.data_items`.
 - `intercept` handlers return product-shaped responses.
 - `observe` handlers must not mutate the forwarded response.
-- `passthrough` routes should rely on named upstream declarations in generated `upstreams.py`; keep forwarding logic out of generated handlers.
+- `passthrough` routes should rely on named upstream declarations in generated `adapter.yaml`; keep forwarding logic out of generated handlers.
 - Use `request_id` for correlation in adapter-generated errors or logs.
 - Missing trap data should produce controlled 4xx-style responses, not crashes.

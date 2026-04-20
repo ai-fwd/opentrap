@@ -1,9 +1,17 @@
 """Generated route handlers live in this module.
 
-Add async intercept handlers as:
-    async def name(ctx: RequestContext) -> Response: ...
+Naming convention:
+- intercept handlers: `intercept_<route_name_normalized>`
+- observe handlers: `observe_<route_name_normalized>`
 
-Add async observe handlers as:
-    async def name(ctx: RequestContext, snapshot: Response) -> None: ...
+Examples:
+    async def intercept_load_document(ctx: RequestContext) -> Response: ...
+    async def observe_agent_run(ctx: RequestContext, snapshot: Response) -> None: ...
+
+Helpful RequestContext methods:
+- ctx.path_param(name, required=True)
+- await ctx.json_body()
+- await ctx.body_text()
+- await ctx.body_bytes()
 """
 from __future__ import annotations

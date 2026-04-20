@@ -9,7 +9,7 @@ from typing import Any
 
 import httpx
 import pytest
-from fastapi import Request, Response
+from fastapi import HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
 
@@ -536,3 +536,114 @@ def test_request_context_emit_event_allows_custom_evidence(tmp_path: Path) -> No
     assert len(custom_events) == 1
     assert custom_events[0]["path"] == "/emit-event"
     assert custom_events[0]["request_id"]
+
+
+def test_request_context_helper_methods_parse_path_and_body(tmp_path: Path) -> None:
+    runtime = FakeRuntime()
+    manifest_path = tmp_path / "run.json"
+    _write_manifest(manifest_path)
+
+    async def intercept_handler(ctx: RequestContext) -> Response:
+        item_id = ctx.path_param("item_id")
+        missing = ctx.path_param("missing", required=False)
+        body_text = await ctx.body_text()
+        body_bytes = await ctx.body_bytes()
+        return JSONResponse(
+            {
+                "item_id": item_id,
+                "missing": missing,
+                "body_text": body_text,
+                "body_size": len(body_bytes),
+            }
+        )
+
+    app = create_app(
+        manifest_path=manifest_path,
+        routes=[
+            RouteSpec(
+                name="helpers",
+                path="/helpers/{item_id}",
+                methods=(HTTPMethod.POST,),
+                mode="intercept",
+                handler=intercept_handler,
+            )
+        ],
+        upstreams=[],
+        runtime=runtime,
+    )
+
+    with TestClient(app) as client:
+        response = client.post("/helpers/abc", content=b"hello")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "item_id": "abc",
+        "missing": None,
+        "body_text": "hello",
+        "body_size": 5,
+    }
+
+
+def test_request_context_json_body_invalid_uses_http_exception_handler(tmp_path: Path) -> None:
+    runtime = FakeRuntime()
+    manifest_path = tmp_path / "run.json"
+    _write_manifest(manifest_path)
+
+    async def intercept_handler(ctx: RequestContext) -> Response:
+        await ctx.json_body()
+        return JSONResponse({"ok": True})
+
+    app = create_app(
+        manifest_path=manifest_path,
+        routes=[
+            RouteSpec(
+                name="json-body",
+                path="/json-body",
+                methods=(HTTPMethod.POST,),
+                mode="intercept",
+                handler=intercept_handler,
+            )
+        ],
+        upstreams=[],
+        runtime=runtime,
+    )
+
+    with TestClient(app) as client:
+        response = client.post("/json-body", content="not-json")
+
+    assert response.status_code == 400
+    payload = response.json()
+    assert payload["error"] == "Request body must be valid JSON"
+    assert payload["request_id"]
+
+
+def test_http_exception_handler_includes_request_id(tmp_path: Path) -> None:
+    runtime = FakeRuntime()
+    manifest_path = tmp_path / "run.json"
+    _write_manifest(manifest_path)
+
+    async def intercept_handler(_ctx: RequestContext) -> Response:
+        raise HTTPException(status_code=418, detail="teapot")
+
+    app = create_app(
+        manifest_path=manifest_path,
+        routes=[
+            RouteSpec(
+                name="teapot",
+                path="/teapot",
+                methods=(HTTPMethod.GET,),
+                mode="intercept",
+                handler=intercept_handler,
+            )
+        ],
+        upstreams=[],
+        runtime=runtime,
+    )
+
+    with TestClient(app) as client:
+        response = client.get("/teapot")
+
+    assert response.status_code == 418
+    payload = response.json()
+    assert payload["error"] == "teapot"
+    assert payload["request_id"]

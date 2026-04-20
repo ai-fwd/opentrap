@@ -66,29 +66,8 @@ from __future__ import annotations
 {handlers_prelude}
 """
 
-    routes_source = """
-from __future__ import annotations
-
-from opentrap.adapter import RouteSpec
-
-
-def get_routes() -> list[RouteSpec]:
-    return []
-"""
-
-    upstreams_source = """
-from __future__ import annotations
-
-from opentrap.adapter import UpstreamSpec
-
-
-def get_upstreams() -> list[UpstreamSpec]:
-    return []
-"""
-
     (generated_dir / "handlers.py").write_text(textwrap.dedent(handlers_source), encoding="utf-8")
-    (generated_dir / "routes.py").write_text(textwrap.dedent(routes_source), encoding="utf-8")
-    (generated_dir / "upstreams.py").write_text(textwrap.dedent(upstreams_source), encoding="utf-8")
+    (generated_dir / "adapter.yaml").write_text("routes: []\nupstreams: {}\n", encoding="utf-8")
 
 
 def _configure_cli_paths(

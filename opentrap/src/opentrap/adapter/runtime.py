@@ -4,6 +4,7 @@ import argparse
 import importlib
 import inspect
 import json
+import re
 import signal
 import sys
 import time
@@ -18,13 +19,16 @@ from typing import Any, Literal, Protocol, cast
 
 import httpx
 import uvicorn
-from fastapi import FastAPI, Request, Response
+import yaml
+from fastapi import APIRouter, FastAPI, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 
 RouteMode = Literal["intercept", "passthrough", "observe"]
 EventEmitter = Callable[[str, Mapping[str, Any]], None]
 STATUS_PREFIX = "[adapter]"
-_GENERATED_MODULE_NAMES = ("handlers", "routes", "upstreams")
+_GENERATED_MODULE_NAMES = ("handlers",)
+_GENERATED_REQUIRED_FILES = ("handlers.py", "adapter.yaml")
+_ROUTE_NAME_PATTERN = re.compile(r"[^a-z0-9]+")
 
 
 class RuntimeProtocol(Protocol):
@@ -53,6 +57,31 @@ class _DefaultRuntime:
 class UpstreamSpec:
     name: str
     base_url: str
+
+
+class UpstreamRegistry:
+    def __init__(self) -> None:
+        self._items: dict[str, UpstreamSpec] = {}
+
+    def add(self, *, name: str, base_url: str) -> None:
+        normalized_name = name.strip()
+        if not normalized_name:
+            raise RuntimeError("upstream name cannot be empty")
+
+        normalized_base_url = base_url.strip()
+        if not normalized_base_url:
+            raise RuntimeError(f"upstream '{normalized_name}' base_url cannot be empty")
+
+        if normalized_name in self._items:
+            raise RuntimeError(f"duplicate upstream name: {normalized_name}")
+
+        self._items[normalized_name] = UpstreamSpec(
+            name=normalized_name,
+            base_url=normalized_base_url,
+        )
+
+    def list(self) -> list[UpstreamSpec]:
+        return list(self._items.values())
 
 
 @dataclass(frozen=True)
@@ -90,6 +119,30 @@ class RequestContext:
 
     def emit_event(self, event_type: str, payload: Mapping[str, Any]) -> None:
         self._event_emitter(event_type, payload)
+
+    def path_param(self, name: str, *, required: bool = True) -> str | None:
+        value = self.request.path_params.get(name)
+        if value is None:
+            if required:
+                raise HTTPException(status_code=400, detail=f"Missing path parameter: {name}")
+            return None
+
+        if isinstance(value, str):
+            return value
+
+        return str(value)
+
+    async def json_body(self) -> object:
+        try:
+            return await self.request.json()
+        except json.JSONDecodeError as exc:
+            raise HTTPException(status_code=400, detail="Request body must be valid JSON") from exc
+
+    async def body_bytes(self) -> bytes:
+        return await self.request.body()
+
+    async def body_text(self, *, encoding: str = "utf-8") -> str:
+        return (await self.body_bytes()).decode(encoding=encoding, errors="replace")
 
 
 InterceptHandler = Callable[[RequestContext], Awaitable[Response]]
@@ -288,11 +341,12 @@ def _require_generated_files(generated_dir: Path) -> None:
         raise RuntimeError(
             f"generated adapter directory was not found at {generated_dir}"
         )
-    for module_name in _GENERATED_MODULE_NAMES:
-        module_path = generated_dir / f"{module_name}.py"
-        if not module_path.exists() or not module_path.is_file():
+
+    for filename in _GENERATED_REQUIRED_FILES:
+        file_path = generated_dir / filename
+        if not file_path.exists() or not file_path.is_file():
             raise RuntimeError(
-                f"generated adapter file was not found: {module_path}"
+                f"generated adapter file was not found: {file_path}"
             )
 
 
@@ -329,36 +383,166 @@ def _import_generated_module(module_name: str, generated_dir: Path) -> ModuleTyp
         ) from exc
 
 
-def _extract_factory(
-    module: ModuleType,
+def _load_adapter_config_payload(config_path: Path) -> dict[str, Any]:
+    payload = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise RuntimeError("generated adapter config 'adapter.yaml' must be a mapping")
+    return payload
+
+
+def _normalize_route_name(name: str) -> str:
+    normalized = _ROUTE_NAME_PATTERN.sub("_", name.strip().lower()).strip("_")
+    if not normalized:
+        raise RuntimeError(f"route name '{name}' cannot be normalized to a handler suffix")
+    return normalized
+
+
+def _coerce_string_field(*, value: object, field_name: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise RuntimeError(f"generated adapter route '{field_name}' must be a non-empty string")
+    return value.strip()
+
+
+def _coerce_route_mode(value: object) -> RouteMode:
+    if not isinstance(value, str):
+        raise RuntimeError("generated adapter route 'mode' must be a string")
+
+    mode = value.strip().lower()
+    if mode not in {"intercept", "passthrough", "observe"}:
+        raise RuntimeError(f"generated adapter route has unsupported mode: {value}")
+    return cast(RouteMode, mode)
+
+
+def _coerce_http_methods(*, route_name: str, value: object) -> tuple[HTTPMethod, ...]:
+    if not isinstance(value, list) or not value:
+        raise RuntimeError(f"route '{route_name}' methods must be a non-empty list")
+
+    methods: list[HTTPMethod] = []
+    for raw_method in value:
+        if not isinstance(raw_method, str) or not raw_method.strip():
+            raise RuntimeError(f"route '{route_name}' has invalid HTTP method: {raw_method!r}")
+
+        method_value = raw_method.strip().upper()
+        try:
+            methods.append(HTTPMethod(method_value))
+        except ValueError as exc:
+            raise RuntimeError(
+                f"route '{route_name}' has unsupported HTTP method: {raw_method}"
+            ) from exc
+
+    return tuple(methods)
+
+
+def _resolve_route_handler(
     *,
-    module_name: str,
-    factory_name: str,
-) -> Callable[[], object]:
-    factory = getattr(module, factory_name, None)
-    if not callable(factory):
-        raise RuntimeError(
-            f"generated adapter module '{module_name}.py' must define callable {factory_name}()"
+    handlers_module: ModuleType,
+    route: RouteSpec,
+) -> InterceptHandler | ObserveHandler | None:
+    normalized_name = _normalize_route_name(route.name)
+
+    if route.mode == "passthrough":
+        return None
+
+    if route.mode == "intercept":
+        handler_name = f"intercept_{normalized_name}"
+        handler = getattr(handlers_module, handler_name, None)
+        if handler is None:
+            raise RuntimeError(
+                "generated handlers.py is missing required handler "
+                f"'{handler_name}' for route '{route.name}'"
+            )
+        return cast(InterceptHandler, handler)
+
+    handler_name = f"observe_{normalized_name}"
+    observer = getattr(handlers_module, handler_name, None)
+    if observer is None:
+        return None
+    return cast(ObserveHandler, observer)
+
+
+def _build_upstreams_from_config(value: object) -> list[UpstreamSpec]:
+    if not isinstance(value, dict):
+        raise RuntimeError("generated adapter config field 'upstreams' must be a mapping")
+
+    registry = UpstreamRegistry()
+    for key, raw_base_url in value.items():
+        if not isinstance(key, str):
+            raise RuntimeError("generated adapter upstream keys must be strings")
+        if not isinstance(raw_base_url, str):
+            raise RuntimeError(f"upstream '{key}' value must be a string URL")
+        registry.add(name=key, base_url=raw_base_url)
+
+    return registry.list()
+
+
+def _build_routes_from_config(
+    value: object,
+    *,
+    handlers_module: ModuleType,
+) -> list[RouteSpec]:
+    if not isinstance(value, list):
+        raise RuntimeError("generated adapter config field 'routes' must be a list")
+
+    routes: list[RouteSpec] = []
+    for raw_route in value:
+        if not isinstance(raw_route, dict):
+            raise RuntimeError("generated adapter route entries must be mappings")
+
+        name = _coerce_string_field(value=raw_route.get("name"), field_name="name")
+        path = _coerce_string_field(value=raw_route.get("path"), field_name="path")
+        mode = _coerce_route_mode(raw_route.get("mode"))
+        methods = _coerce_http_methods(route_name=name, value=raw_route.get("methods"))
+
+        raw_upstream = raw_route.get("upstream")
+        upstream: str | None
+        if raw_upstream is None:
+            upstream = None
+        elif isinstance(raw_upstream, str) and raw_upstream.strip():
+            upstream = raw_upstream.strip()
+        else:
+            raise RuntimeError(f"route '{name}' upstream must be a non-empty string when provided")
+
+        raw_upstream_path = raw_route.get("upstream_path")
+        upstream_path: str | None
+        if raw_upstream_path is None:
+            upstream_path = None
+        elif isinstance(raw_upstream_path, str) and raw_upstream_path.strip():
+            upstream_path = raw_upstream_path.strip()
+        else:
+            raise RuntimeError(f"route '{name}' upstream_path must be a non-empty string")
+
+        if mode == "intercept" and upstream is not None:
+            raise RuntimeError(f"route '{name}' in intercept mode must not declare upstream")
+        if mode in {"passthrough", "observe"} and upstream is None:
+            raise RuntimeError(f"route '{name}' in {mode} mode requires upstream")
+
+        route_without_handler = RouteSpec(
+            name=name,
+            path=path,
+            methods=methods,
+            mode=mode,
+            upstream=upstream,
+            handler=None,
+            upstream_path=upstream_path,
         )
-    return cast(Callable[[], object], factory)
 
+        handler = _resolve_route_handler(
+            handlers_module=handlers_module,
+            route=route_without_handler,
+        )
+        routes.append(
+            RouteSpec(
+                name=name,
+                path=path,
+                methods=methods,
+                mode=mode,
+                upstream=upstream,
+                handler=handler,
+                upstream_path=upstream_path,
+            )
+        )
 
-def _coerce_routes(value: object) -> list[RouteSpec]:
-    if not isinstance(value, list):
-        raise RuntimeError("generated routes.get_routes() must return a list")
-    for index, item in enumerate(value):
-        if not isinstance(item, RouteSpec):
-            raise RuntimeError(f"generated route at index {index} is not a RouteSpec")
-    return value
-
-
-def _coerce_upstreams(value: object) -> list[UpstreamSpec]:
-    if not isinstance(value, list):
-        raise RuntimeError("generated upstreams.get_upstreams() must return a list")
-    for index, item in enumerate(value):
-        if not isinstance(item, UpstreamSpec):
-            raise RuntimeError(f"generated upstream at index {index} is not an UpstreamSpec")
-    return value
+    return routes
 
 
 def load_generated_adapter(manifest_path: Path) -> LoadedGeneratedAdapter:
@@ -366,19 +550,24 @@ def load_generated_adapter(manifest_path: Path) -> LoadedGeneratedAdapter:
     _require_generated_files(generated_dir)
 
     with _generated_import_scope(generated_dir):
-        _import_generated_module("handlers", generated_dir)
-        routes_module = _import_generated_module("routes", generated_dir)
-        upstreams_module = _import_generated_module("upstreams", generated_dir)
+        handlers_module = _import_generated_module("handlers", generated_dir)
 
-    get_routes = _extract_factory(routes_module, module_name="routes", factory_name="get_routes")
-    get_upstreams = _extract_factory(
-        upstreams_module,
-        module_name="upstreams",
-        factory_name="get_upstreams",
-    )
+    config_path = generated_dir / "adapter.yaml"
+    config_payload = _load_adapter_config_payload(config_path)
 
-    routes = _coerce_routes(get_routes())
-    upstreams = _coerce_upstreams(get_upstreams())
+    routes_value = config_payload.get("routes")
+    if routes_value is None:
+        raise RuntimeError("generated adapter config missing required 'routes' section")
+
+    upstreams_value = config_payload.get("upstreams")
+    if upstreams_value is None:
+        raise RuntimeError("generated adapter config missing required 'upstreams' section")
+
+    upstreams = _build_upstreams_from_config(upstreams_value)
+    routes = _build_routes_from_config(routes_value, handlers_module=handlers_module)
+    upstream_map = _build_upstream_map(upstreams)
+    _validate_route_specs(routes, upstream_map)
+
     return LoadedGeneratedAdapter(
         product=product,
         generated_dir=generated_dir,
@@ -668,14 +857,40 @@ def create_app(
         )
         return response
 
+    @app.exception_handler(HTTPException)
+    async def http_exception_handler(request: Request, exc: HTTPException) -> JSONResponse:
+        request_id = cast(str | None, getattr(request.state, "request_id", None))
+
+        detail = exc.detail
+        if isinstance(detail, str):
+            payload: dict[str, Any] = {"error": detail}
+        elif isinstance(detail, Mapping):
+            payload = dict(detail)
+        else:
+            payload = {"error": "Request failed"}
+
+        if request_id is not None and "request_id" not in payload:
+            payload["request_id"] = request_id
+
+        return JSONResponse(
+            status_code=exc.status_code,
+            content=payload,
+            headers=exc.headers,
+        )
+
     @app.exception_handler(Exception)
-    async def unhandled_exception_handler(_request: Request, _exc: Exception) -> JSONResponse:
-        return JSONResponse(status_code=500, content={"error": "Unexpected adapter error"})
+    async def unhandled_exception_handler(request: Request, _exc: Exception) -> JSONResponse:
+        payload = {"error": "Unexpected adapter error"}
+        request_id = cast(str | None, getattr(request.state, "request_id", None))
+        if request_id is not None:
+            payload["request_id"] = request_id
+        return JSONResponse(status_code=500, content=payload)
 
     @app.get("/__opentrap/health")
     async def opentrap_health() -> dict[str, object]:
         return {"ok": True, "trap_ids": list(metadata.trap_ids)}
 
+    router = APIRouter()
     for route in routes:
         methods = [method.value for method in route.methods]
 
@@ -685,8 +900,9 @@ def create_app(
 
             return endpoint
 
-        app.add_api_route(route.path, _build_endpoint(route), methods=methods, name=route.name)
+        router.add_api_route(route.path, _build_endpoint(route), methods=methods, name=route.name)
 
+    app.include_router(router)
     return app
 
 

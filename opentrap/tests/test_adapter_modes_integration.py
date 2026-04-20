@@ -144,7 +144,7 @@ from fastapi.responses import JSONResponse
 from opentrap.adapter import RequestContext
 
 
-async def intercept_handler(ctx: RequestContext):
+async def intercept_intercept(ctx: RequestContext):
     payload = {{
         "route": "intercept",
         "session_id": ctx.session_id,
@@ -152,7 +152,7 @@ async def intercept_handler(ctx: RequestContext):
     return JSONResponse(payload)
 
 
-async def observe_handler(_ctx: RequestContext, snapshot) -> None:
+async def observe_observe(_ctx: RequestContext, snapshot) -> None:
     marker = Path({str(observer_marker)!r})
     marker.write_text(
         json.dumps({{"status_code": snapshot.status_code}}) + "\\n",
@@ -160,61 +160,29 @@ async def observe_handler(_ctx: RequestContext, snapshot) -> None:
     )
 """
 
-    routes_source = """
-from __future__ import annotations
-
-from http import HTTPMethod
-
-from handlers import intercept_handler, observe_handler
-from opentrap.adapter import RouteSpec
-
-
-def get_routes() -> list[RouteSpec]:
-    return [
-        RouteSpec(
-            name="intercept",
-            path="/intercept",
-            methods=(HTTPMethod.GET,),
-            mode="intercept",
-            handler=intercept_handler,
-        ),
-        RouteSpec(
-            name="passthrough",
-            path="/passthrough/{id}",
-            methods=(HTTPMethod.POST,),
-            mode="passthrough",
-            upstream="origin",
-            upstream_path="/up/{id}",
-        ),
-        RouteSpec(
-            name="observe",
-            path="/observe",
-            methods=(HTTPMethod.GET,),
-            mode="observe",
-            upstream="origin",
-            handler=observe_handler,
-        ),
-    ]
-"""
-
-    upstreams_source = f"""
-from __future__ import annotations
-
-from opentrap.adapter import UpstreamSpec
-
-
-def get_upstreams() -> list[UpstreamSpec]:
-    return [
-        UpstreamSpec(
-            name="origin",
-            base_url={upstream_base_url!r},
-        )
-    ]
+    adapter_yaml = f"""
+routes:
+  - name: intercept
+    path: /intercept
+    methods: [GET]
+    mode: intercept
+  - name: passthrough
+    path: /passthrough/{{id}}
+    methods: [POST]
+    mode: passthrough
+    upstream: origin
+    upstream_path: /up/{{id}}
+  - name: observe
+    path: /observe
+    methods: [GET]
+    mode: observe
+    upstream: origin
+upstreams:
+  origin: "{upstream_base_url}"
 """
 
     (generated_dir / "handlers.py").write_text(textwrap.dedent(handlers_source), encoding="utf-8")
-    (generated_dir / "routes.py").write_text(textwrap.dedent(routes_source), encoding="utf-8")
-    (generated_dir / "upstreams.py").write_text(textwrap.dedent(upstreams_source), encoding="utf-8")
+    (generated_dir / "adapter.yaml").write_text(textwrap.dedent(adapter_yaml), encoding="utf-8")
 
 
 def _wait_for_health(
