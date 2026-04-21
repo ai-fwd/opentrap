@@ -2,20 +2,16 @@ import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { parse } from "dotenv";
 
-let hasLoadedLayeredEnv = false;
+let hasLoadedProjectEnv = false;
 
-export function loadLayeredEnv(): void {
-  if (hasLoadedLayeredEnv) return;
-  hasLoadedLayeredEnv = true;
+export function loadProjectEnv(): void {
+  if (hasLoadedProjectEnv) return;
+  hasLoadedProjectEnv = true;
 
   const projectRoot = resolveProjectRoot();
-  const repoRoot = resolve(projectRoot, "..");
-
-  const shared = readEnv(resolve(repoRoot, ".env.shared"));
   const local = readEnv(resolve(projectRoot, ".env"));
 
   Object.assign(process.env, {
-    ...shared,
     ...local,
     ...process.env,
   });

@@ -23,20 +23,13 @@ def load_layered_env() -> None:
         return
 
     project_root = _find_project_root()
-
-    shared = {
-        k: v
-        for k, v in dotenv_values(project_root / ".env.shared").items()
-        if v is not None
-    }
     local = {
         k: v
-        for k, v in dotenv_values(project_root / ".env").items()
+        for k, v in dotenv_values(project_root / "opentrap" / ".env").items()
         if v is not None
     }
 
     merged = {
-        **shared,
         **local,
         **os.environ,
     }

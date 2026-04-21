@@ -28,22 +28,12 @@ uv run opentrap list
 # List traps in one target
 uv run opentrap list --target reasoning
 
-# Initialize shared + trap-specific config
+# Initialize project + trap-specific config
 uv run opentrap init
 
 # Run a single trap by target/name
 uv run opentrap perception/prompt_injection_via_html
 ```
-
-## Shared Environment
-
-Use a shared root env file for cross-project OpenAI settings:
-
-```bash
-cp .env.shared.example .env.shared
-```
-
-Project-specific `.env` files can override shared values.
 
 ## Sample Boundaries
 

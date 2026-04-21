@@ -1,10 +1,10 @@
 import { join, normalize } from "node:path";
 
-import { loadLayeredEnv } from "./lib/env";
+import { loadProjectEnv } from "./lib/env";
 import { handleApiRequest } from "./routes/api";
 import { handleUpstreamRequest } from "./routes/upstream";
 
-loadLayeredEnv();
+loadProjectEnv();
 
 const port = Number(process.env.PORT ?? "3000");
 const webDistDir = join(process.cwd(), "web", "dist");

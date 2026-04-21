@@ -32,9 +32,7 @@ bun install
 2. Configure env
 
 ```bash
-cp ../.env.shared.example ../.env.shared
 cp .env.example .env
-# set OPENAI_API_KEY in ../.env.shared (or override in .env)
 ```
 
 3. Run dev
@@ -68,8 +66,7 @@ Notes:
 
 ## Environment Variables
 
-- Shared: `../.env.shared` (loaded first)
-- Project: `./.env` (loaded second; overrides shared file values)
+- Project: `./.env`
 - `OPENAI_API_KEY` required
 - `OPENAI_MODEL` optional (default `gpt-4.1-mini`)
 - `OPENAI_URL` optional base URL (default `https://api.openai.com`; app uses `${OPENAI_URL}/v1/responses`)

@@ -1,5 +1,5 @@
 import { EMAIL_ASSISTANT_SYSTEM_PROMPT } from "./prompt";
-import { loadLayeredEnv } from "./env";
+import { loadProjectEnv } from "./env";
 
 interface RunAssistantTaskInput {
   prompt: string;
@@ -14,12 +14,12 @@ const DEFAULT_MODEL = "gpt-4.1-mini";
 const DEFAULT_OPENAI_URL = "https://api.openai.com";
 
 export async function runAssistantTask(input: RunAssistantTaskInput): Promise<RunAssistantTaskResult> {
-  loadLayeredEnv();
+  loadProjectEnv();
 
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) {
     throw new Error(
-      "OPENAI_API_KEY is not set. Add it to your environment, .env.shared, or project .env file.",
+      "OPENAI_API_KEY is not set. Add it to your environment or acme-client/.env file.",
     );
   }
 
