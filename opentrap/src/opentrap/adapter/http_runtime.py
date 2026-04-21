@@ -173,6 +173,7 @@ async def _forward_request(*, app: FastAPI, request: Request, route: RouteSpec) 
         url=target_url,
         content=raw_body,
         headers=_filtered_request_headers(request),
+        timeout=None,
     )
 
     return Response(
