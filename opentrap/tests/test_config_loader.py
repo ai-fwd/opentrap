@@ -13,20 +13,33 @@ from opentrap.config_loader import ConfigError, load_attack_config
 from opentrap.trap_contract import SharedConfig, TrapFieldSpec, TrapSpec
 
 
-def _noop_run(_shared: SharedConfig, _trap: Mapping[str, Any], output_base: Path) -> Path:
-    return output_base
+class Trap(
+    TrapSpec[Mapping[str, Any], Mapping[str, Any], Mapping[str, Any], Mapping[str, Any]]
+):
+    trap_id = ""
+    fields = {
+        "temperature": TrapFieldSpec(type="number", default=0.0, min=0.0, max=1.0),
+        "base_count": TrapFieldSpec(type="integer", default=3, min=1),
+    }
+
+    def generate(
+        self,
+        _shared: SharedConfig,
+        _trap: Mapping[str, Any],
+        output_base: Path,
+    ) -> Path:
+        return output_base
+
+    def run(self, context: Mapping[str, Any]) -> Mapping[str, Any]:
+        return dict(context)
+
+    def evaluate(self, context: Mapping[str, Any]) -> Mapping[str, Any]:
+        return dict(context)
 
 
 def _registry() -> dict[str, TrapSpec]:
     return {
-        "reasoning/chain-trap": TrapSpec(
-            trap_id="reasoning/chain-trap",
-            fields={
-                "temperature": TrapFieldSpec(type="number", default=0.0, min=0.0, max=1.0),
-                "base_count": TrapFieldSpec(type="integer", default=3, min=1),
-            },
-            run=_noop_run,
-        )
+        "reasoning/chain-trap": Trap(),
     }
 
 

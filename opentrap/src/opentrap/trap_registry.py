@@ -53,11 +53,11 @@ def _prepend_sys_path(path: Path):
         sys.path[:] = original
 
 
-def _load_contract_module(contract_path: Path):
-    module_name = f"opentrap_dynamic_contract_{abs(hash(str(contract_path.resolve())))}"
-    spec = importlib.util.spec_from_file_location(module_name, contract_path)
+def _load_trap_module(module_path: Path):
+    module_name = f"opentrap_dynamic_trap_{abs(hash(str(module_path.resolve())))}"
+    spec = importlib.util.spec_from_file_location(module_name, module_path)
     if spec is None or spec.loader is None:
-        raise RuntimeError(f"failed to load module spec from {contract_path}")
+        raise RuntimeError(f"failed to load module spec from {module_path}")
     module = importlib.util.module_from_spec(spec)
     sys.modules[module_name] = module
     spec.loader.exec_module(module)
@@ -69,31 +69,33 @@ def build_trap_registry(traps_dir: Path) -> dict[str, TrapSpec]:
     registry: dict[str, TrapSpec] = {}
 
     for trap_id, trap_dir in discover_trap_candidates(traps_dir):
-        contract_path = trap_dir / "contract.py"
-        if not contract_path.exists():
-            errors.append(f"{trap_id}: missing contract.py")
+        trap_path = trap_dir / "trap.py"
+        if not trap_path.exists():
+            errors.append(f"{trap_id}: missing trap.py")
             continue
 
         try:
             with _prepend_sys_path(trap_dir):
-                module = _load_contract_module(contract_path)
-            get_trap_spec = getattr(module, "get_trap_spec", None)
-            if not callable(get_trap_spec):
-                raise RuntimeError("contract.py must define callable get_trap_spec()")
-            spec = get_trap_spec()
+                module = _load_trap_module(trap_path)
         except Exception as exc:  # noqa: BLE001
-            errors.append(f"{trap_id}: failed to load contract ({exc})")
+            errors.append(f"{trap_id}: Trap() failed during import ({exc})")
             continue
 
-        if not isinstance(spec, TrapSpec):
-            errors.append(f"{trap_id}: get_trap_spec() must return TrapSpec")
+        trap_class = getattr(module, "Trap", None)
+        if trap_class is None or not isinstance(trap_class, type):
+            errors.append(f"{trap_id}: trap.py must define class Trap")
+            continue
+        if not issubclass(trap_class, TrapSpec):
+            errors.append(f"{trap_id}: Trap must inherit TrapSpec")
             continue
 
-        if spec.trap_id != trap_id:
-            errors.append(
-                f"{trap_id}: trap_id mismatch in contract (got '{spec.trap_id}')"
-            )
+        try:
+            spec = trap_class()
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"{trap_id}: Trap() failed ({exc})")
             continue
+
+        spec.trap_id = trap_id
 
         registry[trap_id] = spec
 

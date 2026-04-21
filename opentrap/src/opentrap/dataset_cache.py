@@ -308,7 +308,11 @@ def resolve_cached_dataset(
         if on_cache_miss is not None:
             on_cache_miss()
         generated_artifact = _run_generation_with_heartbeat(
-            generate=lambda: registry[trap_id].run(shared, dict(trap_config), output_base),
+            generate=lambda: registry[trap_id].generate(
+                shared,
+                dict(trap_config),
+                output_base,
+            ),
             heartbeat_interval_seconds=heartbeat_interval_seconds,
             on_generation_heartbeat=on_generation_heartbeat,
         )

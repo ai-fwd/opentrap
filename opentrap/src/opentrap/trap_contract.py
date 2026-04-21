@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from abc import ABC, abstractmethod
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Generic, Literal, TypeVar
 
 FieldType = Literal["string", "integer", "number", "boolean"]
 MISSING_DEFAULT = object()
@@ -39,11 +40,29 @@ class TrapFieldSpec:
         return self.default is not MISSING_DEFAULT
 
 
-TrapRunFn = Callable[[SharedConfig, Mapping[str, Any], Path], Path]
+RunContextT = TypeVar("RunContextT")
+ActionsT = TypeVar("ActionsT")
+EvalContextT = TypeVar("EvalContextT")
+EvalResultT = TypeVar("EvalResultT")
 
 
-@dataclass(frozen=True)
-class TrapSpec:
+class TrapSpec(ABC, Generic[RunContextT, ActionsT, EvalContextT, EvalResultT]):
     trap_id: str
     fields: Mapping[str, TrapFieldSpec]
-    run: TrapRunFn
+
+    @abstractmethod
+    def generate(
+        self,
+        shared_config: SharedConfig,
+        trap_config: Mapping[str, Any],
+        output_base: Path,
+    ) -> Path:
+        """Generate trap artifact data and return the produced file/directory path."""
+
+    @abstractmethod
+    def run(self, context: RunContextT) -> ActionsT:
+        """Bind runtime context and return trap actions consumed by adapter handlers."""
+
+    @abstractmethod
+    def evaluate(self, context: EvalContextT) -> EvalResultT:
+        """Evaluate one finalized run/session context and return trap-specific scoring output."""

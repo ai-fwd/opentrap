@@ -35,31 +35,38 @@ from typing import Any, Mapping
 from opentrap.trap_contract import SharedConfig, TrapFieldSpec, TrapSpec
 
 
-def _run(shared_config: SharedConfig, trap_config: Mapping[str, Any], output_base: Path) -> Path:
-    output_base.mkdir(parents=True, exist_ok=True)
-    artifact_path = output_base / "artifact.txt"
-    artifact_path.write_text(
-        "{trap_id}|"
-        + shared_config.scenario
-        + "|"
-        + str(trap_config["knob"])
-        + "|"
-        + str(len(shared_config.samples)),
-        encoding="utf-8",
-    )
-    return artifact_path
+class Trap(TrapSpec[Mapping[str, Any], Mapping[str, Any], Mapping[str, Any], Mapping[str, Any]]):
+    trap_id = ""
+    fields = {{
+        "knob": TrapFieldSpec(type="integer", default=1, min=1),
+    }}
 
+    def generate(
+        self,
+        shared_config: SharedConfig,
+        trap_config: Mapping[str, Any],
+        output_base: Path,
+    ) -> Path:
+        output_base.mkdir(parents=True, exist_ok=True)
+        artifact_path = output_base / "artifact.txt"
+        artifact_path.write_text(
+            "{trap_id}|"
+            + shared_config.scenario
+            + "|"
+            + str(trap_config["knob"])
+            + "|"
+            + str(len(shared_config.samples)),
+            encoding="utf-8",
+        )
+        return artifact_path
 
-def get_trap_spec() -> TrapSpec:
-    return TrapSpec(
-        trap_id="{trap_id}",
-        fields={{
-            "knob": TrapFieldSpec(type="integer", default=1, min=1),
-        }},
-        run=_run,
-    )
+    def run(self, context: Mapping[str, Any]) -> Mapping[str, Any]:
+        return dict(context)
+
+    def evaluate(self, context: Mapping[str, Any]) -> Mapping[str, Any]:
+        return {{"score": 0.0, "context": dict(context)}}
 """
-    (trap_dir / "contract.py").write_text(textwrap.dedent(source), encoding="utf-8")
+    (trap_dir / "trap.py").write_text(textwrap.dedent(source), encoding="utf-8")
 
 
 def _write_generated_adapter(
@@ -169,7 +176,7 @@ def test_list_fails_when_discovered_trap_has_no_contract(
 
     captured = capsys.readouterr()
     assert code == 1
-    assert "missing contract.py" in captured.err
+    assert "missing trap.py" in captured.err
     assert "memory/context-overflow" in captured.err
 
 
