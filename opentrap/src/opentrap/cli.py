@@ -10,17 +10,18 @@ import argparse
 import subprocess
 import sys
 import time
+from collections.abc import Mapping
 from pathlib import Path
 
 from opentrap.config_loader import (
     ConfigError,
-    build_initial_config,
-    load_attack_config,
-    write_attack_config,
+    build_initial_trap_config,
+    load_trap_config,
+    write_trap_config,
 )
 from opentrap.run_orchestration import RunEnvironment, run_single_trap
-from opentrap.trap_contract import SharedConfig, TrapSpec
-from opentrap.trap_registry import TrapRegistryError, build_trap_registry
+from opentrap.trap_contract import SharedConfig, TrapFieldSpec
+from opentrap.trap_registry import TrapRegistry, TrapRegistryError, build_trap_registry
 
 DEFAULT_TRAPS_DIR = Path(__file__).resolve().parents[1] / "traps"
 DEFAULT_REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -54,7 +55,7 @@ def _resolve_trap_ref(trap_ref: str) -> str:
     return f"{target}/{trap_name}"
 
 
-def _load_registry() -> dict[str, TrapSpec] | None:
+def _load_registry() -> TrapRegistry | None:
     """Load trap registry and render discovery/contract errors for CLI callers."""
     try:
         return build_trap_registry(DEFAULT_TRAPS_DIR)
@@ -90,7 +91,7 @@ def cmd_list(args: argparse.Namespace) -> int:
     if registry is None:
         return 1
 
-    traps = sorted(registry)
+    traps = list(registry.trap_ids)
     if args.target:
         prefix = f"{args.target.strip().lower()}/"
         traps = [trap_id for trap_id in traps if trap_id.lower().startswith(prefix)]
@@ -114,13 +115,17 @@ def cmd_init(_: argparse.Namespace) -> int:
     )
 
     try:
-        payload = build_initial_config(shared, registry)
-    except ConfigError as exc:
+        trap_fields = {
+            trap_id: registry.load_trap_fields(trap_id)
+            for trap_id in registry.trap_ids
+        }
+        payload = build_initial_trap_config(shared, trap_fields)
+    except (ConfigError, TrapRegistryError) as exc:
         print(str(exc), file=sys.stderr)
         return 1
 
     DEFAULT_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-    write_attack_config(DEFAULT_CONFIG_PATH, payload)
+    write_trap_config(DEFAULT_CONFIG_PATH, payload)
     DEFAULT_SAMPLES_DIR.mkdir(parents=True, exist_ok=True)
     print(f"Created config file: {DEFAULT_CONFIG_PATH}")
     print(f"Created samples directory: {DEFAULT_SAMPLES_DIR}")
@@ -147,19 +152,34 @@ def cmd_trap(args: argparse.Namespace) -> int:
     except ValueError as exc:
         _status(f"Failed during trap validation: {exc}")
         return 1
-    if resolved not in registry:
+    if not registry.has_trap(resolved):
         _status(f"Failed during trap validation: trap '{resolved}' was not found")
+        return 1
+
+    try:
+        trap_fields: dict[str, Mapping[str, TrapFieldSpec]] = {
+            trap_id: registry.load_trap_fields(trap_id)
+            for trap_id in registry.trap_ids
+        }
+    except TrapRegistryError as exc:
+        _status(f"Failed during trap validation: {exc}")
         return 1
 
     _status(f"Loading config: {DEFAULT_CONFIG_PATH}")
     try:
-        loaded = load_attack_config(
+        loaded = load_trap_config(
             DEFAULT_CONFIG_PATH,
-            registry,
+            trap_fields,
             samples_dir=DEFAULT_SAMPLES_DIR,
         )
     except ConfigError as exc:
         _status(f"Failed during config load: {exc}")
+        return 1
+
+    try:
+        selected_trap = registry.create_trap(resolved)
+    except TrapRegistryError as exc:
+        _status(f"Failed during trap initialization: {exc}")
         return 1
 
     environment = RunEnvironment(
@@ -174,7 +194,7 @@ def cmd_trap(args: argparse.Namespace) -> int:
             requested_trap_ref=trap_ref,
             shared=loaded.shared,
             trap_config=loaded.trap_configs[resolved],
-            registry=registry,
+            registry={resolved: selected_trap},
             environment=environment,
             product_under_test=loaded.product_under_test,
             status_callback=_status,

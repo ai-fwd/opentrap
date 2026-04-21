@@ -278,18 +278,28 @@ def test_run_generation_uses_injected_generator(tmp_path: Path) -> None:
     ]
 
 
-def test_trap_constructor_does_not_load_llm_config(monkeypatch) -> None:
+def test_trap_constructor_loads_llm_config_once_without_injection(monkeypatch) -> None:
     trap_module = _load_module("trap.py", "prompt_injection_via_html_trap_ctor")
-    calls = {"load_count": 0}
+    calls = {"load_count": 0, "llm_generator_init_count": 0}
 
     def _fake_load_llm_config_from_env():
         calls["load_count"] += 1
         return object()
 
+    class _FakeLLMHTMLGenerator:
+        def __init__(self, _cfg: object) -> None:
+            calls["llm_generator_init_count"] += 1
+
+        def generate(self, **kwargs):  # noqa: ANN003
+            del kwargs
+            return "<!DOCTYPE html><html><body>x</body></html>"
+
     monkeypatch.setattr(trap_module, "load_llm_config_from_env", _fake_load_llm_config_from_env)
+    monkeypatch.setattr(trap_module, "LLMHTMLGenerator", _FakeLLMHTMLGenerator)
 
     trap_module.Trap()
-    assert calls["load_count"] == 0
+    assert calls["load_count"] == 1
+    assert calls["llm_generator_init_count"] == 1
 
 
 def test_trap_generate_uses_injected_dataset_generator(monkeypatch, tmp_path: Path) -> None:

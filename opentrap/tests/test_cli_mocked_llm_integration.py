@@ -122,6 +122,12 @@ def _install_fake_openai(monkeypatch) -> None:
     monkeypatch.setitem(sys.modules, "openai", fake_module)
 
 
+def _install_empty_dotenv(monkeypatch) -> None:
+    fake_dotenv = types.ModuleType("dotenv")
+    fake_dotenv.dotenv_values = lambda _path: {}
+    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+
+
 def _read_trap_entry(run_manifest_path: Path) -> dict:
     """Load first trap entry from a run manifest file."""
     run_manifest = json.loads(run_manifest_path.read_text(encoding="utf-8"))
@@ -187,6 +193,38 @@ def test_llm_mocked_run_reuses_dataset_when_inputs_are_unchanged(
     assert trap_2["dataset_source"] == "cache_hit"
     assert trap_1["dataset_fingerprint"] == trap_2["dataset_fingerprint"]
     assert trap_1["dataset_cache_dir"] == trap_2["dataset_cache_dir"]
+
+
+def test_llm_selected_trap_fails_fast_when_llm_env_is_missing(
+    capsys,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    generated_root = tmp_path / "adapter" / "generated"
+    _write_generated_adapter(generated_root)
+    _install_empty_dotenv(monkeypatch)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_MODEL", raising=False)
+    monkeypatch.delenv("OPENAI_URL", raising=False)
+
+    config_path = tmp_path / ".opentrap" / "opentrap.yaml"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(yaml.safe_dump(_base_payload(), sort_keys=False), encoding="utf-8")
+    samples_dir = tmp_path / ".opentrap" / "samples"
+    samples_dir.mkdir(parents=True, exist_ok=True)
+    _configure_cli_paths(
+        monkeypatch=monkeypatch,
+        tmp_path=tmp_path,
+        config_path=config_path,
+        samples_dir=samples_dir,
+        generated_root=generated_root,
+    )
+
+    code = main([TRAP_ID])
+
+    captured = capsys.readouterr()
+    assert code == 1
+    assert "Missing required environment variable(s): OPENAI_API_KEY, OPENAI_MODEL" in captured.err
 
 
 def test_llm_mocked_run_uses_final_cache_paths_for_manifest_data_items(

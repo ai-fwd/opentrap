@@ -22,6 +22,16 @@ def _repo_root() -> Path:
 
 
 def _write_stub_contract(root: Path, trap_id: str) -> None:
+    _write_stub_contract_with_behavior(root, trap_id)
+
+
+def _write_stub_contract_with_behavior(
+    root: Path,
+    trap_id: str,
+    *,
+    module_prelude: str = "",
+    init_body: str = "pass",
+) -> None:
     target, trap_name = trap_id.split("/", 1)
     trap_dir = root / target / trap_name
     trap_dir.mkdir(parents=True)
@@ -34,12 +44,16 @@ from typing import Any, Mapping
 
 from opentrap.trap_contract import SharedConfig, TrapFieldSpec, TrapSpec
 
+{module_prelude}
 
 class Trap(TrapSpec[Mapping[str, Any], Mapping[str, Any], Mapping[str, Any], Mapping[str, Any]]):
     trap_id = ""
     fields = {{
         "knob": TrapFieldSpec(type="integer", default=1, min=1),
     }}
+
+    def __init__(self) -> None:
+        {init_body}
 
     def generate(
         self,
@@ -163,6 +177,25 @@ def test_list_with_target_filters(capsys, tmp_path: Path, monkeypatch) -> None:
     ]
 
 
+def test_list_is_discovery_only_and_does_not_import_modules(
+    capsys,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _write_stub_contract_with_behavior(
+        tmp_path,
+        "reasoning/chain-trap",
+        module_prelude='raise RuntimeError("trap module imported unexpectedly")',
+    )
+    monkeypatch.setattr("opentrap.cli.DEFAULT_TRAPS_DIR", tmp_path)
+
+    code = main(["list"])
+
+    captured = capsys.readouterr()
+    assert code == 0
+    assert captured.out.strip().splitlines() == ["reasoning/chain-trap"]
+
+
 def test_list_fails_when_discovered_trap_has_no_contract(
     capsys,
     tmp_path: Path,
@@ -247,6 +280,27 @@ def test_init_always_overwrites_existing_file(capsys, tmp_path: Path, monkeypatc
     assert payload["shared"]["seed"] == 42
 
 
+def test_init_does_not_instantiate_trap_classes(capsys, tmp_path: Path, monkeypatch) -> None:
+    _write_stub_contract_with_behavior(
+        tmp_path,
+        "reasoning/chain-trap",
+        init_body='raise RuntimeError("constructor should not run during init")',
+    )
+    config_path = tmp_path / ".opentrap" / "opentrap.yaml"
+
+    responses = iter(["summarize docs", "docs", "bias output", ""])
+    monkeypatch.setattr("builtins.input", lambda _prompt: next(responses))
+    monkeypatch.setattr("opentrap.cli.DEFAULT_TRAPS_DIR", tmp_path)
+    monkeypatch.setattr("opentrap.cli.DEFAULT_CONFIG_PATH", config_path)
+    monkeypatch.setattr("opentrap.cli.DEFAULT_SAMPLES_DIR", tmp_path / ".opentrap" / "samples")
+
+    code = main(["init"])
+
+    captured = capsys.readouterr()
+    assert code == 0
+    assert f"Created config file: {config_path}" in captured.out
+
+
 def test_trap_run_fails_when_config_is_missing(capsys, tmp_path: Path, monkeypatch) -> None:
     _write_stub_contract(tmp_path, "reasoning/chain-trap")
     monkeypatch.setattr("opentrap.cli.DEFAULT_TRAPS_DIR", tmp_path)
@@ -311,6 +365,43 @@ def test_trap_run_single_runs_selected_trap(
     session_id = run_manifest["sessions"][0]["session_id"]
     assert (run_dir / f"session-{session_id}.json").exists()
     assert (run_dir / "report.json").exists()
+
+
+def test_trap_run_instantiates_only_selected_trap(
+    tmp_path: Path,
+    capsys,
+    monkeypatch,
+) -> None:
+    _write_stub_contract(tmp_path / "traps", "reasoning/chain-trap")
+    _write_stub_contract_with_behavior(
+        tmp_path / "traps",
+        "memory/context-overflow",
+        init_body='raise RuntimeError("non-selected constructor should not run")',
+    )
+    generated_root = tmp_path / "adapter" / "generated"
+    _write_generated_adapter(generated_root)
+
+    config_path = tmp_path / ".opentrap" / "opentrap.yaml"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    payload = _base_payload()
+    payload["traps"]["memory/context-overflow"] = {"knob": 2}
+    config_path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
+
+    _configure_trap_run_paths(
+        monkeypatch=monkeypatch,
+        tmp_path=tmp_path,
+        config_path=config_path,
+        samples_dir=tmp_path / ".opentrap" / "samples",
+        generated_root=generated_root,
+    )
+
+    code = main(["reasoning/chain-trap"])
+
+    captured = capsys.readouterr()
+    assert code == 0
+    run_manifest_path = Path(captured.out.strip())
+    run_manifest = json.loads(run_manifest_path.read_text(encoding="utf-8"))
+    assert run_manifest["traps"][0]["trap_id"] == "reasoning/chain-trap"
 
 
 def test_trap_run_stays_attached_while_adapter_is_alive(

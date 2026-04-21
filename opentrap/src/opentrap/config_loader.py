@@ -10,7 +10,6 @@ from opentrap.trap_contract import (
     SampleBoundary,
     SharedConfig,
     TrapFieldSpec,
-    TrapSpec,
 )
 
 
@@ -19,7 +18,7 @@ class ConfigError(ValueError):
 
 
 @dataclass(frozen=True)
-class LoadedConfig:
+class LoadedTrapConfig:
     shared: SharedConfig
     trap_configs: dict[str, dict[str, Any]]
     product_under_test: str
@@ -165,15 +164,19 @@ def _validate_field_constraints(field_name: str, value: Any, spec: TrapFieldSpec
     return validated_value
 
 
-def _validate_trap_config(trap_id: str, raw: Mapping[str, Any], spec: TrapSpec) -> dict[str, Any]:
-    unknown_keys = sorted(set(raw) - set(spec.fields))
+def _validate_trap_config(
+    trap_id: str,
+    raw: Mapping[str, Any],
+    fields: Mapping[str, TrapFieldSpec],
+) -> dict[str, Any]:
+    unknown_keys = sorted(set(raw) - set(fields))
     if unknown_keys:
         raise ConfigError(
             f"traps.{trap_id} has unknown key(s): {', '.join(unknown_keys)}"
         )
 
     validated: dict[str, Any] = {}
-    for field_name, field_spec in spec.fields.items():
+    for field_name, field_spec in fields.items():
         scoped_name = f"traps.{trap_id}.{field_name}"
         if field_name in raw:
             validated[field_name] = _validate_field_constraints(
@@ -197,12 +200,15 @@ def _validate_trap_config(trap_id: str, raw: Mapping[str, Any], spec: TrapSpec) 
     return validated
 
 
-def build_initial_config(shared: SharedConfig, registry: Mapping[str, TrapSpec]) -> dict[str, Any]:
+def build_initial_trap_config(
+    shared: SharedConfig,
+    trap_fields_registry: Mapping[str, Mapping[str, TrapFieldSpec]],
+) -> dict[str, Any]:
     traps_payload: dict[str, dict[str, Any]] = {}
-    for trap_id in sorted(registry):
-        spec = registry[trap_id]
+    for trap_id in sorted(trap_fields_registry):
+        fields = trap_fields_registry[trap_id]
         trap_payload: dict[str, Any] = {}
-        for field_name, field_spec in spec.fields.items():
+        for field_name, field_spec in fields.items():
             if field_spec.default is MISSING_DEFAULT:
                 raise ConfigError(
                     f"cannot initialize traps.{trap_id}.{field_name}: missing default"
@@ -225,16 +231,16 @@ def build_initial_config(shared: SharedConfig, registry: Mapping[str, TrapSpec])
     }
 
 
-def write_attack_config(path: Path, payload: Mapping[str, Any]) -> None:
+def write_trap_config(path: Path, payload: Mapping[str, Any]) -> None:
     yaml = _yaml_module()
     path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
 
 
-def load_attack_config(
+def load_trap_config(
     path: Path,
-    registry: Mapping[str, TrapSpec],
+    trap_fields_registry: Mapping[str, Mapping[str, TrapFieldSpec]],
     samples_dir: Path | None = None,
-) -> LoadedConfig:
+) -> LoadedTrapConfig:
     yaml = _yaml_module()
 
     if not path.exists():
@@ -266,21 +272,25 @@ def load_attack_config(
     sample_boundaries = load_sample_boundaries(samples_dir or Path(".opentrap/samples"))
     shared = replace(shared, samples=sample_boundaries)
 
-    unknown_traps = sorted(set(traps_raw) - set(registry))
+    unknown_traps = sorted(set(traps_raw) - set(trap_fields_registry))
     if unknown_traps:
         raise ConfigError(f"traps has unknown trap id(s): {', '.join(unknown_traps)}")
 
     trap_configs: dict[str, dict[str, Any]] = {}
-    for trap_id in sorted(registry):
+    for trap_id in sorted(trap_fields_registry):
         trap_section = traps_raw.get(trap_id, {})
         if trap_section is None:
             trap_section = {}
         if not isinstance(trap_section, dict):
             raise ConfigError(f"traps.{trap_id} must be a mapping")
 
-        trap_configs[trap_id] = _validate_trap_config(trap_id, trap_section, registry[trap_id])
+        trap_configs[trap_id] = _validate_trap_config(
+            trap_id,
+            trap_section,
+            trap_fields_registry[trap_id],
+        )
 
-    return LoadedConfig(
+    return LoadedTrapConfig(
         shared=shared,
         trap_configs=trap_configs,
         product_under_test=product_under_test,

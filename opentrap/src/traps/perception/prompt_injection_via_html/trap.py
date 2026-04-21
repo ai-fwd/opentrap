@@ -95,6 +95,11 @@ class Trap(
     }
 
     def __init__(self, dataset_generator: TrapDatasetGenerator | None = None) -> None:
+        if dataset_generator is None:
+            llm_cfg = load_llm_config_from_env()
+            dataset_generator = TrapDatasetGenerator(
+                base_html_generator=LLMHTMLGenerator(llm_cfg)
+            )
         self._dataset_generator = dataset_generator
 
     def generate(
@@ -107,7 +112,7 @@ class Trap(
             shared_config=shared_config,
             trap_config=trap_config,
         )
-        return self._get_dataset_generator().generate(
+        return self._dataset_generator.generate(
             config=generation_config,
             output_base=output_base,
         )
@@ -130,14 +135,6 @@ class Trap(
             run_id=None,
             samples=shared_config.samples,
         )
-
-    def _get_dataset_generator(self) -> TrapDatasetGenerator:
-        if self._dataset_generator is None:
-            llm_cfg = load_llm_config_from_env()
-            self._dataset_generator = TrapDatasetGenerator(
-                base_html_generator=LLMHTMLGenerator(llm_cfg)
-            )
-        return self._dataset_generator
 
     def run(self, context: TrapRunContext) -> TrapActions:
         return TrapActions(data_dir=context.data_dir)
