@@ -19,7 +19,6 @@ from html_utils import (
 )
 
 from opentrap.trap_contract import SampleBoundary
-from opentrap.trap_definition import TrapDefinition
 
 ATTACK_TYPES = (
     "hidden_div",
@@ -76,13 +75,11 @@ class MetadataRecord:
     run_id: str
 
 
-class PromptInjectionViaHTMLTrap(TrapDefinition[GenerationConfig]):
-    trap_id = "perception/prompt_injection_via_html"
-
+class TrapDatasetGenerator:
     def __init__(self, base_html_generator: BaseHTMLGenerator) -> None:
         self._base_html_generator = base_html_generator
 
-    def run(self, config: GenerationConfig, output_base: Path) -> Path:
+    def generate(self, config: GenerationConfig, output_base: Path) -> Path:
         return run_generation(
             config=config,
             output_base=output_base,

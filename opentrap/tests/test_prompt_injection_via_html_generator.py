@@ -278,6 +278,118 @@ def test_run_generation_uses_injected_generator(tmp_path: Path) -> None:
     ]
 
 
+def test_trap_constructor_does_not_load_llm_config(monkeypatch) -> None:
+    trap_module = _load_module("trap.py", "prompt_injection_via_html_trap_ctor")
+    calls = {"load_count": 0}
+
+    def _fake_load_llm_config_from_env():
+        calls["load_count"] += 1
+        return object()
+
+    monkeypatch.setattr(trap_module, "load_llm_config_from_env", _fake_load_llm_config_from_env)
+
+    trap_module.Trap()
+    assert calls["load_count"] == 0
+
+
+def test_trap_generate_uses_injected_dataset_generator(monkeypatch, tmp_path: Path) -> None:
+    trap_module = _load_module("trap.py", "prompt_injection_via_html_trap_generate_injected")
+    from opentrap.trap_contract import SharedConfig
+
+    calls = {"load_count": 0, "dataset_generate_count": 0}
+
+    def _fake_load_llm_config_from_env():
+        calls["load_count"] += 1
+        return object()
+
+    class _FakeDatasetGenerator:
+        def generate(self, config, output_base: Path) -> Path:  # noqa: ANN001
+            del config
+            calls["dataset_generate_count"] += 1
+            output_base.mkdir(parents=True, exist_ok=True)
+            artifact = output_base / "artifact.txt"
+            artifact.write_text("generated", encoding="utf-8")
+            return artifact
+
+    monkeypatch.setattr(trap_module, "load_llm_config_from_env", _fake_load_llm_config_from_env)
+
+    trap = trap_module.Trap(dataset_generator=_FakeDatasetGenerator())
+    shared = SharedConfig(
+        scenario="summarize docs",
+        content_style="docs",
+        trap_intent="rewrite negatives",
+        seed=123,
+    )
+    trap_config = {
+        "location_temperature": 0.0,
+        "density_temperature": 0.0,
+        "diversity_temperature": 0.0,
+        "base_count": 1,
+    }
+
+    run_one = trap.generate(shared, trap_config, tmp_path / "run-one")
+    run_two = trap.generate(shared, trap_config, tmp_path / "run-two")
+
+    assert run_one.exists()
+    assert run_two.exists()
+    assert calls["load_count"] == 0
+    assert calls["dataset_generate_count"] == 2
+
+
+def test_trap_generate_initializes_default_generator_once(monkeypatch, tmp_path: Path) -> None:
+    trap_module = _load_module("trap.py", "prompt_injection_via_html_trap_generate_default")
+    from opentrap.trap_contract import SharedConfig
+
+    calls = {"load_count": 0, "llm_generator_init_count": 0}
+
+    def _fake_load_llm_config_from_env():
+        calls["load_count"] += 1
+        return object()
+
+    class _FakeLLMHTMLGenerator:
+        def __init__(self, _cfg: object) -> None:
+            calls["llm_generator_init_count"] += 1
+
+        def generate(
+            self,
+            *,
+            scenario: str,
+            content_style: str,
+            seed: int | None,
+            samples,
+        ) -> str:
+            del scenario, content_style, seed, samples
+            return (
+                "<!DOCTYPE html><html><head><title>Sample</title></head>"
+                "<body><h1>Title</h1><p>Paragraph</p></body></html>"
+            )
+
+    monkeypatch.setattr(trap_module, "load_llm_config_from_env", _fake_load_llm_config_from_env)
+    monkeypatch.setattr(trap_module, "LLMHTMLGenerator", _FakeLLMHTMLGenerator)
+
+    trap = trap_module.Trap()
+    shared = SharedConfig(
+        scenario="summarize docs",
+        content_style="docs",
+        trap_intent="rewrite negatives",
+        seed=123,
+    )
+    trap_config = {
+        "location_temperature": 0.0,
+        "density_temperature": 0.0,
+        "diversity_temperature": 0.0,
+        "base_count": 1,
+    }
+
+    run_one = trap.generate(shared, trap_config, tmp_path / "run-one")
+    run_two = trap.generate(shared, trap_config, tmp_path / "run-two")
+
+    assert run_one.exists()
+    assert run_two.exists()
+    assert calls["load_count"] == 1
+    assert calls["llm_generator_init_count"] == 1
+
+
 def test_bootstrap_openai_url_normalization_and_defaults(monkeypatch) -> None:
     bootstrap_module = _load_module("bootstrap.py", "prompt_injection_via_html_bootstrap")
     monkeypatch.setattr(bootstrap_module, "load_layered_env", lambda: None)
