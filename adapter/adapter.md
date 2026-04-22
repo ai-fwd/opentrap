@@ -71,25 +71,6 @@ Use `adapter/templates/` as read-only references.
   - `POST /agent/run` -> `observe`
   - `GET /healthz` -> `passthrough`
 
-## OpenTrap Adapter Runtime API
-
-Adapter implementations may only depend on these runtime calls:
-
-- `start_session(manifest_path) -> session_id`
-- `list_data_items() -> list[DataItem]`
-- `get_data_item(item_id) -> DataItem`
-- `emit_event(event_type, payload) -> None`
-- `end_session() -> FinalizeResult`
-
-Rules:
-
-- exactly one active session
-- call start_session once before trap processing
-- call emit_event during processing as needed
-- call end_session once when complete
-- use get_data_item / list_data_items for trap artifacts
-
-
 ## Route Classification Table
 
 | Mode | Use for | Generic examples |
