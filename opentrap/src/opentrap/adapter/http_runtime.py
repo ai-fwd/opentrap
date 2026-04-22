@@ -1,14 +1,14 @@
 from __future__ import annotations
 
 import inspect
+import time
 from collections.abc import Iterable, Mapping
-from pathlib import Path
 from typing import Any, cast
 
 import httpx
 from fastapi import FastAPI, Request, Response
 
-from .context import DataItems, EventEmitter, RequestContext, RuntimeProtocol
+from .context import EventEmitter, RequestContext
 from .models import InterceptHandler, ManifestView, ObserveHandler, RouteSpec, UpstreamSpec
 
 
@@ -184,35 +184,95 @@ async def _forward_request(*, app: FastAPI, request: Request, route: RouteSpec) 
 
 
 async def dispatch_route(*, app: FastAPI, request: Request, route: RouteSpec) -> Response:
+    request_body = await _request_body(request)
     context = RequestContext(
         request=request,
         run_id=cast(str, app.state.run_id),
         session_id=cast(str, app.state.session_id),
         request_id=cast(str, request.state.request_id),
         manifest=cast(ManifestView, app.state.manifest),
-        data_items=DataItems(
-            runtime=cast(RuntimeProtocol, app.state.runtime),
-            base_dir=cast(Path, app.state.repo_root),
-        ),
-        _event_emitter=cast(EventEmitter, app.state.event_emitter),
+        trap_actions=cast(object | None, app.state.trap_actions),
     )
+    event_emitter = cast(EventEmitter, app.state.event_emitter)
+    event_common_payload: dict[str, Any] = {
+        "request_id": context.request_id,
+        "route_name": route.name,
+        "route_mode": route.mode,
+        "method": request.method,
+        "path": request.url.path,
+        "query": request.url.query,
+    }
+    event_emitter(
+        "route_dispatch_pre",
+        {
+            **event_common_payload,
+            "request_headers": dict(request.headers),
+            "request_body": request_body.decode("utf-8", errors="replace"),
+        },
+    )
+    started = time.monotonic()
+    post_emitted = False
 
-    if route.mode == "intercept":
-        intercept_handler = cast(InterceptHandler, route.handler)
-        return await intercept_handler(context)
+    response: Response | None = None
+    try:
+        if route.mode == "intercept":
+            intercept_handler = cast(InterceptHandler, route.handler)
+            response = await intercept_handler(context)
+            return response
 
-    forwarded_response = await _forward_request(app=app, request=request, route=route)
+        forwarded_response = await _forward_request(app=app, request=request, route=route)
+        response = forwarded_response
 
-    if route.mode == "passthrough":
+        if route.mode == "passthrough":
+            return forwarded_response
+
+        observer = cast(ObserveHandler | None, route.handler)
+        if observer is not None:
+            observer_snapshot = Response(
+                content=forwarded_response.body,
+                status_code=forwarded_response.status_code,
+                headers=dict(forwarded_response.headers),
+            )
+            observer_payload = await observer(context, observer_snapshot)
+            if observer_payload is not None:
+                event_emitter(
+                    "llm_responses_observed",
+                    {
+                        **event_common_payload,
+                        **dict(observer_payload),
+                    },
+                )
+
         return forwarded_response
-
-    observer = cast(ObserveHandler | None, route.handler)
-    if observer is not None:
-        observer_snapshot = Response(
-            content=forwarded_response.body,
-            status_code=forwarded_response.status_code,
-            headers=dict(forwarded_response.headers),
+    except Exception as exc:
+        event_emitter(
+            "route_dispatch_post",
+            {
+                **event_common_payload,
+                "duration_ms": round((time.monotonic() - started) * 1000, 3),
+                "error": str(exc),
+            },
         )
-        await observer(context, observer_snapshot)
-
-    return forwarded_response
+        post_emitted = True
+        raise
+    finally:
+        if response is not None and not post_emitted:
+            raw_response = getattr(response, "body", b"")
+            if isinstance(raw_response, str):
+                raw_response_bytes = raw_response.encode("utf-8", errors="replace")
+            elif isinstance(raw_response, bytes):
+                raw_response_bytes = raw_response
+            elif isinstance(raw_response, bytearray):
+                raw_response_bytes = bytes(raw_response)
+            else:
+                raw_response_bytes = str(raw_response).encode("utf-8", errors="replace")
+            event_emitter(
+                "route_dispatch_post",
+                {
+                    **event_common_payload,
+                    "duration_ms": round((time.monotonic() - started) * 1000, 3),
+                    "status_code": response.status_code,
+                    "response_headers": dict(response.headers),
+                    "response_body": raw_response_bytes.decode("utf-8", errors="replace"),
+                },
+            )

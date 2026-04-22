@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from http import HTTPMethod
 from pathlib import Path
@@ -16,7 +16,7 @@ else:
     RequestContext = Any
 
 InterceptHandler = Callable[[RequestContext], Awaitable[Response]]
-ObserveHandler = Callable[[RequestContext, Response], Awaitable[None]]
+ObserveHandler = Callable[[RequestContext, Response], Awaitable[Mapping[str, Any] | None]]
 
 
 @dataclass(frozen=True)

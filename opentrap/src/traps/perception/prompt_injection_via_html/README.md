@@ -31,7 +31,7 @@ Trap-specific controls are configured in `.opentrap/opentrap.yaml` under:
 
 Artifacts are written to:
 
-- `runs/perception__prompt_injection_via_html/<run_id>/pages/<id>.htm`
-- `runs/perception__prompt_injection_via_html/<run_id>/metadata.jsonl`
+- `.opentrap/dataset/perception/prompt_injection_via_html/<dataset_fingerprint>/data/<id>.htm`
+- `.opentrap/dataset/perception/prompt_injection_via_html/<dataset_fingerprint>/metadata.jsonl`
 
 `metadata.jsonl` maps each file to base/poisoned status and injection details.

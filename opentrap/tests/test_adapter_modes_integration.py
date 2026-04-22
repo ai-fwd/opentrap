@@ -315,14 +315,19 @@ def test_adapter_process_integrates_route_modes_and_named_upstreams(tmp_path: Pa
         if line.strip()
     ]
     assert envelopes
-    exchanges = [event for event in envelopes if event["event_type"] == "http_exchange"]
-    assert exchanges
+    pre_events = [event for event in envelopes if event["event_type"] == "route_dispatch_pre"]
+    post_events = [event for event in envelopes if event["event_type"] == "route_dispatch_post"]
+    assert pre_events
+    assert post_events
 
-    paths = [entry["payload"]["path"] for entry in exchanges]
-    assert "/__opentrap/health" in paths
-    assert "/intercept" in paths
-    assert "/passthrough/abc" in paths
-    assert "/observe" in paths
+    pre_paths = [entry["payload"]["path"] for entry in pre_events]
+    post_paths = [entry["payload"]["path"] for entry in post_events]
+    assert "/intercept" in pre_paths
+    assert "/passthrough/abc" in pre_paths
+    assert "/observe" in pre_paths
+    assert "/intercept" in post_paths
+    assert "/passthrough/abc" in post_paths
+    assert "/observe" in post_paths
 
     captured = upstream_server.requests
     assert len(captured) == 2

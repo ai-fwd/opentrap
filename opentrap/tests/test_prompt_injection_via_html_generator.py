@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import importlib.util
 import json
-import os
 import sys
 from pathlib import Path
 
@@ -400,52 +399,54 @@ def test_trap_generate_initializes_default_generator_once(monkeypatch, tmp_path:
     assert calls["llm_generator_init_count"] == 1
 
 
-def test_bootstrap_openai_url_normalization_and_defaults(monkeypatch) -> None:
-    bootstrap_module = _load_module("bootstrap.py", "prompt_injection_via_html_bootstrap")
-    monkeypatch.setattr(bootstrap_module, "load_layered_env", lambda: None)
+def test_llm_config_openai_url_normalization(monkeypatch) -> None:
+    llm_config_module = _load_module("llm_config.py", "prompt_injection_via_html_llm_config")
 
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
     monkeypatch.setenv("OPENAI_MODEL", "gpt-test")
 
     monkeypatch.setenv("OPENAI_URL", "https://api.openai.com")
-    assert bootstrap_module.load_llm_config_from_env().base_url == "https://api.openai.com/v1"
+    assert llm_config_module.load_llm_config_from_env().base_url == "https://api.openai.com/v1"
 
     monkeypatch.setenv("OPENAI_URL", "https://api.openai.com/v1")
-    assert bootstrap_module.load_llm_config_from_env().base_url == "https://api.openai.com/v1"
+    assert llm_config_module.load_llm_config_from_env().base_url == "https://api.openai.com/v1"
 
     monkeypatch.setenv("OPENAI_URL", "https://api.openai.com/v1/responses")
-    assert bootstrap_module.load_llm_config_from_env().base_url == "https://api.openai.com/v1"
-
-    monkeypatch.delenv("OPENAI_URL", raising=False)
-    assert bootstrap_module.load_llm_config_from_env().base_url == "https://api.openai.com/v1"
+    assert llm_config_module.load_llm_config_from_env().base_url == "https://api.openai.com/v1"
 
 
-def test_bootstrap_load_layered_env_reads_opentrap_env_file(monkeypatch) -> None:
-    bootstrap_module = _load_module("bootstrap.py", "prompt_injection_via_html_bootstrap")
+def test_llm_config_loads_vars_from_opentrap_env_file(monkeypatch, tmp_path: Path) -> None:
+    llm_config_module = _load_module("llm_config.py", "prompt_injection_via_html_llm_config")
 
-    seen_paths: list[Path] = []
+    env_path = tmp_path / "opentrap" / ".env"
+    env_path.parent.mkdir(parents=True, exist_ok=True)
+    env_path.write_text("", encoding="utf-8")
 
-    def _fake_dotenv_values(path: Path) -> dict[str, str]:
-        seen_paths.append(path)
-        if path.name == ".env":
-            return {"OPENAI_API_KEY": "local-key", "OPENAI_MODEL": "local-model"}
-        return {}
-
+    monkeypatch.setattr(llm_config_module, "_find_repo_root", lambda: tmp_path)
     monkeypatch.setitem(
         sys.modules,
         "dotenv",
-        type("_DotenvModule", (), {"dotenv_values": _fake_dotenv_values}),
+        type(
+            "_DotenvModule",
+            (),
+            {
+                "dotenv_values": lambda _path: {
+                    "OPENAI_API_KEY": "local-key",
+                    "OPENAI_URL": "https://example.test",
+                    "OPENAI_MODEL": "local-model",
+                }
+            },
+        ),
     )
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_URL", raising=False)
     monkeypatch.delenv("OPENAI_MODEL", raising=False)
 
-    bootstrap_module.load_layered_env()
+    cfg = llm_config_module.load_llm_config_from_env()
 
-    expected_root = Path(__file__).resolve().parents[2]
-    assert seen_paths == [expected_root / "opentrap" / ".env"]
-    assert "OPENAI_API_KEY" in os.environ
-    assert os.environ["OPENAI_API_KEY"] == "local-key"
-    assert os.environ["OPENAI_MODEL"] == "local-model"
+    assert cfg.api_key == "local-key"
+    assert cfg.base_url == "https://example.test/v1"
+    assert cfg.model == "local-model"
 
 
 def test_file_naming_is_sequential_and_deterministic(tmp_path: Path) -> None:
@@ -470,17 +471,23 @@ def test_file_naming_is_sequential_and_deterministic(tmp_path: Path) -> None:
     assert filenames == [f"{i:05d}.htm" for i in range(1, 10)]
 
 
-def test_bootstrap_requires_openai_env(monkeypatch) -> None:
-    bootstrap_module = _load_module("bootstrap.py", "prompt_injection_via_html_bootstrap")
+def test_llm_config_requires_openai_env(monkeypatch) -> None:
+    llm_config_module = _load_module("llm_config.py", "prompt_injection_via_html_llm_config")
+    monkeypatch.setattr(llm_config_module, "_find_repo_root", lambda: Path("/tmp/nonexistent-root"))
+    monkeypatch.setitem(
+        sys.modules,
+        "dotenv",
+        type("_DotenvModule", (), {"dotenv_values": lambda _path: {}}),
+    )
 
-    monkeypatch.setattr(bootstrap_module, "load_layered_env", lambda: None)
     for name in ("OPENAI_API_KEY", "OPENAI_URL", "OPENAI_MODEL"):
         monkeypatch.delenv(name, raising=False)
 
     try:
-        bootstrap_module.load_llm_config_from_env()
+        llm_config_module.load_llm_config_from_env()
         raise AssertionError("Expected RuntimeError for missing environment")
     except RuntimeError as exc:
         message = str(exc)
         assert "OPENAI_API_KEY" in message
+        assert "OPENAI_URL" in message
         assert "OPENAI_MODEL" in message

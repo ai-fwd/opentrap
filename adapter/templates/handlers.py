@@ -8,6 +8,10 @@ Examples:
     async def intercept_load_document(ctx: RequestContext) -> Response: ...
     async def observe_agent_run(ctx: RequestContext, snapshot: Response) -> None: ...
 
+Notes:
+- Use the trap's documented `ctx.trap_actions` for trap-backed content access.
+- Do not emit events from handlers; runtime emits route and observer events.
+
 Helpful RequestContext methods:
 - ctx.path_param(name, required=True)
 - await ctx.json_body()

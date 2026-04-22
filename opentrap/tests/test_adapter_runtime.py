@@ -101,10 +101,7 @@ def test_health_route_starts_and_ends_runtime_session(tmp_path: Path) -> None:
 
     assert runtime.started == [manifest_path]
     assert runtime.ended == 1
-    assert any(
-        event_type == "http_exchange" and payload["path"] == "/__opentrap/health"
-        for event_type, payload in runtime.events
-    )
+    assert all(event_type != "http_exchange" for event_type, _payload in runtime.events)
 
 
 @pytest.mark.parametrize(
@@ -315,6 +312,57 @@ def test_observe_handler_runs_without_mutating_forwarded_response(tmp_path: Path
     assert calls["count"] == 1
 
 
+def test_observe_handler_payload_is_emitted_by_runtime(tmp_path: Path) -> None:
+    runtime = FakeRuntime()
+    manifest_path = tmp_path / "run.json"
+    _write_manifest(manifest_path)
+
+    async def observer(ctx: RequestContext, snapshot: Response):
+        return {
+            "request_id": ctx.request_id,
+            "status_code": snapshot.status_code,
+            "marker": "from-observer",
+        }
+
+    async def transport_handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            status_code=201,
+            headers={"x-origin": "1", "content-type": "application/json"},
+            json={"ok": True},
+        )
+
+    forward_client = httpx.AsyncClient(transport=httpx.MockTransport(transport_handler))
+    app = create_app(
+        manifest_path=manifest_path,
+        routes=[
+            RouteSpec(
+                name="observe-emits",
+                path="/observe-emits",
+                methods=(HTTPMethod.GET,),
+                mode="observe",
+                handler=observer,
+                upstream="origin",
+            )
+        ],
+        upstreams=[UpstreamSpec(name="origin", base_url="https://origin.test")],
+        runtime=runtime,
+        forward_client=forward_client,
+    )
+
+    with TestClient(app) as client:
+        response = client.get("/observe-emits")
+
+    assert response.status_code == 201
+    observed_events = [
+        payload
+        for event_type, payload in runtime.events
+        if event_type == "llm_responses_observed"
+    ]
+    assert len(observed_events) == 1
+    assert observed_events[0]["marker"] == "from-observer"
+    assert observed_events[0]["status_code"] == 201
+
+
 def test_unknown_named_upstream_is_rejected(tmp_path: Path) -> None:
     manifest_path = tmp_path / "run.json"
     _write_manifest(manifest_path)
@@ -337,12 +385,64 @@ def test_unknown_named_upstream_is_rejected(tmp_path: Path) -> None:
         )
 
 
-def test_data_items_resolve_repo_relative_paths_from_manifest_repo_root(tmp_path: Path) -> None:
+def test_request_context_has_no_data_items_or_emit_event(tmp_path: Path) -> None:
+    runtime = FakeRuntime()
+    manifest_path = tmp_path / "run.json"
+    _write_manifest(manifest_path)
+
+    async def intercept_handler(ctx: RequestContext) -> Response:
+        return JSONResponse(
+            {
+                "has_data_items": hasattr(ctx, "data_items"),
+                "has_emit_event": hasattr(ctx, "emit_event"),
+                "has_trap_actions": hasattr(ctx, "trap_actions"),
+                "trap_actions_is_none": ctx.trap_actions is None,
+            }
+        )
+
+    app = create_app(
+        manifest_path=manifest_path,
+        routes=[
+            RouteSpec(
+                name="ctx-contract",
+                path="/ctx-contract",
+                methods=(HTTPMethod.GET,),
+                mode="intercept",
+                handler=intercept_handler,
+                upstream=None,
+            )
+        ],
+        upstreams=[],
+        runtime=runtime,
+    )
+
+    with TestClient(app) as client:
+        response = client.get("/ctx-contract")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "has_data_items": False,
+        "has_emit_event": False,
+        "has_trap_actions": True,
+        "trap_actions_is_none": True,
+    }
+
+
+def test_trap_actions_resolver_binds_perception_actions(tmp_path: Path) -> None:
     repo_root = tmp_path / "repo"
     repo_root.mkdir()
-    data_file = repo_root / "dataset" / "item-00001.txt"
+    data_file = (
+        repo_root
+        / ".opentrap"
+        / "dataset"
+        / "perception"
+        / "prompt_injection_via_html"
+        / "artifact"
+        / "data"
+        / "00001.htm"
+    )
     data_file.parent.mkdir(parents=True)
-    data_file.write_text("hello from dataset", encoding="utf-8")
+    data_file.write_text("<html>hello from trap actions</html>", encoding="utf-8")
 
     manifest_path = tmp_path / "run.json"
     payload = {
@@ -356,11 +456,14 @@ def test_data_items_resolve_repo_relative_paths_from_manifest_repo_root(tmp_path
         "sessions": [],
         "traps": [
             {
-                "trap_id": "reasoning/chain-trap",
+                "trap_id": "perception/prompt_injection_via_html",
+                "data_dir": ".opentrap/dataset/perception/prompt_injection_via_html/artifact/data",
                 "data_items": [
                     {
                         "id": "00001",
-                        "path": "dataset/item-00001.txt",
+                        "path": (
+                            ".opentrap/dataset/perception/prompt_injection_via_html/artifact/data/00001.htm"
+                        ),
                     }
                 ],
             }
@@ -368,10 +471,12 @@ def test_data_items_resolve_repo_relative_paths_from_manifest_repo_root(tmp_path
     }
     manifest_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
-    runtime = ItemRuntime(type("_Item", (), {"id": "00001", "path": "dataset/item-00001.txt"})())
+    runtime = FakeRuntime()
 
     async def intercept_handler(ctx: RequestContext) -> Response:
-        return JSONResponse({"content": ctx.data_items.read_text("00001")})
+        assert ctx.trap_actions is not None
+        content = ctx.trap_actions.get_data_for_selector("selector-1")
+        return JSONResponse({"content": content})
 
     app = create_app(
         manifest_path=manifest_path,
@@ -393,10 +498,10 @@ def test_data_items_resolve_repo_relative_paths_from_manifest_repo_root(tmp_path
         response = client.get("/read-item")
 
     assert response.status_code == 200
-    assert response.json() == {"content": "hello from dataset"}
+    assert response.json() == {"content": "<html>hello from trap actions</html>"}
 
 
-def test_request_context_manifest_and_data_item_accessors_are_typed(tmp_path: Path) -> None:
+def test_request_context_manifest_fields_are_typed(tmp_path: Path) -> None:
     repo_root = tmp_path / "repo"
     repo_root.mkdir()
     artifact_path = repo_root / ".opentrap" / "dataset" / "generic" / "artifact"
@@ -404,8 +509,6 @@ def test_request_context_manifest_and_data_item_accessors_are_typed(tmp_path: Pa
     metadata_path = artifact_path / "metadata.jsonl"
     data_dir.mkdir(parents=True)
     metadata_path.write_text("", encoding="utf-8")
-    data_file = data_dir / "00001.txt"
-    data_file.write_text("hello from typed item", encoding="utf-8")
 
     manifest_path = tmp_path / "run.json"
     payload = {
@@ -434,18 +537,10 @@ def test_request_context_manifest_and_data_item_accessors_are_typed(tmp_path: Pa
     }
     manifest_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
-    runtime = ItemRuntime(
-        type(
-            "_Item",
-            (),
-            {"id": "00001", "path": ".opentrap/dataset/generic/artifact/data/00001.txt"},
-        )()
-    )
+    runtime = FakeRuntime()
 
     async def intercept_handler(ctx: RequestContext) -> Response:
         trap = ctx.manifest.traps[0]
-        listed_items = ctx.data_items.list()
-        selected_item = ctx.data_items.get("00001")
         return JSONResponse(
             {
                 "requested": ctx.manifest.requested,
@@ -455,8 +550,7 @@ def test_request_context_manifest_and_data_item_accessors_are_typed(tmp_path: Pa
                 "artifact_path": str(trap.artifact_path),
                 "metadata_path": str(trap.metadata_path),
                 "data_dir": str(trap.data_dir),
-                "listed_ids": [item.id for item in listed_items],
-                "selected_path": str(selected_item.path),
+                "trap_actions_is_none": ctx.trap_actions is None,
             }
         )
 
@@ -488,32 +582,24 @@ def test_request_context_manifest_and_data_item_accessors_are_typed(tmp_path: Pa
         "artifact_path": str(artifact_path),
         "metadata_path": str(metadata_path),
         "data_dir": str(data_dir),
-        "listed_ids": ["00001"],
-        "selected_path": str(data_file),
+        "trap_actions_is_none": True,
     }
 
 
-def test_request_context_emit_event_allows_custom_evidence(tmp_path: Path) -> None:
+def test_route_dispatch_events_are_emitted_for_intercept(tmp_path: Path) -> None:
     runtime = FakeRuntime()
     manifest_path = tmp_path / "run.json"
     _write_manifest(manifest_path)
 
-    async def intercept_handler(ctx: RequestContext) -> Response:
-        ctx.emit_event(
-            "custom_observation",
-            {
-                "request_id": ctx.request_id,
-                "path": ctx.request.url.path,
-            },
-        )
+    async def intercept_handler(_ctx: RequestContext) -> Response:
         return JSONResponse({"ok": True})
 
     app = create_app(
         manifest_path=manifest_path,
         routes=[
             RouteSpec(
-                name="emit-event",
-                path="/emit-event",
+                name="dispatch-events",
+                path="/dispatch-events",
                 methods=(HTTPMethod.GET,),
                 mode="intercept",
                 handler=intercept_handler,
@@ -525,17 +611,13 @@ def test_request_context_emit_event_allows_custom_evidence(tmp_path: Path) -> No
     )
 
     with TestClient(app) as client:
-        response = client.get("/emit-event")
+        response = client.get("/dispatch-events")
 
     assert response.status_code == 200
-    custom_events = [
-        payload
-        for event_type, payload in runtime.events
-        if event_type == "custom_observation"
-    ]
-    assert len(custom_events) == 1
-    assert custom_events[0]["path"] == "/emit-event"
-    assert custom_events[0]["request_id"]
+    event_types = [event_type for event_type, _payload in runtime.events]
+    assert "route_dispatch_pre" in event_types
+    assert "route_dispatch_post" in event_types
+    assert "http_exchange" not in event_types
 
 
 def test_request_context_helper_methods_parse_path_and_body(tmp_path: Path) -> None:

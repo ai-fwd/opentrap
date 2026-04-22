@@ -242,7 +242,7 @@ def _wait_for_adapter_exit(
 
 def build_parser() -> argparse.ArgumentParser:
     """Build command parser for explicit subcommands."""
-    parser = argparse.ArgumentParser(prog="opentrap", description="OpenTrap red-team CLI")
+    parser = argparse.ArgumentParser(prog="opentrap", description="OpenTrap CLI")
     subparsers = parser.add_subparsers(dest="command", required=False)
 
     list_parser = subparsers.add_parser("list", help="List available traps")

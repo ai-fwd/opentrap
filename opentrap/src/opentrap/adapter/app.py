@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import time
 import uuid
 from collections.abc import Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
@@ -20,6 +19,7 @@ from .http_runtime import (
 )
 from .manifest import load_manifest_metadata
 from .models import RouteSpec, UpstreamSpec
+from .trap_actions_resolver import resolve_trap_actions
 
 
 def create_app(
@@ -48,6 +48,7 @@ def create_app(
         app.state.runtime = runtime_impl
         app.state.event_emitter = runtime_impl.emit_event
         app.state.upstream_map = upstream_map
+        app.state.trap_actions = resolve_trap_actions(metadata.manifest)
 
         if forward_client is None:
             app.state.forward_client = httpx.AsyncClient(follow_redirects=False)
@@ -70,33 +71,11 @@ def create_app(
 
     @app.middleware("http")
     async def evidence_middleware(request: Request, call_next):
-        started = time.monotonic()
         request_id = uuid.uuid4().hex
         request.state.request_id = request_id
         raw_body = await request.body()
         request_with_body = copy_request_with_body(request, raw_body)
-
-        response = await call_next(request_with_body)
-
-        response_size = 0
-        content_length = response.headers.get("content-length")
-        if content_length is not None and content_length.isdigit():
-            response_size = int(content_length)
-        elif hasattr(response, "body") and isinstance(response.body, bytes | bytearray):
-            response_size = len(response.body)
-
-        runtime_impl.emit_event(
-            "http_exchange",
-            {
-                "method": request.method,
-                "path": request.url.path,
-                "status_code": response.status_code,
-                "request_size": len(raw_body),
-                "response_size": response_size,
-                "duration_ms": round((time.monotonic() - started) * 1000, 3),
-            },
-        )
-        return response
+        return await call_next(request_with_body)
 
     @app.exception_handler(HTTPException)
     async def http_exception_handler(request: Request, exc: HTTPException) -> JSONResponse:

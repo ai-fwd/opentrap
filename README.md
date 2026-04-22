@@ -11,7 +11,7 @@ The goal is to make these attack classes easy to apply in practice, with a light
 ## Repository Layout
 
 - `acme-client/`: TypeScript product-under-test (Bun + strict TypeScript + bun:test).
-- `opentrap/`: Python red-team engine (CLI-first, production-quality defaults with uv + ruff + pytest).
+- `opentrap/`: Python engine (CLI-first, production-quality defaults with uv + ruff + pytest).
 - `adapter/`: Implementation-agnostic adapter contract (`adapter.md`, and conformance harness).
 - `opentrap/src/traps/`: Manually curated attack scenarios grouped by target subdirectory.
 

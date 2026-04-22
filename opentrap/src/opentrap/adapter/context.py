@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -79,11 +79,7 @@ class RequestContext:
     session_id: str
     request_id: str
     manifest: ManifestView
-    data_items: DataItems
-    _event_emitter: EventEmitter = field(repr=False, compare=False)
-
-    def emit_event(self, event_type: str, payload: Mapping[str, Any]) -> None:
-        self._event_emitter(event_type, payload)
+    trap_actions: object | None
 
     def path_param(self, name: str, *, required: bool = True) -> str | None:
         value = self.request.path_params.get(name)

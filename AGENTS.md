@@ -11,9 +11,9 @@ This file is a durable context anchor for future chats and agent sessions.
 
 - Keep three top-level components:
   - `acme-client/` (product-under-test in TypeScript)
-  - `opentrap/` (Python red-team CLI)
+  - `opentrap/` (Python CLI)
   - `adapter/` (implementation-agnostic contract assets)
-- `acme-client` must remain product-like and must not be aware of the red-team internals.
+- `acme-client` must remain product-like and must not be aware of the opentrap internals.
 - Adapter contract uses `adapter/adapter.md`, JSON Schemas, vectors, and conformance tests.
 - Trap assets live in `opentrap/src/traps/`.
 - Keep only these initial automated tests:

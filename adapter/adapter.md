@@ -102,14 +102,21 @@ Rules:
 
 - Purpose: generate HTML documents that look normal to the product but contain hidden prompt-injection payloads intended to influence downstream reasoning or actions after the product ingests the content.
 - What the adapter must do for this trap:
-  - identify the product routes where HTML or document content enters the product's normal read path and expose those ingress routes as `intercept` routes that serve trap-backed content from `ctx.data_items`
+  - identify the product routes where HTML or document content enters the product's normal read path and expose those ingress routes as `intercept` routes that serve trap-backed content 
   - identify the downstream execution boundary triggered after the product reads that content, such as model inference, agent run, tool execution, or outbound action and expose those execution routes as `observe` routes so the upstream response remains unchanged while evidence is captured
+  - for OpenAI Responses API observe routes, implement generated `observe_openai_responses(...)` as a thin wrapper that delegates to `opentrap.adapter.default_handlers.observe_openai_responses_default(...)`
+
+### Trap Action Surface (`perception/prompt_injection_via_html`)
+
+- `ctx.trap_actions.get_data_for_selector(selector) -> str`
+- Do not assume additional trap action methods unless they are explicitly documented.
 
 ## Handler Rules
 
-- Never hardcode trap file paths; use `ctx.data_items`.
+- Never hardcode trap file paths; use `ctx.trap_actions`.
 - `intercept` handlers return product-shaped responses.
-- `observe` handlers must not mutate the forwarded response.
+- `observe` handlers must not mutate the forwarded response and should delegate to shared default helpers when available.
 - `passthrough` routes should rely on named upstream declarations in generated `adapter.yaml`; keep forwarding logic out of generated handlers.
 - Use `request_id` for correlation in adapter-generated errors or logs.
 - Missing trap data should produce controlled 4xx-style responses, not crashes.
+- Handlers must not emit evidence events directly; runtime emits standardized route lifecycle and observer events.

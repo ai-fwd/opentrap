@@ -144,6 +144,7 @@ def _prepare_llm_trap_run(
     """Prepare config, env, and deterministic fake openai for integration run."""
     _install_fake_openai(monkeypatch)
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("OPENAI_URL", "https://api.openai.com")
     monkeypatch.setenv("OPENAI_MODEL", "mocked-model")
 
     config_path = tmp_path / ".opentrap" / "opentrap.yaml"
@@ -224,7 +225,7 @@ def test_llm_selected_trap_fails_fast_when_llm_env_is_missing(
 
     captured = capsys.readouterr()
     assert code == 1
-    assert "Missing required environment variable(s): OPENAI_API_KEY, OPENAI_MODEL" in captured.err
+    assert "Missing required environment variable(s): OPENAI_API_KEY, OPENAI_URL, OPENAI_MODEL" in captured.err
 
 
 def test_llm_mocked_run_uses_final_cache_paths_for_manifest_data_items(
