@@ -1,0 +1,29 @@
+import { defineConfig, devices } from "@playwright/test";
+
+export default defineConfig({
+  testDir: "./e2e",
+  timeout: 240_000,
+  expect: {
+    timeout: 20_000,
+  },
+  fullyParallel: false,
+  workers: 1,
+  retries: 0,
+  use: {
+    baseURL: "http://localhost:5173",
+    trace: "on-first-retry",
+  },
+  projects: [
+    {
+      name: "chromium",
+      use: { ...devices["Desktop Chrome"] },
+    },
+  ],
+   webServer: {
+    command: "bun run dev",
+    url: "http://localhost:5173",
+    reuseExistingServer: true,
+    timeout: 180_000,
+    cwd: ".",
+  },
+});

@@ -53,6 +53,36 @@ bun run start
 
 Open `http://localhost:3000`.
 
+## Playwright E2E
+
+This E2E test runs against the real `/api/assist` backend path and requires a valid OpenAI key.
+
+1. Ensure env is configured:
+
+```bash
+cp .env.example .env
+# then set OPENAI_API_KEY in .env
+```
+
+2. Install dependencies and Playwright browser:
+
+```bash
+bun install
+playwright install chromium
+```
+
+3. Run the E2E test:
+
+```bash
+bun run test:e2e
+```
+
+Optional headed mode:
+
+```bash
+bun run test:e2e:headed
+```
+
 ## Fixtures
 
 This app now uses committed static fixtures only:

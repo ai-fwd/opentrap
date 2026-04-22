@@ -11,7 +11,9 @@
     "build": "bun node_modules/vite/bin/vite.js build --config web/vite.config.ts && bun node_modules/typescript/bin/tsc -p tsconfig.json",
     "start": "bun run dist/src/server.js",
     "typecheck": "bun node_modules/typescript/bin/tsc --noEmit -p tsconfig.json && bun node_modules/typescript/bin/tsc --noEmit -p web/tsconfig.json",
-    "test": "bun test"
+    "test": "bun test",
+    "test:e2e": "playwright test",
+    "test:e2e:headed": "playwright test --project=chromium --headed"
   },
   "dependencies": {
     "@hookform/resolvers": "3.10.0",
@@ -66,6 +68,7 @@
     "zod": "3.25.76"
   },
   "devDependencies": {
+    "@playwright/test": "^1.59.1",
     "@tailwindcss/typography": "0.5.16",
     "@types/bun": "1.2.7",
     "@types/node": "22.16.5",
