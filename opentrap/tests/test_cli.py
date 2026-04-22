@@ -74,7 +74,7 @@ class Trap(TrapSpec[Mapping[str, Any], Mapping[str, Any], Mapping[str, Any], Map
         )
         return artifact_path
 
-    def run(self, context: Mapping[str, Any]) -> Mapping[str, Any]:
+    def bind(self, context: Mapping[str, Any]) -> Mapping[str, Any]:
         return dict(context)
 
     def evaluate(self, context: Mapping[str, Any]) -> Mapping[str, Any]:

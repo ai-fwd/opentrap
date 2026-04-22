@@ -34,7 +34,7 @@ def test_build_trap_registry_discovers_trap_ids_without_instantiation(tmp_path: 
             def generate(self, _shared: SharedConfig, _trap: Mapping[str, Any], output_base: Path) -> Path:
                 return output_base
 
-            def run(self, context: Mapping[str, Any]) -> Mapping[str, Any]:
+            def bind(self, context: Mapping[str, Any]) -> Mapping[str, Any]:
                 return dict(context)
 
             def evaluate(self, context: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -56,7 +56,7 @@ def test_build_trap_registry_discovers_trap_ids_without_instantiation(tmp_path: 
             def generate(self, _shared: SharedConfig, _trap: Mapping[str, Any], output_base: Path) -> Path:
                 return output_base
 
-            def run(self, context: Mapping[str, Any]) -> Mapping[str, Any]:
+            def bind(self, context: Mapping[str, Any]) -> Mapping[str, Any]:
                 return dict(context)
 
             def evaluate(self, context: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -85,7 +85,7 @@ def test_build_trap_registry_fails_when_contract_missing(tmp_path: Path) -> None
             def generate(self, _shared: SharedConfig, _trap: Mapping[str, Any], output_base: Path) -> Path:
                 return output_base
 
-            def run(self, context: Mapping[str, Any]) -> Mapping[str, Any]:
+            def bind(self, context: Mapping[str, Any]) -> Mapping[str, Any]:
                 return dict(context)
 
             def evaluate(self, context: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -159,7 +159,7 @@ def test_load_trap_fields_does_not_instantiate_trap(tmp_path: Path) -> None:
             def generate(self, _shared: SharedConfig, _trap: Mapping[str, Any], output_base: Path) -> Path:
                 return output_base
 
-            def run(self, context: Mapping[str, Any]) -> Mapping[str, Any]:
+            def bind(self, context: Mapping[str, Any]) -> Mapping[str, Any]:
                 return dict(context)
 
             def evaluate(self, context: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -192,7 +192,7 @@ def test_create_trap_instantiates_and_assigns_trap_id(tmp_path: Path) -> None:
             def generate(self, _shared: SharedConfig, _trap: Mapping[str, Any], output_base: Path) -> Path:
                 return output_base
 
-            def run(self, context: Mapping[str, Any]) -> Mapping[str, Any]:
+            def bind(self, context: Mapping[str, Any]) -> Mapping[str, Any]:
                 return dict(context)
 
             def evaluate(self, context: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -225,7 +225,7 @@ def test_create_trap_surfaces_constructor_failure(tmp_path: Path) -> None:
             def generate(self, _shared: SharedConfig, _trap: Mapping[str, Any], output_base: Path) -> Path:
                 return output_base
 
-            def run(self, context: Mapping[str, Any]) -> Mapping[str, Any]:
+            def bind(self, context: Mapping[str, Any]) -> Mapping[str, Any]:
                 return dict(context)
 
             def evaluate(self, context: Mapping[str, Any]) -> Mapping[str, Any]:

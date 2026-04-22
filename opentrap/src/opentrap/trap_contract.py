@@ -40,13 +40,13 @@ class TrapFieldSpec:
         return self.default is not MISSING_DEFAULT
 
 
-RunContextT = TypeVar("RunContextT")
+BindContextT = TypeVar("BindContextT")
 ActionsT = TypeVar("ActionsT")
 EvalContextT = TypeVar("EvalContextT")
 EvalResultT = TypeVar("EvalResultT")
 
 
-class TrapSpec(ABC, Generic[RunContextT, ActionsT, EvalContextT, EvalResultT]):
+class TrapSpec(ABC, Generic[BindContextT, ActionsT, EvalContextT, EvalResultT]):
     trap_id: str
     fields: Mapping[str, TrapFieldSpec]
 
@@ -60,8 +60,8 @@ class TrapSpec(ABC, Generic[RunContextT, ActionsT, EvalContextT, EvalResultT]):
         """Generate trap artifact data and return the produced file/directory path."""
 
     @abstractmethod
-    def run(self, context: RunContextT) -> ActionsT:
-        """Bind runtime context and return trap actions consumed by adapter handlers."""
+    def bind(self, context: BindContextT) -> ActionsT:
+        """Attach runtime context and return actions used by adapter handlers to access trap data."""
 
     @abstractmethod
     def evaluate(self, context: EvalContextT) -> EvalResultT:

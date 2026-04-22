@@ -15,7 +15,7 @@ from opentrap.trap_contract import SharedConfig, TrapFieldSpec, TrapSpec
 
 
 @dataclass(frozen=True)
-class TrapRunContext:
+class TrapBindContext:
     data_dir: Path
 
 
@@ -32,7 +32,7 @@ class TrapEvalResult:
 
 class Trap(
     TrapSpec[
-        TrapRunContext,
+        TrapBindContext,
         TrapActions,
         TrapEvalContext,
         TrapEvalResult,
@@ -111,7 +111,7 @@ class Trap(
             samples=shared_config.samples,
         )
 
-    def run(self, context: TrapRunContext) -> TrapActions:
+    def bind(self, context: TrapBindContext) -> TrapActions:
         return TrapActions(data_dir=context.data_dir)
 
     def evaluate(self, context: TrapEvalContext) -> TrapEvalResult:
