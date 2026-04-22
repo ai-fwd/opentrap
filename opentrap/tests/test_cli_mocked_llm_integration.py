@@ -40,6 +40,10 @@ def _base_payload(*, trap_intent: str = "rewrite negatives", base_count: int = 1
             "trap_intent": trap_intent,
             "seed": 42,
         },
+        "harness": {
+            "command": ["bunx", "playwright", "test"],
+            "cwd": "acme-client",
+        },
         "traps": {
             TRAP_ID: {
                 "location_temperature": 0.0,

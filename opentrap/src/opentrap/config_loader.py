@@ -22,6 +22,13 @@ class LoadedTrapConfig:
     shared: SharedConfig
     trap_configs: dict[str, dict[str, Any]]
     product_under_test: str
+    harness: "HarnessConfig"
+
+
+@dataclass(frozen=True)
+class HarnessConfig:
+    command: tuple[str, ...]
+    cwd: str
 
 
 def _yaml_module():
@@ -129,6 +136,37 @@ def _validate_product_under_test(raw: object) -> str:
     return product_under_test
 
 
+def _validate_harness_config(raw: object) -> HarnessConfig:
+    if not isinstance(raw, Mapping):
+        raise ConfigError("harness section must be a mapping")
+
+    allowed_keys = {"command", "cwd"}
+    unknown_keys = sorted(set(raw) - allowed_keys)
+    if unknown_keys:
+        raise ConfigError(f"harness has unknown key(s): {', '.join(unknown_keys)}")
+
+    command_raw = raw.get("command")
+    if not isinstance(command_raw, list) or not command_raw:
+        raise ConfigError("harness.command must be a non-empty list")
+
+    command: list[str] = []
+    for index, part in enumerate(command_raw):
+        if not isinstance(part, str) or not part.strip():
+            raise ConfigError(f"harness.command[{index}] must be a non-empty string")
+        command.append(part.strip())
+
+    cwd_raw = raw.get("cwd")
+    if not isinstance(cwd_raw, str):
+        raise ConfigError("harness.cwd must be a string")
+    cwd = cwd_raw.strip()
+    if not cwd:
+        raise ConfigError("harness.cwd cannot be empty")
+    if Path(cwd).is_absolute():
+        raise ConfigError("harness.cwd must be relative")
+
+    return HarnessConfig(command=tuple(command), cwd=cwd)
+
+
 def _validate_field_constraints(field_name: str, value: Any, spec: TrapFieldSpec) -> Any:
     if spec.type == "string":
         if not isinstance(value, str):
@@ -203,6 +241,7 @@ def _validate_trap_config(
 def build_initial_trap_config(
     shared: SharedConfig,
     trap_fields_registry: Mapping[str, Mapping[str, TrapFieldSpec]],
+    harness: HarnessConfig,
 ) -> dict[str, Any]:
     traps_payload: dict[str, dict[str, Any]] = {}
     for trap_id in sorted(trap_fields_registry):
@@ -226,6 +265,10 @@ def build_initial_trap_config(
             "content_style": shared.content_style,
             "trap_intent": shared.trap_intent,
             "seed": shared.seed,
+        },
+        "harness": {
+            "command": list(harness.command),
+            "cwd": harness.cwd,
         },
         "traps": traps_payload,
     }
@@ -252,7 +295,7 @@ def load_trap_config(
     if not isinstance(raw, dict):
         raise ConfigError("config root must be a mapping")
 
-    allowed_top_level = {"shared", "traps", "product_under_test"}
+    allowed_top_level = {"shared", "traps", "product_under_test", "harness"}
     unknown_top_level = sorted(set(raw) - allowed_top_level)
     if unknown_top_level:
         raise ConfigError(
@@ -268,6 +311,7 @@ def load_trap_config(
     if not isinstance(traps_raw, dict):
         raise ConfigError("traps section must be a mapping")
     product_under_test = _validate_product_under_test(raw.get("product_under_test"))
+    harness = _validate_harness_config(raw.get("harness"))
 
     sample_boundaries = load_sample_boundaries(samples_dir or Path(".opentrap/samples"))
     shared = replace(shared, samples=sample_boundaries)
@@ -294,4 +338,5 @@ def load_trap_config(
         shared=shared,
         trap_configs=trap_configs,
         product_under_test=product_under_test,
+        harness=harness,
     )

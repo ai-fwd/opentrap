@@ -20,16 +20,24 @@ def _trap_fields_registry() -> dict[str, dict[str, TrapFieldSpec]]:
     }
 
 
-def test_load_trap_config_applies_trap_defaults(tmp_path: Path) -> None:
-    payload = {
+def _base_payload() -> dict:
+    return {
         "shared": {
             "scenario": "summarize docs",
             "content_style": "docs",
             "trap_intent": "rewrite negatives",
             "seed": None,
         },
+        "harness": {
+            "command": ["bunx", "playwright", "test"],
+            "cwd": "acme-client",
+        },
         "traps": {"reasoning/chain-trap": {}},
     }
+
+
+def test_load_trap_config_applies_trap_defaults(tmp_path: Path) -> None:
+    payload = _base_payload()
     config_path = tmp_path / "opentrap.yaml"
     config_path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
     samples_dir = tmp_path / ".opentrap" / "samples"
@@ -39,6 +47,8 @@ def test_load_trap_config_applies_trap_defaults(tmp_path: Path) -> None:
     assert loaded.shared.seed is None
     assert loaded.shared.samples == ()
     assert loaded.product_under_test == "default"
+    assert loaded.harness.command == ("bunx", "playwright", "test")
+    assert loaded.harness.cwd == "acme-client"
     assert loaded.trap_configs["reasoning/chain-trap"] == {
         "temperature": 0.0,
         "base_count": 3,
@@ -46,16 +56,8 @@ def test_load_trap_config_applies_trap_defaults(tmp_path: Path) -> None:
 
 
 def test_load_trap_config_reads_optional_product_under_test(tmp_path: Path) -> None:
-    payload = {
-        "product_under_test": "acme-client",
-        "shared": {
-            "scenario": "summarize docs",
-            "content_style": "docs",
-            "trap_intent": "rewrite negatives",
-            "seed": None,
-        },
-        "traps": {"reasoning/chain-trap": {}},
-    }
+    payload = _base_payload()
+    payload["product_under_test"] = "acme-client"
     config_path = tmp_path / "opentrap.yaml"
     config_path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
 
@@ -69,16 +71,8 @@ def test_load_trap_config_reads_optional_product_under_test(tmp_path: Path) -> N
 
 
 def test_load_trap_config_rejects_invalid_product_under_test(tmp_path: Path) -> None:
-    payload = {
-        "product_under_test": "nested/path",
-        "shared": {
-            "scenario": "summarize docs",
-            "content_style": "docs",
-            "trap_intent": "rewrite negatives",
-            "seed": None,
-        },
-        "traps": {"reasoning/chain-trap": {}},
-    }
+    payload = _base_payload()
+    payload["product_under_test"] = "nested/path"
     config_path = tmp_path / "opentrap.yaml"
     config_path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
 
@@ -90,19 +84,78 @@ def test_load_trap_config_rejects_invalid_product_under_test(tmp_path: Path) -> 
         )
 
 
+def test_load_trap_config_rejects_missing_required_harness(tmp_path: Path) -> None:
+    payload = _base_payload()
+    payload.pop("harness")
+    config_path = tmp_path / "opentrap.yaml"
+    config_path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
+
+    with pytest.raises(ConfigError, match="harness section must be a mapping"):
+        load_trap_config(
+            config_path,
+            _trap_fields_registry(),
+            samples_dir=tmp_path / ".opentrap/samples",
+        )
+
+
+@pytest.mark.parametrize(
+    ("command", "error_match"),
+    [
+        (None, "harness.command must be a non-empty list"),
+        ([], "harness.command must be a non-empty list"),
+        ([""], "harness.command\\[0\\] must be a non-empty string"),
+        (["bunx", 1], "harness.command\\[1\\] must be a non-empty string"),
+    ],
+)
+def test_load_trap_config_rejects_invalid_harness_command(
+    tmp_path: Path,
+    command: object,
+    error_match: str,
+) -> None:
+    payload = _base_payload()
+    payload["harness"]["command"] = command
+    config_path = tmp_path / "opentrap.yaml"
+    config_path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
+
+    with pytest.raises(ConfigError, match=error_match):
+        load_trap_config(
+            config_path,
+            _trap_fields_registry(),
+            samples_dir=tmp_path / ".opentrap/samples",
+        )
+
+
+@pytest.mark.parametrize(
+    ("cwd", "error_match"),
+    [
+        (None, "harness.cwd must be a string"),
+        ("", "harness.cwd cannot be empty"),
+        ("   ", "harness.cwd cannot be empty"),
+        ("/abs/path", "harness.cwd must be relative"),
+    ],
+)
+def test_load_trap_config_rejects_invalid_harness_cwd(
+    tmp_path: Path,
+    cwd: object,
+    error_match: str,
+) -> None:
+    payload = _base_payload()
+    payload["harness"]["cwd"] = cwd
+    config_path = tmp_path / "opentrap.yaml"
+    config_path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
+
+    with pytest.raises(ConfigError, match=error_match):
+        load_trap_config(
+            config_path,
+            _trap_fields_registry(),
+            samples_dir=tmp_path / ".opentrap/samples",
+        )
+
+
 def test_load_trap_config_rejects_unknown_trap_id(tmp_path: Path) -> None:
-    payload = {
-        "shared": {
-            "scenario": "summarize docs",
-            "content_style": "docs",
-            "trap_intent": "rewrite negatives",
-            "seed": 10,
-        },
-        "traps": {
-            "reasoning/chain-trap": {},
-            "memory/unknown": {},
-        },
-    }
+    payload = _base_payload()
+    payload["shared"]["seed"] = 10
+    payload["traps"]["memory/unknown"] = {}
     config_path = tmp_path / "opentrap.yaml"
     config_path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
 
@@ -115,15 +168,9 @@ def test_load_trap_config_rejects_unknown_trap_id(tmp_path: Path) -> None:
 
 
 def test_load_trap_config_rejects_unknown_trap_field(tmp_path: Path) -> None:
-    payload = {
-        "shared": {
-            "scenario": "summarize docs",
-            "content_style": "docs",
-            "trap_intent": "rewrite negatives",
-            "seed": 10,
-        },
-        "traps": {"reasoning/chain-trap": {"unexpected": 1}},
-    }
+    payload = _base_payload()
+    payload["shared"]["seed"] = 10
+    payload["traps"]["reasoning/chain-trap"] = {"unexpected": 1}
     config_path = tmp_path / "opentrap.yaml"
     config_path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
 
@@ -136,15 +183,8 @@ def test_load_trap_config_rejects_unknown_trap_field(tmp_path: Path) -> None:
 
 
 def test_load_trap_config_rejects_invalid_seed(tmp_path: Path) -> None:
-    payload = {
-        "shared": {
-            "scenario": "summarize docs",
-            "content_style": "docs",
-            "trap_intent": "rewrite negatives",
-            "seed": "not-int",
-        },
-        "traps": {"reasoning/chain-trap": {}},
-    }
+    payload = _base_payload()
+    payload["shared"]["seed"] = "not-int"
     config_path = tmp_path / "opentrap.yaml"
     config_path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
 
@@ -157,15 +197,9 @@ def test_load_trap_config_rejects_invalid_seed(tmp_path: Path) -> None:
 
 
 def test_load_trap_config_enforces_numeric_range(tmp_path: Path) -> None:
-    payload = {
-        "shared": {
-            "scenario": "summarize docs",
-            "content_style": "docs",
-            "trap_intent": "rewrite negatives",
-            "seed": 123,
-        },
-        "traps": {"reasoning/chain-trap": {"temperature": 2.0}},
-    }
+    payload = _base_payload()
+    payload["shared"]["seed"] = 123
+    payload["traps"]["reasoning/chain-trap"] = {"temperature": 2.0}
     config_path = tmp_path / "opentrap.yaml"
     config_path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
 
@@ -178,16 +212,9 @@ def test_load_trap_config_enforces_numeric_range(tmp_path: Path) -> None:
 
 
 def test_load_trap_config_rejects_unknown_top_level_key(tmp_path: Path) -> None:
-    payload = {
-        "shared": {
-            "scenario": "summarize docs",
-            "content_style": "docs",
-            "trap_intent": "rewrite negatives",
-            "seed": 123,
-        },
-        "traps": {"reasoning/chain-trap": {}},
-        "extra": {},
-    }
+    payload = _base_payload()
+    payload["shared"]["seed"] = 123
+    payload["extra"] = {}
     config_path = tmp_path / "opentrap.yaml"
     config_path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
 
@@ -206,15 +233,8 @@ def test_load_trap_config_loads_samples_recursively(tmp_path: Path) -> None:
     (samples_dir / "nested" / "a.md").write_text("# sample", encoding="utf-8")
     (samples_dir / "nested" / "ignore.bin").write_bytes(b"\x00\x01")
 
-    payload = {
-        "shared": {
-            "scenario": "summarize docs",
-            "content_style": "docs",
-            "trap_intent": "rewrite negatives",
-            "seed": 123,
-        },
-        "traps": {"reasoning/chain-trap": {}},
-    }
+    payload = _base_payload()
+    payload["shared"]["seed"] = 123
     config_path = tmp_path / "opentrap.yaml"
     config_path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
 
@@ -230,15 +250,8 @@ def test_load_trap_config_rejects_non_utf8_sample(tmp_path: Path) -> None:
     samples_dir.mkdir(parents=True)
     (samples_dir / "bad.html").write_bytes(b"\xff\xfe")
 
-    payload = {
-        "shared": {
-            "scenario": "summarize docs",
-            "content_style": "docs",
-            "trap_intent": "rewrite negatives",
-            "seed": 123,
-        },
-        "traps": {"reasoning/chain-trap": {}},
-    }
+    payload = _base_payload()
+    payload["shared"]["seed"] = 123
     config_path = tmp_path / "opentrap.yaml"
     config_path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
 

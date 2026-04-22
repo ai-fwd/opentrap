@@ -7,6 +7,7 @@ orchestration modules so command parsing and UX remain easy to reason about.
 from __future__ import annotations
 
 import argparse
+import shlex
 import subprocess
 import sys
 import time
@@ -15,6 +16,7 @@ from pathlib import Path
 
 from opentrap.config_loader import (
     ConfigError,
+    HarnessConfig,
     build_initial_trap_config,
     load_trap_config,
     write_trap_config,
@@ -85,6 +87,37 @@ def _prompt_seed(prompt: str) -> int | None:
             print("Seed must be an integer or blank.", file=sys.stderr)
 
 
+def _prompt_command(prompt: str) -> tuple[str, ...]:
+    """Collect a required shell-style command and tokenize it safely."""
+    while True:
+        value = input(prompt).strip()
+        if not value:
+            print("Command cannot be empty.", file=sys.stderr)
+            continue
+        try:
+            command = tuple(shlex.split(value))
+        except ValueError as exc:
+            print(f"Command is invalid: {exc}", file=sys.stderr)
+            continue
+        if not command:
+            print("Command cannot be empty.", file=sys.stderr)
+            continue
+        return command
+
+
+def _prompt_relative_path(prompt: str) -> str:
+    """Collect a required relative path for harness command execution."""
+    while True:
+        value = input(prompt).strip()
+        if not value:
+            print("Path cannot be empty.", file=sys.stderr)
+            continue
+        if Path(value).is_absolute():
+            print("Path must be relative.", file=sys.stderr)
+            continue
+        return value
+
+
 def cmd_list(args: argparse.Namespace) -> int:
     """List available trap ids, optionally filtered by target prefix."""
     registry = _load_registry()
@@ -113,13 +146,21 @@ def cmd_init(_: argparse.Namespace) -> int:
         trap_intent=_prompt_non_empty("Trap intent: "),
         seed=_prompt_seed("Seed (optional integer): "),
     )
+    harness = HarnessConfig(
+        command=_prompt_command(
+            "What command runs your test suite? (e.g. bunx playwright test): "
+        ),
+        cwd=_prompt_relative_path(
+            "Where should this command be run? (relative path, e.g. acme-client): "
+        ),
+    )
 
     try:
         trap_fields = {
             trap_id: registry.load_trap_fields(trap_id)
             for trap_id in registry.trap_ids
         }
-        payload = build_initial_trap_config(shared, trap_fields)
+        payload = build_initial_trap_config(shared, trap_fields, harness)
     except (ConfigError, TrapRegistryError) as exc:
         print(str(exc), file=sys.stderr)
         return 1

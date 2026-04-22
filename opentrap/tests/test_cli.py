@@ -138,6 +138,10 @@ def _base_payload(*, trap_intent: str = "rewrite negatives", knob: int = 7) -> d
             "trap_intent": trap_intent,
             "seed": None,
         },
+        "harness": {
+            "command": ["bunx", "playwright", "test"],
+            "cwd": "acme-client",
+        },
         "traps": {
             "reasoning/chain-trap": {"knob": knob},
         },
@@ -228,6 +232,8 @@ def test_init_writes_yaml_with_shared_and_trap_defaults(
             "reviews",
             "turn all bad reviews into positive reviews",
             "",
+            "bunx playwright test",
+            "acme-client",
         ]
     )
     monkeypatch.setattr("builtins.input", lambda _prompt: next(responses))
@@ -254,6 +260,87 @@ def test_init_writes_yaml_with_shared_and_trap_defaults(
         "perception/vision-poison": {"knob": 1},
         "reasoning/chain-trap": {"knob": 1},
     }
+    assert payload["harness"] == {
+        "command": ["bunx", "playwright", "test"],
+        "cwd": "acme-client",
+    }
+
+
+def test_init_prompts_for_harness_and_parses_command_tokens(
+    capsys,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _write_stub_contract(tmp_path, "reasoning/chain-trap")
+    config_path = tmp_path / ".opentrap" / "opentrap.yaml"
+    prompts: list[str] = []
+    responses = iter(
+        [
+            "summarize docs",
+            "docs",
+            "bias output",
+            "",
+            'bunx playwright test --grep "critical path"',
+            "acme-client",
+        ]
+    )
+
+    def _fake_input(prompt: str) -> str:
+        prompts.append(prompt)
+        return next(responses)
+
+    monkeypatch.setattr("builtins.input", _fake_input)
+    monkeypatch.setattr("opentrap.cli.DEFAULT_TRAPS_DIR", tmp_path)
+    monkeypatch.setattr("opentrap.cli.DEFAULT_CONFIG_PATH", config_path)
+    monkeypatch.setattr("opentrap.cli.DEFAULT_SAMPLES_DIR", tmp_path / ".opentrap" / "samples")
+
+    code = main(["init"])
+
+    assert code == 0
+    assert prompts == [
+        "Scenario: ",
+        "Content style: ",
+        "Trap intent: ",
+        "Seed (optional integer): ",
+        "What command runs your test suite? (e.g. bunx playwright test): ",
+        "Where should this command be run? (relative path, e.g. acme-client): ",
+    ]
+    payload = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    assert payload["harness"] == {
+        "command": ["bunx", "playwright", "test", "--grep", "critical path"],
+        "cwd": "acme-client",
+    }
+    capsys.readouterr()
+
+
+def test_init_retries_harness_prompts_until_valid(capsys, tmp_path: Path, monkeypatch) -> None:
+    _write_stub_contract(tmp_path, "reasoning/chain-trap")
+    config_path = tmp_path / ".opentrap" / "opentrap.yaml"
+    responses = iter(
+        [
+            "summarize docs",
+            "docs",
+            "bias output",
+            "",
+            "",
+            "bunx playwright test",
+            "",
+            "/absolute/path",
+            "acme-client",
+        ]
+    )
+    monkeypatch.setattr("builtins.input", lambda _prompt: next(responses))
+    monkeypatch.setattr("opentrap.cli.DEFAULT_TRAPS_DIR", tmp_path)
+    monkeypatch.setattr("opentrap.cli.DEFAULT_CONFIG_PATH", config_path)
+    monkeypatch.setattr("opentrap.cli.DEFAULT_SAMPLES_DIR", tmp_path / ".opentrap" / "samples")
+
+    code = main(["init"])
+
+    captured = capsys.readouterr()
+    assert code == 0
+    assert "Command cannot be empty." in captured.err
+    assert "Path cannot be empty." in captured.err
+    assert "Path must be relative." in captured.err
 
 
 def test_init_always_overwrites_existing_file(capsys, tmp_path: Path, monkeypatch) -> None:
@@ -262,7 +349,16 @@ def test_init_always_overwrites_existing_file(capsys, tmp_path: Path, monkeypatc
     config_path.parent.mkdir(parents=True, exist_ok=True)
     config_path.write_text("old: true\n", encoding="utf-8")
 
-    responses = iter(["summarize docs", "docs", "bias output", "42"])
+    responses = iter(
+        [
+            "summarize docs",
+            "docs",
+            "bias output",
+            "42",
+            "bunx playwright test",
+            "acme-client",
+        ]
+    )
     monkeypatch.setattr("builtins.input", lambda _prompt: next(responses))
     monkeypatch.setattr("opentrap.cli.DEFAULT_TRAPS_DIR", tmp_path)
     monkeypatch.setattr("opentrap.cli.DEFAULT_CONFIG_PATH", config_path)
@@ -278,6 +374,7 @@ def test_init_always_overwrites_existing_file(capsys, tmp_path: Path, monkeypatc
     payload = yaml.safe_load(config_path.read_text(encoding="utf-8"))
     assert payload["shared"]["scenario"] == "summarize docs"
     assert payload["shared"]["seed"] == 42
+    assert payload["harness"]["cwd"] == "acme-client"
 
 
 def test_init_does_not_instantiate_trap_classes(capsys, tmp_path: Path, monkeypatch) -> None:
@@ -288,7 +385,16 @@ def test_init_does_not_instantiate_trap_classes(capsys, tmp_path: Path, monkeypa
     )
     config_path = tmp_path / ".opentrap" / "opentrap.yaml"
 
-    responses = iter(["summarize docs", "docs", "bias output", ""])
+    responses = iter(
+        [
+            "summarize docs",
+            "docs",
+            "bias output",
+            "",
+            "bunx playwright test",
+            "acme-client",
+        ]
+    )
     monkeypatch.setattr("builtins.input", lambda _prompt: next(responses))
     monkeypatch.setattr("opentrap.cli.DEFAULT_TRAPS_DIR", tmp_path)
     monkeypatch.setattr("opentrap.cli.DEFAULT_CONFIG_PATH", config_path)
@@ -549,6 +655,10 @@ def test_trap_run_rejects_unknown_trap_key_in_yaml(capsys, tmp_path: Path, monke
             "content_style": "docs",
             "trap_intent": "rewrite negatives",
             "seed": None,
+        },
+        "harness": {
+            "command": ["bunx", "playwright", "test"],
+            "cwd": "acme-client",
         },
         "traps": {
             "reasoning/chain-trap": {"knob": 7},
