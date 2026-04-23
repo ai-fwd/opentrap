@@ -23,7 +23,8 @@ from opentrap.config_loader import (
 )
 from opentrap.run_orchestration import RunEnvironment, run_single_trap
 from opentrap.trap_contract import SharedConfig, TrapFieldSpec
-from opentrap.trap_registry import TrapRegistry, TrapRegistryError, build_trap_registry
+from opentrap.trap_registry import TrapRegistry, TrapRegistryError
+from opentrap.trap_registry_loader import load_registry_from_candidates
 
 DEFAULT_TRAPS_DIR = Path(__file__).resolve().parents[1] / "traps"
 DEFAULT_REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -60,7 +61,7 @@ def _resolve_trap_ref(trap_ref: str) -> str:
 def _load_registry() -> TrapRegistry | None:
     """Load trap registry and render discovery/contract errors for CLI callers."""
     try:
-        return build_trap_registry(DEFAULT_TRAPS_DIR)
+        return load_registry_from_candidates((DEFAULT_TRAPS_DIR,))
     except TrapRegistryError as exc:
         print(str(exc), file=sys.stderr)
         return None

@@ -428,7 +428,7 @@ def test_request_context_has_no_data_items_or_emit_event(tmp_path: Path) -> None
     }
 
 
-def test_trap_actions_resolver_binds_perception_actions(tmp_path: Path) -> None:
+def test_trap_binding_binds_perception_actions(tmp_path: Path) -> None:
     repo_root = tmp_path / "repo"
     repo_root.mkdir()
     data_file = (

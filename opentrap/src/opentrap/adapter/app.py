@@ -19,7 +19,7 @@ from .http_runtime import (
 )
 from .manifest import load_manifest_metadata
 from .models import RouteSpec, UpstreamSpec
-from .trap_actions_resolver import resolve_trap_actions
+from .trap_binding import resolve_trap_actions
 
 
 def create_app(

@@ -277,7 +277,7 @@ def test_run_generation_uses_injected_generator(tmp_path: Path) -> None:
     ]
 
 
-def test_trap_constructor_loads_llm_config_once_without_injection(monkeypatch) -> None:
+def test_trap_constructor_defers_llm_config_without_injection(monkeypatch) -> None:
     trap_module = _load_module("trap.py", "prompt_injection_via_html_trap_ctor")
     calls = {"load_count": 0, "llm_generator_init_count": 0}
 
@@ -297,8 +297,8 @@ def test_trap_constructor_loads_llm_config_once_without_injection(monkeypatch) -
     monkeypatch.setattr(trap_module, "LLMHTMLGenerator", _FakeLLMHTMLGenerator)
 
     trap_module.Trap()
-    assert calls["load_count"] == 1
-    assert calls["llm_generator_init_count"] == 1
+    assert calls["load_count"] == 0
+    assert calls["llm_generator_init_count"] == 0
 
 
 def test_trap_generate_uses_injected_dataset_generator(monkeypatch, tmp_path: Path) -> None:
@@ -377,6 +377,8 @@ def test_trap_generate_initializes_default_generator_once(monkeypatch, tmp_path:
     monkeypatch.setattr(trap_module, "LLMHTMLGenerator", _FakeLLMHTMLGenerator)
 
     trap = trap_module.Trap()
+    assert calls["load_count"] == 0
+    assert calls["llm_generator_init_count"] == 0
     shared = SharedConfig(
         scenario="summarize docs",
         content_style="docs",
