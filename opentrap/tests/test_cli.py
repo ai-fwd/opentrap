@@ -491,7 +491,11 @@ def test_trap_run_single_records_manifest_and_artifact(
     )
     run_dir = run_manifest_path.parent
     session_id = run_manifest["sessions"][0]["session_id"]
-    assert (run_dir / f"session-{session_id}.json").exists()
+    sessions_file = run_manifest.get("sessions_file")
+    assert sessions_file == "sessions.jsonl"
+    sessions_path = run_dir / sessions_file
+    assert sessions_path.exists()
+    assert not (run_dir / f"session-{session_id}.json").exists()
     assert (run_dir / "report.json").exists()
 
 
@@ -563,7 +567,70 @@ def test_trap_run_returns_failure_when_harness_case_fails(
     run_manifest = json.loads(run_manifest_path.read_text(encoding="utf-8"))
     assert run_manifest["status"] == "finalized"
     assert run_manifest["succeeded"] is False
-    assert run_manifest["sessions"][0]["harness_exit_code"] == 3
+    sessions_file = run_manifest.get("sessions_file")
+    assert sessions_file == "sessions.jsonl"
+    sessions_path = run_manifest_path.parent / sessions_file
+    session_payloads = [
+        json.loads(line)
+        for line in sessions_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert len(session_payloads) == 1
+    session_payload = session_payloads[0]
+    assert session_payload["harness_exit_code"] == 3
+    assert session_payload["item_id"] == "00001"
+    assert "case" not in session_payload
+
+
+def test_report_aggregates_match_sessions_jsonl_for_failed_run(
+    capsys,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _write_stub_contract(tmp_path / "traps", "reasoning/chain-trap")
+    generated_root = tmp_path / "adapter" / "generated"
+    _write_generated_adapter(generated_root)
+
+    config_path = tmp_path / ".opentrap" / "opentrap.yaml"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    payload = _base_payload()
+    payload["harness"]["command"] = [sys.executable, "-c", "raise SystemExit(3)"]
+    config_path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
+
+    _configure_trap_run_paths(
+        monkeypatch=monkeypatch,
+        tmp_path=tmp_path,
+        config_path=config_path,
+        samples_dir=tmp_path / ".opentrap" / "samples",
+        generated_root=generated_root,
+    )
+
+    code = main(["reasoning/chain-trap"])
+
+    captured = capsys.readouterr()
+    assert code == 1
+    run_manifest_path = Path(captured.out.strip())
+    run_manifest = json.loads(run_manifest_path.read_text(encoding="utf-8"))
+    report = json.loads((run_manifest_path.parent / "report.json").read_text(encoding="utf-8"))
+
+    sessions_file = run_manifest.get("sessions_file")
+    assert sessions_file == "sessions.jsonl"
+    sessions_path = run_manifest_path.parent / sessions_file
+    session_payloads = [
+        json.loads(line)
+        for line in sessions_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    computed_session_count = len(session_payloads)
+    computed_failed_session_count = sum(
+        1 for session in session_payloads if session.get("harness_exit_code") not in {None, 0}
+    )
+    computed_event_count = sum(int(session.get("event_count", 0)) for session in session_payloads)
+
+    assert report["run_id"] == run_manifest["run_id"]
+    assert report["session_count"] == computed_session_count
+    assert report["failed_session_count"] == computed_failed_session_count
+    assert report["event_count"] == computed_event_count
 
 
 def test_trap_run_rejects_unknown_trap_key_in_yaml(capsys, tmp_path: Path, monkeypatch) -> None:

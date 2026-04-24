@@ -23,7 +23,15 @@ from opentrap.execution_context import (
     load_active_session_descriptor,
     write_active_session_descriptor,
 )
-from opentrap.io_utils import load_json, load_json_maybe, utc_now_iso, write_json
+from opentrap.io_utils import (
+    append_jsonl,
+    load_json,
+    load_json_maybe,
+    load_jsonl,
+    utc_now_iso,
+    write_json,
+    write_jsonl,
+)
 from opentrap.trap_contract import SharedConfig, TrapSpec
 
 ADAPTER_HOST = "127.0.0.1"
@@ -32,6 +40,7 @@ ADAPTER_READY_TIMEOUT_SECONDS = 10.0
 ADAPTER_POLL_INTERVAL_SECONDS = 0.1
 STATUS_HEARTBEAT_INTERVAL_SECONDS = 3.0
 ADAPTER_TERMINATE_TIMEOUT_SECONDS = 3.0
+SESSIONS_FILE_NAME = "sessions.jsonl"
 
 StatusCallback = Callable[[str], None]
 
@@ -123,6 +132,47 @@ def _count_evidence_events(path: Path) -> int:
     return sum(1 for line in path.read_text(encoding="utf-8").splitlines() if line.strip())
 
 
+def _resolve_sessions_file_path(run_dir: Path, manifest: Mapping[str, Any]) -> Path:
+    sessions_file = manifest.get("sessions_file")
+    if isinstance(sessions_file, str) and sessions_file.strip():
+        sessions_path = Path(sessions_file)
+    else:
+        sessions_path = Path(SESSIONS_FILE_NAME)
+    if not sessions_path.is_absolute():
+        sessions_path = run_dir / sessions_path
+    return sessions_path
+
+
+def _load_session_payloads_from_manifest(
+    manifest: Mapping[str, Any],
+    *,
+    run_dir: Path,
+) -> list[dict[str, Any]]:
+    return load_jsonl(_resolve_sessions_file_path(run_dir, manifest))
+
+
+def _update_session_payload(
+    *,
+    sessions_path: Path,
+    session_id: str,
+    updates: Mapping[str, Any],
+) -> None:
+    payloads = load_jsonl(sessions_path)
+    for payload in payloads:
+        if payload.get("session_id") == session_id:
+            payload.update(dict(updates))
+            write_jsonl(sessions_path, payloads, atomic=True)
+            return
+    raise RuntimeError(f"session_id {session_id!r} was not found in {sessions_path}")
+
+
+def _coerce_count(value: object) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
 def _start_case_session(manifest_path: Path, *, case_index: int) -> ActiveSessionDescriptor:
     manifest = load_json(manifest_path)
     run_id = manifest.get("run_id")
@@ -142,10 +192,12 @@ def _start_case_session(manifest_path: Path, *, case_index: int) -> ActiveSessio
     case = cases[case_index]
     if not isinstance(case, dict):
         raise RuntimeError(f"case {case_index} is not a JSON object")
+    item_id = case.get("item_id")
+    item_id_value = item_id if isinstance(item_id, str) else None
 
     run_dir = manifest_path.parent
     session_id = uuid.uuid4().hex
-    session_path = run_dir / f"session-{session_id}.json"
+    session_path = _resolve_sessions_file_path(run_dir, manifest)
     evidence_path = run_dir / f"session-{session_id}.jsonl"
     started_at_utc = utc_now_iso()
 
@@ -162,13 +214,13 @@ def _start_case_session(manifest_path: Path, *, case_index: int) -> ActiveSessio
         "run_id": run_id,
         "session_id": session_id,
         "case_index": case_index,
-        "case": dict(case),
+        "item_id": item_id_value,
         "started_at_utc": started_at_utc,
         "ended_at_utc": None,
         "event_count": 0,
         "harness_exit_code": None,
     }
-    write_json(session_path, session_payload, atomic=True)
+    append_jsonl(session_path, session_payload)
     evidence_path.write_text("", encoding="utf-8")
 
     sessions = manifest.get("sessions")
@@ -178,14 +230,11 @@ def _start_case_session(manifest_path: Path, *, case_index: int) -> ActiveSessio
         {
             "session_id": session_id,
             "case_index": case_index,
-            "case": dict(case),
-            "started_at_utc": started_at_utc,
-            "ended_at_utc": None,
-            "event_count": 0,
-            "harness_exit_code": None,
+            "evidence_file": evidence_path.name,
         }
     )
 
+    manifest["sessions_file"] = SESSIONS_FILE_NAME
     manifest["sessions"] = sessions
     manifest["active_case_index"] = case_index
     manifest["active_session_id"] = session_id
@@ -204,25 +253,17 @@ def _end_case_session(manifest_path: Path, *, harness_exit_code: int) -> None:
     ended_at_utc = utc_now_iso()
     event_count = _count_evidence_events(descriptor.evidence_path)
 
-    session_payload = load_json(descriptor.session_path)
-    session_payload["ended_at_utc"] = ended_at_utc
-    session_payload["event_count"] = event_count
-    session_payload["harness_exit_code"] = harness_exit_code
-    write_json(descriptor.session_path, session_payload, atomic=True)
+    _update_session_payload(
+        sessions_path=descriptor.session_path,
+        session_id=descriptor.session_id,
+        updates={
+            "ended_at_utc": ended_at_utc,
+            "event_count": event_count,
+            "harness_exit_code": harness_exit_code,
+        },
+    )
 
     manifest = load_json(manifest_path)
-    sessions = manifest.get("sessions", [])
-    if isinstance(sessions, list):
-        for session in sessions:
-            if not isinstance(session, dict):
-                continue
-            if session.get("session_id") == descriptor.session_id:
-                session["ended_at_utc"] = ended_at_utc
-                session["event_count"] = event_count
-                session["harness_exit_code"] = harness_exit_code
-                break
-
-    manifest["sessions"] = sessions
     manifest["active_case_index"] = None
     manifest["active_session_id"] = None
     manifest["status"] = "ready"
@@ -233,25 +274,25 @@ def _end_case_session(manifest_path: Path, *, harness_exit_code: int) -> None:
 def _finalize_run(manifest_path: Path, *, succeeded: bool) -> None:
     manifest = load_json(manifest_path)
     ended_at_utc = utc_now_iso()
+    run_dir = manifest_path.parent
     traps = manifest.get("traps", [])
     trap_ids = [
         trap_entry["trap_id"]
         for trap_entry in traps
         if isinstance(trap_entry, dict) and isinstance(trap_entry.get("trap_id"), str)
     ]
-    sessions = manifest.get("sessions", [])
-    session_count = len(sessions) if isinstance(sessions, list) else 0
+    session_payloads = _load_session_payloads_from_manifest(manifest, run_dir=run_dir)
+    session_count = len(session_payloads)
     failed_session_count = len(
         [
             session
-            for session in sessions
-            if isinstance(session, dict) and session.get("harness_exit_code") not in {None, 0}
+            for session in session_payloads
+            if session.get("harness_exit_code") not in {None, 0}
         ]
     )
     total_event_count = sum(
-        int(session.get("event_count", 0))
-        for session in sessions
-        if isinstance(session, dict)
+        _coerce_count(session.get("event_count", 0))
+        for session in session_payloads
     )
 
     manifest["active_case_index"] = None
@@ -319,6 +360,7 @@ def run_single_trap(
         "scorer_status": "pending",
         "active_case_index": None,
         "active_session_id": None,
+        "sessions_file": SESSIONS_FILE_NAME,
         "sessions": [],
         "traps": [],
     }

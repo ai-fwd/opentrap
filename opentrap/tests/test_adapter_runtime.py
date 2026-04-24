@@ -30,6 +30,7 @@ def _write_manifest(path: Path) -> None:
         "scorer_status": "pending",
         "active_case_index": None,
         "active_session_id": TEST_SESSION_ID,
+        "sessions_file": "sessions.jsonl",
         "sessions": [],
         "traps": [
             {
@@ -67,19 +68,19 @@ def _write_manifest(path: Path) -> None:
 
 
 def _write_active_session(manifest_path: Path, *, case: dict[str, Any]) -> ActiveSessionDescriptor:
-    session_path = manifest_path.parent / f"session-{TEST_SESSION_ID}.json"
+    session_path = manifest_path.parent / "sessions.jsonl"
     evidence_path = manifest_path.parent / f"session-{TEST_SESSION_ID}.jsonl"
     session_payload = {
         "run_id": "test-run-id",
         "session_id": TEST_SESSION_ID,
         "case_index": int(case.get("case_index", 0)),
-        "case": dict(case),
+        "item_id": case.get("item_id"),
         "started_at_utc": "2026-01-01T00:00:00+00:00",
         "ended_at_utc": None,
         "event_count": 0,
         "harness_exit_code": None,
     }
-    session_path.write_text(json.dumps(session_payload, indent=2) + "\n", encoding="utf-8")
+    session_path.write_text(json.dumps(session_payload) + "\n", encoding="utf-8")
     evidence_path.write_text("", encoding="utf-8")
     descriptor = ActiveSessionDescriptor(
         run_id="test-run-id",

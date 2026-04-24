@@ -116,6 +116,7 @@ def _write_manifest(path: Path, *, repo_root: Path, product: str = "default") ->
         "scorer_status": "pending",
         "active_case_index": None,
         "active_session_id": TEST_SESSION_ID,
+        "sessions_file": "sessions.jsonl",
         "sessions": [],
         "traps": [
             {
@@ -138,7 +139,7 @@ def _write_manifest(path: Path, *, repo_root: Path, product: str = "default") ->
 
 
 def _write_active_session(manifest_path: Path) -> None:
-    session_path = manifest_path.parent / f"session-{TEST_SESSION_ID}.json"
+    session_path = manifest_path.parent / "sessions.jsonl"
     evidence_path = manifest_path.parent / f"session-{TEST_SESSION_ID}.jsonl"
     session_path.write_text(
         json.dumps(
@@ -146,17 +147,12 @@ def _write_active_session(manifest_path: Path) -> None:
                 "run_id": "integration-run-id",
                 "session_id": TEST_SESSION_ID,
                 "case_index": 0,
-                "case": {
-                    "case_index": 0,
-                    "item_id": "00001",
-                    "data_item": {"id": "00001", "path": "dataset/item-00001.txt"},
-                    "metadata": {"item_id": "00001"},
-                },
+                "item_id": "00001",
                 "started_at_utc": "2026-01-01T00:00:00+00:00",
                 "ended_at_utc": None,
                 "event_count": 0,
-            },
-            indent=2,
+                "harness_exit_code": None,
+            }
         )
         + "\n",
         encoding="utf-8",

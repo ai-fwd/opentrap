@@ -13,7 +13,8 @@ Functions:
   Inputs: path to run manifest (`run.json`).
   Output: newly allocated `session_id`.
   Side effects:
-  - creates `session-<id>.json` and `session-<id>.jsonl` in the run directory
+  - appends one metadata row to `sessions.jsonl` in the run directory
+  - creates `session-<id>.jsonl` evidence log in the run directory
   - appends a session entry to `manifest["sessions"]`
   - sets `manifest["active_session_id"]` and `manifest["status"] = "session_active"`
 
@@ -55,7 +56,16 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from opentrap.io_utils import load_json, utc_now_iso, write_json
+from opentrap.io_utils import (
+    append_jsonl,
+    load_json,
+    load_jsonl,
+    utc_now_iso,
+    write_json,
+    write_jsonl,
+)
+
+SESSIONS_FILE_NAME = "sessions.jsonl"
 
 
 @dataclass(frozen=True)
@@ -133,6 +143,32 @@ def _load_data_items_from_manifest(
     return items
 
 
+def _resolve_sessions_file_path(run_dir: Path, manifest: Mapping[str, Any]) -> Path:
+    sessions_file = manifest.get("sessions_file")
+    if isinstance(sessions_file, str) and sessions_file.strip():
+        sessions_path = Path(sessions_file)
+    else:
+        sessions_path = Path(SESSIONS_FILE_NAME)
+    if not sessions_path.is_absolute():
+        sessions_path = run_dir / sessions_path
+    return sessions_path
+
+
+def _update_session_payload(
+    *,
+    sessions_path: Path,
+    session_id: str,
+    updates: Mapping[str, Any],
+) -> None:
+    payloads = load_jsonl(sessions_path)
+    for payload in payloads:
+        if payload.get("session_id") == session_id:
+            payload.update(dict(updates))
+            write_jsonl(sessions_path, payloads, atomic=True)
+            return
+    raise RuntimeError(f"session_id {session_id!r} was not found in {sessions_path}")
+
+
 def start_session(manifest_path: str | Path) -> str:
     """Start a runtime session and mark the run manifest as session-active."""
     global _active_session
@@ -156,7 +192,7 @@ def start_session(manifest_path: str | Path) -> str:
     run_dir = manifest_file.parent
     session_id = uuid.uuid4().hex
     started_at_utc = utc_now_iso()
-    session_path = run_dir / f"session-{session_id}.json"
+    session_path = _resolve_sessions_file_path(run_dir, manifest)
     evidence_path = run_dir / f"session-{session_id}.jsonl"
 
     session_payload = {
@@ -166,7 +202,7 @@ def start_session(manifest_path: str | Path) -> str:
         "ended_at_utc": None,
         "event_count": 0,
     }
-    write_json(session_path, session_payload, atomic=True)
+    append_jsonl(session_path, session_payload)
     evidence_path.write_text("", encoding="utf-8")
 
     sessions = manifest.get("sessions")
@@ -179,6 +215,7 @@ def start_session(manifest_path: str | Path) -> str:
             "ended_at_utc": None,
         }
     )
+    manifest["sessions_file"] = SESSIONS_FILE_NAME
     manifest["sessions"] = sessions
     manifest["active_session_id"] = session_id
     manifest["status"] = "session_active"
@@ -240,10 +277,14 @@ def end_session() -> FinalizeResult:
     session = _require_active_session()
     ended_at_utc = utc_now_iso()
 
-    session_payload = load_json(session.session_path)
-    session_payload["ended_at_utc"] = ended_at_utc
-    session_payload["event_count"] = session.event_count
-    write_json(session.session_path, session_payload, atomic=True)
+    _update_session_payload(
+        sessions_path=session.session_path,
+        session_id=session.session_id,
+        updates={
+            "ended_at_utc": ended_at_utc,
+            "event_count": session.event_count,
+        },
+    )
 
     manifest = load_json(session.manifest_path)
     sessions = manifest.get("sessions", [])
