@@ -26,6 +26,14 @@ class SharedConfig:
 
 
 @dataclass(frozen=True)
+class TrapCaseContext:
+    artifact_path: Path
+    metadata_path: Path
+    data_dir: Path
+    data_items: tuple[dict[str, str], ...] = ()
+
+
+@dataclass(frozen=True)
 class TrapFieldSpec:
     type: FieldType
     required: bool = False
@@ -61,7 +69,11 @@ class TrapSpec(ABC, Generic[BindContextT, ActionsT, EvalContextT, EvalResultT]):
 
     @abstractmethod
     def bind(self, context: BindContextT) -> ActionsT:
-        """Attach runtime context and return actions used by adapter handlers to access trap data."""
+        """Attach runtime context and return trap actions for adapter handlers."""
+
+    @abstractmethod
+    def build_cases(self, context: TrapCaseContext) -> list[dict[str, Any]]:
+        """Parse generated trap artifacts into ordered execution cases."""
 
     @abstractmethod
     def evaluate(self, context: EvalContextT) -> EvalResultT:

@@ -17,6 +17,10 @@ from pathlib import Path
 from urllib.error import URLError
 from urllib.request import Request, urlopen
 
+from opentrap.execution_context import ActiveSessionDescriptor, write_active_session_descriptor
+
+TEST_SESSION_ID = "integration-session-id"
+
 
 class _UpstreamServer(ThreadingHTTPServer):
     allow_reuse_address = True
@@ -110,7 +114,8 @@ def _write_manifest(path: Path, *, repo_root: Path, product: str = "default") ->
         "requested": "reasoning/chain-trap",
         "status": "armed",
         "scorer_status": "pending",
-        "active_session_id": None,
+        "active_case_index": None,
+        "active_session_id": TEST_SESSION_ID,
         "sessions": [],
         "traps": [
             {
@@ -118,10 +123,61 @@ def _write_manifest(path: Path, *, repo_root: Path, product: str = "default") ->
                 "data_items": [
                     {"id": "00001", "path": "dataset/item-00001.txt"},
                 ],
+                "cases": [
+                    {
+                        "case_index": 0,
+                        "item_id": "00001",
+                        "data_item": {"id": "00001", "path": "dataset/item-00001.txt"},
+                        "metadata": {"item_id": "00001"},
+                    }
+                ],
             }
         ],
     }
     path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+
+
+def _write_active_session(manifest_path: Path) -> None:
+    session_path = manifest_path.parent / f"session-{TEST_SESSION_ID}.json"
+    evidence_path = manifest_path.parent / f"session-{TEST_SESSION_ID}.jsonl"
+    session_path.write_text(
+        json.dumps(
+            {
+                "run_id": "integration-run-id",
+                "session_id": TEST_SESSION_ID,
+                "case_index": 0,
+                "case": {
+                    "case_index": 0,
+                    "item_id": "00001",
+                    "data_item": {"id": "00001", "path": "dataset/item-00001.txt"},
+                    "metadata": {"item_id": "00001"},
+                },
+                "started_at_utc": "2026-01-01T00:00:00+00:00",
+                "ended_at_utc": None,
+                "event_count": 0,
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    evidence_path.write_text("", encoding="utf-8")
+    write_active_session_descriptor(
+        manifest_path.parent / "active_session.json",
+        ActiveSessionDescriptor(
+            run_id="integration-run-id",
+            session_id=TEST_SESSION_ID,
+            case_index=0,
+            session_path=session_path,
+            evidence_path=evidence_path,
+            case={
+                "case_index": 0,
+                "item_id": "00001",
+                "data_item": {"id": "00001", "path": "dataset/item-00001.txt"},
+                "metadata": {"item_id": "00001"},
+            },
+        ),
+    )
 
 
 def _write_generated_adapter(
@@ -228,6 +284,7 @@ def test_adapter_process_integrates_route_modes_and_named_upstreams(tmp_path: Pa
     run_dir.mkdir()
     manifest_path = run_dir / "run.json"
     _write_manifest(manifest_path, repo_root=repo_root)
+    _write_active_session(manifest_path)
 
     upstream_port = _find_free_port()
     adapter_port = _find_free_port()
@@ -297,17 +354,9 @@ def test_adapter_process_integrates_route_modes_and_named_upstreams(tmp_path: Pa
             process.wait(timeout=5)
 
     run_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    assert run_manifest["status"] == "finalized"
-    assert run_manifest["active_session_id"] is None
-    assert isinstance(run_manifest.get("report_path"), str)
-    report_path = Path(run_manifest["report_path"])
-    assert report_path.exists()
-
-    sessions = run_manifest["sessions"]
-    assert isinstance(sessions, list)
-    assert len(sessions) == 1
-    session_id = sessions[0]["session_id"]
-    evidence_path = run_dir / f"session-{session_id}.jsonl"
+    assert run_manifest["status"] == "armed"
+    assert run_manifest["active_session_id"] == TEST_SESSION_ID
+    evidence_path = run_dir / f"session-{TEST_SESSION_ID}.jsonl"
 
     envelopes = [
         json.loads(line)

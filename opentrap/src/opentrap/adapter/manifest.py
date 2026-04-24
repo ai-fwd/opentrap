@@ -97,6 +97,11 @@ def load_manifest_view(manifest_path: Path, payload: Mapping[str, Any]) -> Manif
                         repo_root=repo_root,
                     ),
                     data_items=load_manifest_data_items(raw_trap, repo_root=repo_root),
+                    cases=tuple(
+                        dict(case)
+                        for case in raw_trap.get("cases", [])
+                        if isinstance(case, dict)
+                    ),
                 )
             )
 

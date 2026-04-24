@@ -14,58 +14,22 @@ from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
 
 from opentrap.adapter import RequestContext, RouteSpec, UpstreamSpec, create_app
+from opentrap.execution_context import ActiveSessionDescriptor, write_active_session_descriptor
 
-
-class FakeRuntime:
-    def __init__(self) -> None:
-        self.started: list[Path] = []
-        self.ended = 0
-        self.events: list[tuple[str, dict[str, Any]]] = []
-
-    def start_session(self, manifest_path: str | Path) -> str:
-        self.started.append(Path(manifest_path))
-        return "test-session-id"
-
-    def end_session(self) -> None:
-        self.ended += 1
-
-    def emit_event(self, event_type: str, payload: dict[str, Any]) -> None:
-        self.events.append((event_type, payload))
-
-    def list_data_items(self) -> list[object]:
-        return []
-
-    def get_data_item(self, item_id: str) -> object:
-        raise KeyError(item_id)
-
-
-class ItemRuntime(FakeRuntime):
-    def __init__(self, *items: object) -> None:
-        super().__init__()
-        self._items = {
-            item.id: item
-            for item in items
-            if hasattr(item, "id")
-        }
-
-    def list_data_items(self) -> list[object]:
-        return list(self._items.values())
-
-    def get_data_item(self, item_id: str) -> object:
-        try:
-            return self._items[item_id]
-        except KeyError as exc:
-            raise KeyError(item_id) from exc
+TEST_SESSION_ID = "test-session-id"
 
 
 def _write_manifest(path: Path) -> None:
+    repo_root = path.parent
     payload = {
         "run_id": "test-run-id",
+        "repo_root": str(repo_root),
         "created_at_utc": "2026-01-01T00:00:00+00:00",
         "requested": "reasoning/chain-trap",
         "status": "armed",
         "scorer_status": "pending",
-        "active_session_id": None,
+        "active_case_index": None,
+        "active_session_id": TEST_SESSION_ID,
         "sessions": [],
         "traps": [
             {
@@ -76,14 +40,98 @@ def _write_manifest(path: Path) -> None:
                         "path": "dataset/item-00001.txt",
                     }
                 ],
+                "cases": [
+                    {
+                        "case_index": 0,
+                        "item_id": "00001",
+                        "data_item": {
+                            "id": "00001",
+                            "path": "dataset/item-00001.txt",
+                        },
+                        "metadata": {"item_id": "00001"},
+                    }
+                ],
             }
         ],
     }
     path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    _write_active_session(
+        path,
+        case={
+            "case_index": 0,
+            "item_id": "00001",
+            "data_item": {"id": "00001", "path": "dataset/item-00001.txt"},
+            "metadata": {"item_id": "00001"},
+        },
+    )
+
+
+def _write_active_session(manifest_path: Path, *, case: dict[str, Any]) -> ActiveSessionDescriptor:
+    session_path = manifest_path.parent / f"session-{TEST_SESSION_ID}.json"
+    evidence_path = manifest_path.parent / f"session-{TEST_SESSION_ID}.jsonl"
+    session_payload = {
+        "run_id": "test-run-id",
+        "session_id": TEST_SESSION_ID,
+        "case_index": int(case.get("case_index", 0)),
+        "case": dict(case),
+        "started_at_utc": "2026-01-01T00:00:00+00:00",
+        "ended_at_utc": None,
+        "event_count": 0,
+        "harness_exit_code": None,
+    }
+    session_path.write_text(json.dumps(session_payload, indent=2) + "\n", encoding="utf-8")
+    evidence_path.write_text("", encoding="utf-8")
+    descriptor = ActiveSessionDescriptor(
+        run_id="test-run-id",
+        session_id=TEST_SESSION_ID,
+        case_index=int(case.get("case_index", 0)),
+        session_path=session_path,
+        evidence_path=evidence_path,
+        case=dict(case),
+    )
+    write_active_session_descriptor(manifest_path.parent / "active_session.json", descriptor)
+    return descriptor
+
+
+def _read_evidence(manifest_path: Path) -> list[dict[str, Any]]:
+    evidence_path = manifest_path.parent / f"session-{TEST_SESSION_ID}.jsonl"
+    return [
+        json.loads(line)
+        for line in evidence_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+
+
+def _run_observe_route(
+    *,
+    manifest_path: Path,
+    route_name: str,
+    route_path: str,
+    observer: Any,
+    transport_handler: Any,
+) -> Response:
+    forward_client = httpx.AsyncClient(transport=httpx.MockTransport(transport_handler))
+    app = create_app(
+        manifest_path=manifest_path,
+        routes=[
+            RouteSpec(
+                name=route_name,
+                path=route_path,
+                methods=(HTTPMethod.GET,),
+                mode="observe",
+                handler=observer,
+                upstream="origin",
+            )
+        ],
+        upstreams=[UpstreamSpec(name="origin", base_url="https://origin.test")],
+        forward_client=forward_client,
+    )
+
+    with TestClient(app) as client:
+        return client.get(route_path)
 
 
 def test_health_route_starts_and_ends_runtime_session(tmp_path: Path) -> None:
-    runtime = FakeRuntime()
     manifest_path = tmp_path / "run.json"
     _write_manifest(manifest_path)
 
@@ -91,17 +139,12 @@ def test_health_route_starts_and_ends_runtime_session(tmp_path: Path) -> None:
         manifest_path=manifest_path,
         routes=[],
         upstreams=[],
-        runtime=runtime,
     )
 
     with TestClient(app) as client:
         response = client.get("/__opentrap/health")
         assert response.status_code == 200
         assert response.json() == {"ok": True, "trap_ids": ["reasoning/chain-trap"]}
-
-    assert runtime.started == [manifest_path]
-    assert runtime.ended == 1
-    assert all(event_type != "http_exchange" for event_type, _payload in runtime.events)
 
 
 @pytest.mark.parametrize(
@@ -173,12 +216,10 @@ def test_route_mode_rules_are_enforced(route: RouteSpec, expected: str, tmp_path
             manifest_path=manifest_path,
             routes=[route],
             upstreams=[UpstreamSpec(name="origin", base_url="https://origin.test")],
-            runtime=FakeRuntime(),
         )
 
 
 def test_intercept_handler_receives_minimal_request_context(tmp_path: Path) -> None:
-    runtime = FakeRuntime()
     manifest_path = tmp_path / "run.json"
     _write_manifest(manifest_path)
 
@@ -201,19 +242,18 @@ def test_intercept_handler_receives_minimal_request_context(tmp_path: Path) -> N
             )
         ],
         upstreams=[],
-        runtime=runtime,
     )
 
     with TestClient(app) as client:
         response = client.get("/hello")
 
     assert response.status_code == 200
-    assert response.json() == {"ok": True, "session_id": "test-session-id"}
+    assert response.json() == {"ok": True, "session_id": TEST_SESSION_ID}
 
     context = captured["ctx"]
     assert isinstance(context.request, Request)
     assert context.run_id == "test-run-id"
-    assert context.session_id == "test-session-id"
+    assert context.session_id == TEST_SESSION_ID
     assert context.request_id
     assert context.manifest.manifest_path == manifest_path
     assert context.manifest.requested == "reasoning/chain-trap"
@@ -221,7 +261,6 @@ def test_intercept_handler_receives_minimal_request_context(tmp_path: Path) -> N
 
 
 def test_passthrough_route_forwards_to_named_upstream(tmp_path: Path) -> None:
-    runtime = FakeRuntime()
     manifest_path = tmp_path / "run.json"
     _write_manifest(manifest_path)
 
@@ -252,7 +291,6 @@ def test_passthrough_route_forwards_to_named_upstream(tmp_path: Path) -> None:
             )
         ],
         upstreams=[UpstreamSpec(name="origin", base_url="https://origin.test")],
-        runtime=runtime,
         forward_client=forward_client,
     )
 
@@ -267,7 +305,6 @@ def test_passthrough_route_forwards_to_named_upstream(tmp_path: Path) -> None:
 
 
 def test_observe_handler_runs_without_mutating_forwarded_response(tmp_path: Path) -> None:
-    runtime = FakeRuntime()
     manifest_path = tmp_path / "run.json"
     _write_manifest(manifest_path)
 
@@ -284,26 +321,13 @@ def test_observe_handler_runs_without_mutating_forwarded_response(tmp_path: Path
             text="upstream",
         )
 
-    forward_client = httpx.AsyncClient(transport=httpx.MockTransport(transport_handler))
-    app = create_app(
+    response = _run_observe_route(
         manifest_path=manifest_path,
-        routes=[
-            RouteSpec(
-                name="observe",
-                path="/observe",
-                methods=(HTTPMethod.GET,),
-                mode="observe",
-                handler=observer,
-                upstream="origin",
-            )
-        ],
-        upstreams=[UpstreamSpec(name="origin", base_url="https://origin.test")],
-        runtime=runtime,
-        forward_client=forward_client,
+        route_name="observe",
+        route_path="/observe",
+        observer=observer,
+        transport_handler=transport_handler,
     )
-
-    with TestClient(app) as client:
-        response = client.get("/observe")
 
     assert response.status_code == 200
     assert response.text == "upstream"
@@ -313,7 +337,6 @@ def test_observe_handler_runs_without_mutating_forwarded_response(tmp_path: Path
 
 
 def test_observe_handler_payload_is_emitted_by_runtime(tmp_path: Path) -> None:
-    runtime = FakeRuntime()
     manifest_path = tmp_path / "run.json"
     _write_manifest(manifest_path)
 
@@ -331,32 +354,19 @@ def test_observe_handler_payload_is_emitted_by_runtime(tmp_path: Path) -> None:
             json={"ok": True},
         )
 
-    forward_client = httpx.AsyncClient(transport=httpx.MockTransport(transport_handler))
-    app = create_app(
+    response = _run_observe_route(
         manifest_path=manifest_path,
-        routes=[
-            RouteSpec(
-                name="observe-emits",
-                path="/observe-emits",
-                methods=(HTTPMethod.GET,),
-                mode="observe",
-                handler=observer,
-                upstream="origin",
-            )
-        ],
-        upstreams=[UpstreamSpec(name="origin", base_url="https://origin.test")],
-        runtime=runtime,
-        forward_client=forward_client,
+        route_name="observe-emits",
+        route_path="/observe-emits",
+        observer=observer,
+        transport_handler=transport_handler,
     )
-
-    with TestClient(app) as client:
-        response = client.get("/observe-emits")
 
     assert response.status_code == 201
     observed_events = [
-        payload
-        for event_type, payload in runtime.events
-        if event_type == "llm_responses_observed"
+        event["payload"]
+        for event in _read_evidence(manifest_path)
+        if event["event_type"] == "llm_responses_observed"
     ]
     assert len(observed_events) == 1
     assert observed_events[0]["marker"] == "from-observer"
@@ -381,12 +391,10 @@ def test_unknown_named_upstream_is_rejected(tmp_path: Path) -> None:
             manifest_path=manifest_path,
             routes=[route],
             upstreams=[UpstreamSpec(name="origin", base_url="https://origin.test")],
-            runtime=FakeRuntime(),
         )
 
 
 def test_request_context_has_no_data_items_or_emit_event(tmp_path: Path) -> None:
-    runtime = FakeRuntime()
     manifest_path = tmp_path / "run.json"
     _write_manifest(manifest_path)
 
@@ -413,7 +421,6 @@ def test_request_context_has_no_data_items_or_emit_event(tmp_path: Path) -> None
             )
         ],
         upstreams=[],
-        runtime=runtime,
     )
 
     with TestClient(app) as client:
@@ -471,11 +478,31 @@ def test_trap_binding_binds_perception_actions(tmp_path: Path) -> None:
     }
     manifest_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
-    runtime = FakeRuntime()
+    _write_active_session(
+        manifest_path,
+        case={
+            "case_index": 0,
+            "item_id": "00001",
+            "data_item": {
+                "id": "00001",
+                "path": str(
+                    repo_root
+                    / ".opentrap"
+                    / "dataset"
+                    / "perception"
+                    / "prompt_injection_via_html"
+                    / "artifact"
+                    / "data"
+                    / "00001.htm"
+                ),
+            },
+            "metadata": {"item_id": "00001"},
+        },
+    )
 
     async def intercept_handler(ctx: RequestContext) -> Response:
         assert ctx.trap_actions is not None
-        content = ctx.trap_actions.get_data_for_selector("selector-1")
+        content = ctx.trap_actions.get_current_data()
         return JSONResponse({"content": content})
 
     app = create_app(
@@ -491,7 +518,6 @@ def test_trap_binding_binds_perception_actions(tmp_path: Path) -> None:
             )
         ],
         upstreams=[],
-        runtime=runtime,
     )
 
     with TestClient(app) as client:
@@ -537,7 +563,26 @@ def test_request_context_manifest_fields_are_typed(tmp_path: Path) -> None:
     }
     manifest_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
-    runtime = FakeRuntime()
+    _write_active_session(
+        manifest_path,
+        case={
+            "case_index": 0,
+            "item_id": "00001",
+            "data_item": {
+                "id": "00001",
+                "path": str(
+                    repo_root
+                    / ".opentrap"
+                    / "dataset"
+                    / "generic"
+                    / "artifact"
+                    / "data"
+                    / "00001.txt"
+                ),
+            },
+            "metadata": {"item_id": "00001"},
+        },
+    )
 
     async def intercept_handler(ctx: RequestContext) -> Response:
         trap = ctx.manifest.traps[0]
@@ -567,7 +612,6 @@ def test_request_context_manifest_fields_are_typed(tmp_path: Path) -> None:
             )
         ],
         upstreams=[],
-        runtime=runtime,
     )
 
     with TestClient(app) as client:
@@ -587,7 +631,6 @@ def test_request_context_manifest_fields_are_typed(tmp_path: Path) -> None:
 
 
 def test_route_dispatch_events_are_emitted_for_intercept(tmp_path: Path) -> None:
-    runtime = FakeRuntime()
     manifest_path = tmp_path / "run.json"
     _write_manifest(manifest_path)
 
@@ -607,21 +650,19 @@ def test_route_dispatch_events_are_emitted_for_intercept(tmp_path: Path) -> None
             )
         ],
         upstreams=[],
-        runtime=runtime,
     )
 
     with TestClient(app) as client:
         response = client.get("/dispatch-events")
 
     assert response.status_code == 200
-    event_types = [event_type for event_type, _payload in runtime.events]
+    event_types = [event["event_type"] for event in _read_evidence(manifest_path)]
     assert "route_dispatch_pre" in event_types
     assert "route_dispatch_post" in event_types
     assert "http_exchange" not in event_types
 
 
 def test_request_context_helper_methods_parse_path_and_body(tmp_path: Path) -> None:
-    runtime = FakeRuntime()
     manifest_path = tmp_path / "run.json"
     _write_manifest(manifest_path)
 
@@ -651,7 +692,6 @@ def test_request_context_helper_methods_parse_path_and_body(tmp_path: Path) -> N
             )
         ],
         upstreams=[],
-        runtime=runtime,
     )
 
     with TestClient(app) as client:
@@ -667,7 +707,6 @@ def test_request_context_helper_methods_parse_path_and_body(tmp_path: Path) -> N
 
 
 def test_request_context_json_body_invalid_uses_http_exception_handler(tmp_path: Path) -> None:
-    runtime = FakeRuntime()
     manifest_path = tmp_path / "run.json"
     _write_manifest(manifest_path)
 
@@ -687,7 +726,6 @@ def test_request_context_json_body_invalid_uses_http_exception_handler(tmp_path:
             )
         ],
         upstreams=[],
-        runtime=runtime,
     )
 
     with TestClient(app) as client:
@@ -700,7 +738,6 @@ def test_request_context_json_body_invalid_uses_http_exception_handler(tmp_path:
 
 
 def test_http_exception_handler_includes_request_id(tmp_path: Path) -> None:
-    runtime = FakeRuntime()
     manifest_path = tmp_path / "run.json"
     _write_manifest(manifest_path)
 
@@ -719,7 +756,6 @@ def test_http_exception_handler_includes_request_id(tmp_path: Path) -> None:
             )
         ],
         upstreams=[],
-        runtime=runtime,
     )
 
     with TestClient(app) as client:

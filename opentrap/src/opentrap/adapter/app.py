@@ -10,10 +10,11 @@ import httpx
 from fastapi import APIRouter, FastAPI, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 
-from .context import RuntimeProtocol, _DefaultRuntime
+from opentrap.execution_context import bind_execution_context, load_active_session_descriptor
+
+from .context import RuntimeProtocol
 from .http_runtime import (
     build_upstream_map,
-    copy_request_with_body,
     dispatch_route,
     validate_route_specs,
 )
@@ -30,9 +31,7 @@ def create_app(
     runtime: RuntimeProtocol | None = None,
     forward_client: httpx.AsyncClient | None = None,
 ) -> FastAPI:
-    runtime_impl: RuntimeProtocol = (
-        runtime if runtime is not None else cast(RuntimeProtocol, _DefaultRuntime)
-    )
+    del runtime
     metadata = load_manifest_metadata(manifest_path)
     upstream_map = build_upstream_map(upstreams)
     validate_route_specs(routes, upstream_map)
@@ -41,12 +40,11 @@ def create_app(
     async def lifespan(app: FastAPI):
         app.state.manifest_path = manifest_path
         app.state.run_dir = manifest_path.parent
+        app.state.active_session_path = manifest_path.parent / "active_session.json"
         app.state.manifest = metadata.manifest
         app.state.repo_root = metadata.manifest.repo_root
         app.state.run_id = metadata.run_id
         app.state.trap_ids = metadata.trap_ids
-        app.state.runtime = runtime_impl
-        app.state.event_emitter = runtime_impl.emit_event
         app.state.upstream_map = upstream_map
         app.state.trap_actions = resolve_trap_actions(metadata.manifest)
 
@@ -55,17 +53,11 @@ def create_app(
         else:
             app.state.forward_client = forward_client
 
-        session_started = False
         try:
-            session_id = runtime_impl.start_session(str(manifest_path))
-            app.state.session_id = session_id
-            session_started = True
             yield
         finally:
             client = cast(httpx.AsyncClient, app.state.forward_client)
             await client.aclose()
-            if session_started:
-                runtime_impl.end_session()
 
     app = FastAPI(lifespan=lifespan)
 
@@ -73,9 +65,23 @@ def create_app(
     async def evidence_middleware(request: Request, call_next):
         request_id = uuid.uuid4().hex
         request.state.request_id = request_id
-        raw_body = await request.body()
-        request_with_body = copy_request_with_body(request, raw_body)
-        return await call_next(request_with_body)
+
+        if request.url.path == "/__opentrap/health":
+            return await call_next(request)
+
+        descriptor = load_active_session_descriptor(cast(Path, app.state.active_session_path))
+        if descriptor is None:
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "error": "No active OpenTrap session is available",
+                    "request_id": request_id,
+                },
+            )
+
+        request.state.execution_context = descriptor
+        with bind_execution_context(descriptor):
+            return await call_next(request)
 
     @app.exception_handler(HTTPException)
     async def http_exception_handler(request: Request, exc: HTTPException) -> JSONResponse:

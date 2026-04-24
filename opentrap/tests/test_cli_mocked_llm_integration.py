@@ -14,6 +14,7 @@ import textwrap
 import types
 from pathlib import Path
 
+import pytest
 import yaml
 
 from opentrap.cli import main
@@ -41,8 +42,8 @@ def _base_payload(*, trap_intent: str = "rewrite negatives", base_count: int = 1
             "seed": 42,
         },
         "harness": {
-            "command": ["bunx", "playwright", "test"],
-            "cwd": "acme-client",
+            "command": [sys.executable, "-c", "pass"],
+            "cwd": ".",
         },
         "traps": {
             TRAP_ID: {
@@ -81,7 +82,6 @@ def _configure_cli_paths(
     config_path: Path,
     samples_dir: Path,
     generated_root: Path,
-    patch_wait_for_adapter_exit: bool = True,
 ) -> None:
     """Point CLI path defaults to isolated test directories."""
     monkeypatch.setattr("opentrap.cli.DEFAULT_REPO_ROOT", tmp_path)
@@ -91,14 +91,6 @@ def _configure_cli_paths(
     monkeypatch.setattr("opentrap.cli.DEFAULT_SAMPLES_DIR", samples_dir)
     monkeypatch.setattr("opentrap.cli.DEFAULT_DATASET_DIR", tmp_path / ".opentrap" / "dataset")
     monkeypatch.setattr("opentrap.cli.DEFAULT_ADAPTER_GENERATED_ROOT", generated_root)
-
-    if patch_wait_for_adapter_exit:
-        def _stop_adapter_immediately(process) -> None:  # noqa: ANN001
-            if process.poll() is None:
-                process.terminate()
-                process.wait(timeout=5)
-
-        monkeypatch.setattr("opentrap.cli._wait_for_adapter_exit", _stop_adapter_immediately)
 
 
 def _install_fake_openai(monkeypatch) -> None:
@@ -229,7 +221,10 @@ def test_llm_selected_trap_fails_fast_when_llm_env_is_missing(
 
     captured = capsys.readouterr()
     assert code == 1
-    assert "Missing required environment variable(s): OPENAI_API_KEY, OPENAI_URL, OPENAI_MODEL" in captured.err
+    assert (
+        "Missing required environment variable(s): OPENAI_API_KEY, OPENAI_URL, OPENAI_MODEL"
+        in captured.err
+    )
 
 
 def test_llm_mocked_run_uses_final_cache_paths_for_manifest_data_items(
@@ -342,74 +337,48 @@ def test_llm_mocked_run_regenerates_when_samples_change(
     assert trap_1["dataset_cache_dir"] != trap_2["dataset_cache_dir"]
 
 
-def test_trap_run_fails_when_generated_adapter_output_is_missing(
+@pytest.mark.parametrize(
+    ("handlers_prelude", "use_missing_generated_root", "set_ready_timeout", "expected_error"),
+    [
+        ("", True, False, "generated adapter output was not found"),
+        (
+            "raise RuntimeError('boom before startup')",
+            False,
+            False,
+            "adapter exited before health check succeeded",
+        ),
+        ("import time\ntime.sleep(1.0)", False, True, "timed out waiting for adapter health"),
+    ],
+    ids=["missing-generated-output", "adapter-import-exit", "adapter-health-timeout"],
+)
+def test_trap_run_surfaces_adapter_startup_failures(
     capsys,
     tmp_path: Path,
     monkeypatch,
+    handlers_prelude: str,
+    use_missing_generated_root: bool,
+    set_ready_timeout: bool,
+    expected_error: str,
 ) -> None:
-    """Surface explicit generated-output failure for orchestration troubleshooting."""
-    missing_generated_root = tmp_path / "missing-generated"
-    _prepare_llm_trap_run(
-        monkeypatch=monkeypatch,
-        tmp_path=tmp_path,
-        generated_root=missing_generated_root,
-        payload=_base_payload(),
-    )
+    """Surface distinct adapter startup failures with explicit troubleshooting messages."""
+    if use_missing_generated_root:
+        generated_root = tmp_path / "missing-generated"
+    else:
+        generated_root = tmp_path / "adapter" / "generated"
+        _write_generated_adapter(generated_root, handlers_prelude=handlers_prelude)
 
-    code = main([TRAP_ID])
-
-    captured = capsys.readouterr()
-    assert code == 1
-    assert "generated adapter output was not found" in captured.err
-
-
-def test_trap_run_fails_when_generated_adapter_import_exits_before_session_start(
-    capsys,
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    """Surface early adapter process exit failures before runtime session handshake."""
-    generated_root = tmp_path / "adapter" / "generated"
-    _write_generated_adapter(
-        generated_root,
-        handlers_prelude="raise RuntimeError('boom before startup')",
-    )
-    _prepare_llm_trap_run(
-        monkeypatch=monkeypatch,
-        tmp_path=tmp_path,
-        generated_root=generated_root,
-        payload=_base_payload(),
-    )
-
-    code = main([TRAP_ID])
-
-    captured = capsys.readouterr()
-    assert code == 1
-    assert "adapter exited before session start" in captured.err
-
-
-def test_trap_run_fails_when_adapter_does_not_start_session_before_timeout(
-    capsys,
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    """Surface adapter startup timeout when session id is never published."""
-    generated_root = tmp_path / "adapter" / "generated"
-    _write_generated_adapter(
-        generated_root,
-        handlers_prelude="import time\ntime.sleep(1.0)",
-    )
     _prepare_llm_trap_run(
         monkeypatch=monkeypatch,
         tmp_path=tmp_path,
         generated_root=generated_root,
         payload=_base_payload(),
     )
-    monkeypatch.setattr("opentrap.run_orchestration.SESSION_START_TIMEOUT_SECONDS", 0.1)
-    monkeypatch.setattr("opentrap.run_orchestration.SESSION_POLL_INTERVAL_SECONDS", 0.01)
+    if set_ready_timeout:
+        monkeypatch.setattr("opentrap.run_orchestration.ADAPTER_READY_TIMEOUT_SECONDS", 0.1)
+        monkeypatch.setattr("opentrap.run_orchestration.ADAPTER_POLL_INTERVAL_SECONDS", 0.01)
 
     code = main([TRAP_ID])
 
     captured = capsys.readouterr()
     assert code == 1
-    assert "timed out waiting for adapter session start" in captured.err
+    assert expected_error in captured.err

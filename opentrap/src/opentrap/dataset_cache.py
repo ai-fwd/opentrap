@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from opentrap.io_utils import load_json_maybe, utc_now_iso, write_json
-from opentrap.trap_contract import SharedConfig, TrapSpec
+from opentrap.trap_contract import SharedConfig, TrapCaseContext, TrapSpec
 
 CACHE_WAIT_TIMEOUT_SECONDS = 2.0
 CACHE_WAIT_POLL_INTERVAL_SECONDS = 0.05
@@ -37,6 +37,7 @@ class DatasetSnapshot:
     metadata_path: str
     data_dir: str
     data_items: list[dict[str, str]]
+    cases: list[dict[str, Any]]
 
     def as_manifest_fields(self) -> dict[str, Any]:
         """Render snapshot fields in the shape expected by trap manifest entries."""
@@ -48,6 +49,8 @@ class DatasetSnapshot:
             "metadata_path": self.metadata_path,
             "data_dir": self.data_dir,
             "data_items": self.data_items,
+            "cases": self.cases,
+            "case_count": len(self.cases),
         }
 
 
@@ -121,6 +124,19 @@ def _normalize_data_items(raw: Any) -> list[dict[str, str]]:
         if not isinstance(item_id, str) or not isinstance(path, str):
             continue
         normalized.append({"id": item_id, "path": path})
+    return normalized
+
+
+def _normalize_cases(raw: Any) -> list[dict[str, Any]]:
+    if not isinstance(raw, list):
+        return []
+    normalized: list[dict[str, Any]] = []
+    for index, case in enumerate(raw):
+        if not isinstance(case, dict):
+            continue
+        case_payload = dict(case)
+        case_payload["case_index"] = index
+        normalized.append(case_payload)
     return normalized
 
 
@@ -210,6 +226,7 @@ def _read_cached_dataset_snapshot(cache_dir: Path) -> DatasetSnapshot | None:
         metadata_path=str(layout.metadata_path),
         data_dir=str(layout.data_dir),
         data_items=data_items,
+        cases=_normalize_cases(cache_metadata.get("cases")),
     )
 
 
@@ -281,9 +298,20 @@ def resolve_cached_dataset(
     """
     fingerprint, fingerprint_payload = _build_dataset_fingerprint(trap_id, shared, trap_config)
     cache_dir = _dataset_cache_dir(dataset_dir, trap_id, fingerprint)
+    trap = registry[trap_id]
+
+    def _build_cases(snapshot: DatasetSnapshot) -> list[dict[str, Any]]:
+        context = TrapCaseContext(
+            artifact_path=Path(snapshot.artifact_path),
+            metadata_path=Path(snapshot.metadata_path),
+            data_dir=Path(snapshot.data_dir),
+            data_items=tuple(dict(item) for item in snapshot.data_items),
+        )
+        return _normalize_cases(trap.build_cases(context))
 
     cached_snapshot = _read_cached_dataset_snapshot(cache_dir)
     if cached_snapshot is not None:
+        cases = cached_snapshot.cases or _build_cases(cached_snapshot)
         if on_cache_hit is not None:
             on_cache_hit(fingerprint)
         return DatasetSnapshot(
@@ -294,6 +322,7 @@ def resolve_cached_dataset(
             metadata_path=cached_snapshot.metadata_path,
             data_dir=cached_snapshot.data_dir,
             data_items=cached_snapshot.data_items,
+            cases=cases,
         )
     if cache_dir.exists():
         shutil.rmtree(cache_dir, ignore_errors=True)
@@ -322,6 +351,17 @@ def resolve_cached_dataset(
         )
 
         dataset_items = _extract_data_items(staged_artifact)
+        staged_snapshot = DatasetSnapshot(
+            dataset_fingerprint=fingerprint,
+            dataset_cache_dir=str(cache_dir),
+            dataset_source="generated_then_cached",
+            artifact_path=str(staged_artifact),
+            metadata_path=str(staging_dir / "metadata.jsonl"),
+            data_dir=str(staging_dir / "data"),
+            data_items=dataset_items,
+            cases=[],
+        )
+        cases = _build_cases(staged_snapshot)
         cache_payload = {
             "version": DATASET_FINGERPRINT_VERSION,
             "trap_id": trap_id,
@@ -331,6 +371,8 @@ def resolve_cached_dataset(
             "artifact_kind": artifact_kind,
             "artifact_name": artifact_name,
             "data_items": dataset_items,
+            "cases": cases,
+            "case_count": len(cases),
         }
         write_json(staging_dir / "cache.json", cache_payload)
 
@@ -360,4 +402,5 @@ def resolve_cached_dataset(
         metadata_path=cached_snapshot.metadata_path,
         data_dir=cached_snapshot.data_dir,
         data_items=cached_snapshot.data_items,
+        cases=cached_snapshot.cases or _build_cases(cached_snapshot),
     )

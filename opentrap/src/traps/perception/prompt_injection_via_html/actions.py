@@ -1,30 +1,21 @@
 from __future__ import annotations
 
-import hashlib
 from pathlib import Path
-from typing import Any
+
+from opentrap.execution_context import get_current_execution_context
 
 
 class TrapActions:
-    def __init__(self, *, data_dir: Path) -> None:
+    def __init__(self, *, data_dir: Path | None = None) -> None:
         self._data_dir = data_dir
 
-    def get_data_for_selector(self, selector: Any) -> str:
-        items = self._sorted_items()
-        if not items:
-            raise RuntimeError("no trap data items are available")
-        digest = hashlib.sha256(str(selector).encode("utf-8")).digest()
-        index = int.from_bytes(digest[:4], byteorder="big") % len(items)
-        return items[index].read_text(encoding="utf-8")
-
-    def _sorted_items(self) -> tuple[Path, ...]:
-        return tuple(
-            sorted(
-                (
-                    path
-                    for path in self._data_dir.iterdir()
-                    if path.is_file() and path.suffix.lower() in {".htm", ".html"}
-                ),
-                key=lambda path: path.name,
-            )
-        )
+    def get_current_data(self) -> str:
+        descriptor = get_current_execution_context()
+        case = descriptor.case
+        data_item = case.get("data_item")
+        if not isinstance(data_item, dict):
+            raise RuntimeError("active case is missing data_item metadata")
+        path_value = data_item.get("path")
+        if not isinstance(path_value, str) or not path_value:
+            raise RuntimeError("active case data_item path is unavailable")
+        return Path(path_value).read_text(encoding="utf-8")

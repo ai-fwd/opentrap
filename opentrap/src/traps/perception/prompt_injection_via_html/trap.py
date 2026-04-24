@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -11,7 +12,7 @@ from generate import TrapDatasetGenerator
 from llm_config import load_llm_config_from_env
 from llm_html_generator import LLMHTMLGenerator
 
-from opentrap.trap_contract import SharedConfig, TrapFieldSpec, TrapSpec
+from opentrap.trap_contract import SharedConfig, TrapCaseContext, TrapFieldSpec, TrapSpec
 
 
 @dataclass(frozen=True)
@@ -117,6 +118,30 @@ class Trap(
 
     def bind(self, context: TrapBindContext) -> TrapActions:
         return TrapActions(data_dir=context.data_dir)
+
+    def build_cases(self, context: TrapCaseContext) -> list[dict[str, Any]]:
+        cases: list[dict[str, Any]] = []
+        for raw_line in context.metadata_path.read_text(encoding="utf-8").splitlines():
+            if not raw_line.strip():
+                continue
+            record = json.loads(raw_line)
+            if not isinstance(record, dict):
+                continue
+            file_id = record.get("file_id")
+            filename = record.get("filename")
+            if not isinstance(file_id, str) or not isinstance(filename, str):
+                continue
+            cases.append(
+                {
+                    "item_id": file_id,
+                    "data_item": {
+                        "id": file_id,
+                        "path": str(context.data_dir / filename),
+                    },
+                    "metadata": record,
+                }
+            )
+        return cases
 
     def evaluate(self, context: TrapEvalContext) -> TrapEvalResult:
         return TrapEvalResult(

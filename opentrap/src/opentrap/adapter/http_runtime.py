@@ -8,7 +8,9 @@ from typing import Any, cast
 import httpx
 from fastapi import FastAPI, Request, Response
 
-from .context import EventEmitter, RequestContext
+from opentrap.execution_context import ActiveSessionDescriptor, emit_event
+
+from .context import RequestContext
 from .models import InterceptHandler, ManifestView, ObserveHandler, RouteSpec, UpstreamSpec
 
 
@@ -104,7 +106,12 @@ def copy_request_with_body(request: Request, body: bytes) -> Request:
 
     updated = Request(request.scope, receive)
     updated.state.raw_body = body
-    updated.state.request_id = request.state.request_id
+    request_id = getattr(request.state, "request_id", None)
+    if request_id is not None:
+        updated.state.request_id = request_id
+    execution_context = getattr(request.state, "execution_context", None)
+    if execution_context is not None:
+        updated.state.execution_context = execution_context
     return updated
 
 
@@ -185,15 +192,16 @@ async def _forward_request(*, app: FastAPI, request: Request, route: RouteSpec) 
 
 async def dispatch_route(*, app: FastAPI, request: Request, route: RouteSpec) -> Response:
     request_body = await _request_body(request)
+    execution_context = cast(ActiveSessionDescriptor, request.state.execution_context)
     context = RequestContext(
         request=request,
         run_id=cast(str, app.state.run_id),
-        session_id=cast(str, app.state.session_id),
+        session_id=execution_context.session_id,
         request_id=cast(str, request.state.request_id),
         manifest=cast(ManifestView, app.state.manifest),
+        execution_context=execution_context,
         trap_actions=cast(object | None, app.state.trap_actions),
     )
-    event_emitter = cast(EventEmitter, app.state.event_emitter)
     event_common_payload: dict[str, Any] = {
         "request_id": context.request_id,
         "route_name": route.name,
@@ -202,9 +210,10 @@ async def dispatch_route(*, app: FastAPI, request: Request, route: RouteSpec) ->
         "path": request.url.path,
         "query": request.url.query,
     }
-    event_emitter(
-        "route_dispatch_pre",
-        {
+    emit_event(
+        execution_context=execution_context,
+        event_type="route_dispatch_pre",
+        payload={
             **event_common_payload,
             "request_headers": dict(request.headers),
             "request_body": request_body.decode("utf-8", errors="replace"),
@@ -235,9 +244,10 @@ async def dispatch_route(*, app: FastAPI, request: Request, route: RouteSpec) ->
             )
             observer_payload = await observer(context, observer_snapshot)
             if observer_payload is not None:
-                event_emitter(
-                    "llm_responses_observed",
-                    {
+                emit_event(
+                    execution_context=execution_context,
+                    event_type="llm_responses_observed",
+                    payload={
                         **event_common_payload,
                         **dict(observer_payload),
                     },
@@ -245,9 +255,10 @@ async def dispatch_route(*, app: FastAPI, request: Request, route: RouteSpec) ->
 
         return forwarded_response
     except Exception as exc:
-        event_emitter(
-            "route_dispatch_post",
-            {
+        emit_event(
+            execution_context=execution_context,
+            event_type="route_dispatch_post",
+            payload={
                 **event_common_payload,
                 "duration_ms": round((time.monotonic() - started) * 1000, 3),
                 "error": str(exc),
@@ -266,9 +277,10 @@ async def dispatch_route(*, app: FastAPI, request: Request, route: RouteSpec) ->
                 raw_response_bytes = bytes(raw_response)
             else:
                 raw_response_bytes = str(raw_response).encode("utf-8", errors="replace")
-            event_emitter(
-                "route_dispatch_post",
-                {
+            emit_event(
+                execution_context=execution_context,
+                event_type="route_dispatch_post",
+                payload={
                     **event_common_payload,
                     "duration_ms": round((time.monotonic() - started) * 1000, 3),
                     "status_code": response.status_code,

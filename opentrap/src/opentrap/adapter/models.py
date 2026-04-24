@@ -38,6 +38,7 @@ class ManifestTrapView:
     metadata_path: Path | None
     data_dir: Path | None
     data_items: tuple[DataItemView, ...]
+    cases: tuple[dict[str, Any], ...]
 
 
 @dataclass(frozen=True)

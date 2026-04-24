@@ -89,7 +89,7 @@ Use `adapter/templates/` as read-only references.
 
 ### Trap Action Surface (`perception/prompt_injection_via_html`)
 
-- `ctx.trap_actions.get_data_for_selector(selector) -> str`
+- `ctx.trap_actions.get_current_data() -> str`
 - Do not assume additional trap action methods unless they are explicitly documented.
 
 ## Handler Rules

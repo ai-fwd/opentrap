@@ -8,9 +8,7 @@ from __future__ import annotations
 
 import argparse
 import shlex
-import subprocess
 import sys
-import time
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -35,7 +33,6 @@ DEFAULT_SAMPLES_DIR = DEFAULT_STATE_DIR / "samples"
 DEFAULT_DATASET_DIR = DEFAULT_STATE_DIR / "dataset"
 DEFAULT_ADAPTER_GENERATED_ROOT = DEFAULT_REPO_ROOT / "adapter" / "generated"
 STATUS_PREFIX = "[opentrap]"
-ADAPTER_TERMINATE_TIMEOUT_SECONDS = 3.0
 
 
 def _status(message: str) -> None:
@@ -239,6 +236,7 @@ def cmd_trap(args: argparse.Namespace) -> int:
             registry={resolved: selected_trap},
             environment=environment,
             product_under_test=loaded.product_under_test,
+            harness=loaded.harness,
             status_callback=_status,
         )
     except Exception as exc:  # noqa: BLE001
@@ -246,40 +244,7 @@ def cmd_trap(args: argparse.Namespace) -> int:
         return 1
 
     print(str(run_ready.run_manifest_path))
-    _wait_for_adapter_exit(run_ready.adapter_process)
-    return 0
-
-
-def _wait_for_adapter_exit(
-    process: subprocess.Popen[object],
-    *,
-    terminate_timeout_seconds: float = ADAPTER_TERMINATE_TIMEOUT_SECONDS,
-) -> None:
-    try:
-        while process.poll() is None:
-            time.sleep(0.1)
-    except KeyboardInterrupt:
-        _status("Interrupt received; stopping adapter...")
-        if process.poll() is None:
-            _status("Sending SIGTERM to adapter...")
-            process.terminate()
-            try:
-                process.wait(timeout=terminate_timeout_seconds)
-            except subprocess.TimeoutExpired:
-                _status("Adapter did not stop in time; force killing...")
-                process.kill()
-                try:
-                    process.wait(timeout=terminate_timeout_seconds)
-                except subprocess.TimeoutExpired:
-                    _status("Adapter still did not stop after force kill timeout")
-                    _status("OpenTrap shutting down")
-                    return
-        _status("Adapter stopped")
-        _status("OpenTrap shutting down")
-        return
-
-    _status("Adapter stopped")
-    _status("OpenTrap shutting down")
+    return 0 if run_ready.succeeded else 1
 
 
 def build_parser() -> argparse.ArgumentParser:

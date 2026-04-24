@@ -23,6 +23,7 @@ def _build_bind_context(*, manifest: ManifestView, trap: ManifestTrapView) -> Si
         metadata_path=trap.metadata_path,
         data_dir=trap.data_dir,
         data_items=trap.data_items,
+        cases=trap.cases,
         manifest=manifest,
         repo_root=manifest.repo_root,
         manifest_path=manifest.manifest_path,

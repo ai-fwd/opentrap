@@ -1,11 +1,8 @@
-"""Trap-run orchestration for manifest lifecycle and adapter session startup.
-
-This module coordinates a single trap execution from dataset resolution through
-adapter launch, then updates the run manifest as the run becomes armed and ready.
-"""
+"""Trap-run orchestration for dataset resolution, case looping, and harness execution."""
 
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 import time
@@ -14,22 +11,33 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from urllib.error import URLError
+from urllib.request import urlopen
 
+from opentrap.config_loader import HarnessConfig
 from opentrap.dataset_cache import resolve_cached_dataset
-from opentrap.io_utils import load_json_maybe, utc_now_iso, write_json
+from opentrap.execution_context import (
+    ActiveSessionDescriptor,
+    active_session_path_for_run,
+    clear_active_session_descriptor,
+    load_active_session_descriptor,
+    write_active_session_descriptor,
+)
+from opentrap.io_utils import load_json, load_json_maybe, utc_now_iso, write_json
 from opentrap.trap_contract import SharedConfig, TrapSpec
 
-SESSION_START_TIMEOUT_SECONDS = 10.0
-SESSION_POLL_INTERVAL_SECONDS = 0.1
+ADAPTER_HOST = "127.0.0.1"
+ADAPTER_PORT = 7860 # default port so it's easier for PUT changes
+ADAPTER_READY_TIMEOUT_SECONDS = 10.0
+ADAPTER_POLL_INTERVAL_SECONDS = 0.1
 STATUS_HEARTBEAT_INTERVAL_SECONDS = 3.0
+ADAPTER_TERMINATE_TIMEOUT_SECONDS = 3.0
 
 StatusCallback = Callable[[str], None]
 
 
 @dataclass(frozen=True)
 class RunEnvironment:
-    """Filesystem and process entrypoints used to run one trap session."""
-
     repo_root: Path
     runs_dir: Path
     dataset_dir: Path
@@ -37,11 +45,9 @@ class RunEnvironment:
 
 
 @dataclass(frozen=True)
-class TrapRunReady:
-    """Trap run state when adapter session is active and orchestration is attached."""
-
+class TrapRunResult:
     run_manifest_path: Path
-    adapter_process: subprocess.Popen[Any]
+    succeeded: bool
 
 
 def _launch_adapter(
@@ -49,18 +55,11 @@ def _launch_adapter(
     *,
     environment: RunEnvironment,
     product_under_test: str,
+    port: int,
 ) -> subprocess.Popen[Any]:
-    """Start the adapter runtime process pointing at the given run manifest.
-
-    Raises:
-        RuntimeError: Generated adapter directory for the selected product does not exist.
-    """
     generated_dir = environment.adapter_generated_root / product_under_test
     if not generated_dir.exists() or not generated_dir.is_dir():
-        raise RuntimeError(
-            "generated adapter output was not found at "
-            f"{generated_dir}"
-        )
+        raise RuntimeError("generated adapter output was not found at " f"{generated_dir}")
 
     command = [
         sys.executable,
@@ -68,43 +67,40 @@ def _launch_adapter(
         "opentrap.adapter",
         "--manifest",
         str(manifest_path),
+        "--host",
+        ADAPTER_HOST,
+        "--port",
+        str(port),
     ]
     return subprocess.Popen(command, cwd=environment.repo_root)
 
 
-def _wait_for_session_start(
-    manifest_path: Path,
+def _wait_for_adapter_ready(
     process: subprocess.Popen[Any],
     *,
+    port: int,
     heartbeat_interval_seconds: float = STATUS_HEARTBEAT_INTERVAL_SECONDS,
     on_wait_heartbeat: Callable[[float], None] | None = None,
-) -> str:
-    """Wait until runtime records a session entry in the run manifest.
-
-    Raises:
-        RuntimeError: Adapter exits early or session start timeout is reached.
-    """
-    def _extract_session_id(manifest: Mapping[str, Any]) -> str | None:
-        sessions = manifest.get("sessions")
-        if not isinstance(sessions, list):
-            return None
-        for session in reversed(sessions):
-            if not isinstance(session, dict):
-                continue
-            session_id = session.get("session_id")
-            if isinstance(session_id, str) and session_id:
-                return session_id
-        return None
-
+) -> None:
     started = time.monotonic()
-    deadline = started + SESSION_START_TIMEOUT_SECONDS
+    deadline = started + ADAPTER_READY_TIMEOUT_SECONDS
     next_heartbeat = started + heartbeat_interval_seconds
+    health_url = f"http://{ADAPTER_HOST}:{port}/__opentrap/health"
+    last_error: Exception | None = None
+
     while time.monotonic() < deadline:
-        manifest = load_json_maybe(manifest_path)
-        if manifest is not None:
-            session_id = _extract_session_id(manifest)
-            if session_id is not None:
-                return session_id
+        exit_code = process.poll()
+        if exit_code is not None:
+            raise RuntimeError(
+                f"adapter exited before health check succeeded (exit code {exit_code})"
+            )
+
+        try:
+            with urlopen(health_url, timeout=0.2) as response:  # noqa: S310
+                if response.status == 200:
+                    return
+        except (URLError, TimeoutError, json.JSONDecodeError) as exc:
+            last_error = exc
 
         if on_wait_heartbeat is not None and heartbeat_interval_seconds > 0:
             now = time.monotonic()
@@ -112,22 +108,186 @@ def _wait_for_session_start(
                 on_wait_heartbeat(now - started)
                 next_heartbeat += heartbeat_interval_seconds
 
-        exit_code = process.poll()
-        if exit_code is not None:
-            manifest = load_json_maybe(manifest_path)
-            if manifest is not None:
-                session_id = _extract_session_id(manifest)
-                if session_id is not None:
-                    return session_id
-            raise RuntimeError(f"adapter exited before session start (exit code {exit_code})")
-        time.sleep(SESSION_POLL_INTERVAL_SECONDS)
+        time.sleep(ADAPTER_POLL_INTERVAL_SECONDS)
 
-    manifest = load_json_maybe(manifest_path)
-    if manifest is not None:
-        session_id = _extract_session_id(manifest)
-        if session_id is not None:
-            return session_id
-    raise RuntimeError("timed out waiting for adapter session start")
+    raise RuntimeError(f"timed out waiting for adapter health ({last_error})")
+
+
+def _active_session_path(manifest_path: Path) -> Path:
+    return active_session_path_for_run(manifest_path.parent)
+
+
+def _count_evidence_events(path: Path) -> int:
+    if not path.exists():
+        return 0
+    return sum(1 for line in path.read_text(encoding="utf-8").splitlines() if line.strip())
+
+
+def _start_case_session(manifest_path: Path, *, case_index: int) -> ActiveSessionDescriptor:
+    manifest = load_json(manifest_path)
+    run_id = manifest.get("run_id")
+    if not isinstance(run_id, str) or not run_id:
+        raise RuntimeError("manifest.run_id must be a non-empty string")
+
+    traps = manifest.get("traps")
+    if not isinstance(traps, list) or not traps or not isinstance(traps[0], dict):
+        raise RuntimeError("manifest.traps must contain the selected trap entry")
+
+    cases = traps[0].get("cases")
+    if not isinstance(cases, list):
+        raise RuntimeError("manifest.traps[0].cases must be a list")
+    if case_index < 0 or case_index >= len(cases):
+        raise RuntimeError(f"case index {case_index} is out of range for this run")
+
+    case = cases[case_index]
+    if not isinstance(case, dict):
+        raise RuntimeError(f"case {case_index} is not a JSON object")
+
+    run_dir = manifest_path.parent
+    session_id = uuid.uuid4().hex
+    session_path = run_dir / f"session-{session_id}.json"
+    evidence_path = run_dir / f"session-{session_id}.jsonl"
+    started_at_utc = utc_now_iso()
+
+    descriptor = ActiveSessionDescriptor(
+        run_id=run_id,
+        session_id=session_id,
+        case_index=case_index,
+        session_path=session_path,
+        evidence_path=evidence_path,
+        case=dict(case),
+    )
+
+    session_payload = {
+        "run_id": run_id,
+        "session_id": session_id,
+        "case_index": case_index,
+        "case": dict(case),
+        "started_at_utc": started_at_utc,
+        "ended_at_utc": None,
+        "event_count": 0,
+        "harness_exit_code": None,
+    }
+    write_json(session_path, session_payload, atomic=True)
+    evidence_path.write_text("", encoding="utf-8")
+
+    sessions = manifest.get("sessions")
+    if not isinstance(sessions, list):
+        sessions = []
+    sessions.append(
+        {
+            "session_id": session_id,
+            "case_index": case_index,
+            "case": dict(case),
+            "started_at_utc": started_at_utc,
+            "ended_at_utc": None,
+            "event_count": 0,
+            "harness_exit_code": None,
+        }
+    )
+
+    manifest["sessions"] = sessions
+    manifest["active_case_index"] = case_index
+    manifest["active_session_id"] = session_id
+    manifest["status"] = "session_active"
+    write_json(manifest_path, manifest, atomic=True)
+    write_active_session_descriptor(_active_session_path(manifest_path), descriptor)
+    return descriptor
+
+
+def _end_case_session(manifest_path: Path, *, harness_exit_code: int) -> None:
+    active_path = _active_session_path(manifest_path)
+    descriptor = load_active_session_descriptor(active_path)
+    if descriptor is None:
+        raise RuntimeError("active session descriptor was unexpectedly missing at session end")
+
+    ended_at_utc = utc_now_iso()
+    event_count = _count_evidence_events(descriptor.evidence_path)
+
+    session_payload = load_json(descriptor.session_path)
+    session_payload["ended_at_utc"] = ended_at_utc
+    session_payload["event_count"] = event_count
+    session_payload["harness_exit_code"] = harness_exit_code
+    write_json(descriptor.session_path, session_payload, atomic=True)
+
+    manifest = load_json(manifest_path)
+    sessions = manifest.get("sessions", [])
+    if isinstance(sessions, list):
+        for session in sessions:
+            if not isinstance(session, dict):
+                continue
+            if session.get("session_id") == descriptor.session_id:
+                session["ended_at_utc"] = ended_at_utc
+                session["event_count"] = event_count
+                session["harness_exit_code"] = harness_exit_code
+                break
+
+    manifest["sessions"] = sessions
+    manifest["active_case_index"] = None
+    manifest["active_session_id"] = None
+    manifest["status"] = "ready"
+    write_json(manifest_path, manifest, atomic=True)
+    clear_active_session_descriptor(active_path)
+
+
+def _finalize_run(manifest_path: Path, *, succeeded: bool) -> None:
+    manifest = load_json(manifest_path)
+    ended_at_utc = utc_now_iso()
+    traps = manifest.get("traps", [])
+    trap_ids = [
+        trap_entry["trap_id"]
+        for trap_entry in traps
+        if isinstance(trap_entry, dict) and isinstance(trap_entry.get("trap_id"), str)
+    ]
+    sessions = manifest.get("sessions", [])
+    session_count = len(sessions) if isinstance(sessions, list) else 0
+    failed_session_count = len(
+        [
+            session
+            for session in sessions
+            if isinstance(session, dict) and session.get("harness_exit_code") not in {None, 0}
+        ]
+    )
+    total_event_count = sum(
+        int(session.get("event_count", 0))
+        for session in sessions
+        if isinstance(session, dict)
+    )
+
+    manifest["active_case_index"] = None
+    manifest["active_session_id"] = None
+    manifest["status"] = "finalized"
+    manifest["finalized_at_utc"] = ended_at_utc
+    manifest["succeeded"] = succeeded
+    manifest["scorer_status"] = "pending"
+
+    report_path = manifest_path.parent / "report.json"
+    report_payload = {
+        "run_id": manifest["run_id"],
+        "finalized_at_utc": ended_at_utc,
+        "succeeded": succeeded,
+        "scorer_status": "pending",
+        "trap_count": len(trap_ids),
+        "trap_ids": trap_ids,
+        "case_count": manifest.get("case_count", 0),
+        "session_count": session_count,
+        "failed_session_count": failed_session_count,
+        "event_count": total_event_count,
+    }
+    write_json(report_path, report_payload, atomic=True)
+    manifest["report_path"] = str(report_path)
+    write_json(manifest_path, manifest, atomic=True)
+
+
+def _terminate_process(process: subprocess.Popen[Any] | None) -> None:
+    if process is None or process.poll() is not None:
+        return
+    process.terminate()
+    try:
+        process.wait(timeout=ADAPTER_TERMINATE_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait(timeout=ADAPTER_TERMINATE_TIMEOUT_SECONDS)
 
 
 def run_single_trap(
@@ -139,13 +299,9 @@ def run_single_trap(
     registry: Mapping[str, TrapSpec],
     environment: RunEnvironment,
     product_under_test: str,
+    harness: HarnessConfig,
     status_callback: StatusCallback,
-) -> TrapRunReady:
-    """Run a single trap and return attached run state when ready.
-
-    The function creates a run manifest, resolves dataset cache for the trap input,
-    launches the adapter, and marks the run ready once a session id is active.
-    """
+) -> TrapRunResult:
     run_id = uuid.uuid4().hex
     run_dir = environment.runs_dir / run_id
     run_dir.mkdir(parents=True, exist_ok=False)
@@ -160,6 +316,7 @@ def run_single_trap(
         "requested": requested_trap_ref,
         "status": "creating",
         "scorer_status": "pending",
+        "active_case_index": None,
         "active_session_id": None,
         "sessions": [],
         "traps": [],
@@ -187,7 +344,10 @@ def run_single_trap(
     except Exception as exc:  # noqa: BLE001
         raise RuntimeError(f"Failed during dataset generation: {exc}") from exc
 
-    status_callback(f"Dataset ready: {len(dataset.data_items)} items")
+    if not dataset.cases:
+        raise RuntimeError("dataset generation completed, but no execution cases were produced")
+
+    status_callback(f"Dataset ready: {len(dataset.cases)} cases")
 
     trap_entry = {
         "trap_id": trap_id,
@@ -196,53 +356,71 @@ def run_single_trap(
     }
     run_manifest["traps"] = [trap_entry]
     run_manifest["trap_count"] = 1
+    run_manifest["case_count"] = len(dataset.cases)
     run_manifest["status"] = "armed"
-    write_json(run_manifest_path, run_manifest)
+    write_json(run_manifest_path, run_manifest, atomic=True)
 
-    process: subprocess.Popen[Any] | None = None
+    harness_cwd = environment.repo_root / harness.cwd
+    adapter_port = ADAPTER_PORT
+    adapter_process: subprocess.Popen[Any] | None = None
+    succeeded = True
     try:
-        status_callback(
-            f"Launching adapter runtime for product '{product_under_test}'"
-        )
+        status_callback(f"Launching adapter runtime for product '{product_under_test}'")
         try:
-            process = _launch_adapter(
+            adapter_process = _launch_adapter(
                 run_manifest_path,
                 environment=environment,
                 product_under_test=product_under_test,
+                port=adapter_port,
             )
         except Exception as exc:  # noqa: BLE001
             raise RuntimeError(f"Failed during adapter launch: {exc}") from exc
 
-        status_callback("Waiting for adapter session start...")
         try:
-            session_id = _wait_for_session_start(
-                run_manifest_path,
-                process,
+            _wait_for_adapter_ready(
+                adapter_process,
+                port=adapter_port,
                 heartbeat_interval_seconds=STATUS_HEARTBEAT_INTERVAL_SECONDS,
                 on_wait_heartbeat=lambda elapsed: status_callback(
-                    f"Waiting for adapter session start... ({int(elapsed)}s)"
+                    f"Waiting for adapter health... ({int(elapsed)}s)"
                 ),
             )
         except Exception as exc:  # noqa: BLE001
-            raise RuntimeError(f"Failed during adapter session startup: {exc}") from exc
-    except Exception:
-        if process is not None and process.poll() is None:
-            process.terminate()
-        raise
+            raise RuntimeError(f"Failed during adapter startup: {exc}") from exc
 
-    if process is None:
-        raise RuntimeError("adapter process handle was unexpectedly missing after startup")
+        ready_manifest = load_json_maybe(run_manifest_path) or run_manifest
+        ready_manifest["status"] = "ready"
+        ready_manifest["adapter_pid"] = adapter_process.pid
+        ready_manifest["adapter_port"] = adapter_port
+        ready_manifest["ready_at_utc"] = utc_now_iso()
+        write_json(run_manifest_path, ready_manifest, atomic=True)
+        status_callback("Adapter ready")
 
-    ready_manifest = load_json_maybe(run_manifest_path) or run_manifest
-    if ready_manifest.get("status") == "finalized":
-        status_callback(f"Session active: {session_id}")
-        status_callback("Run finalized")
-        return TrapRunReady(run_manifest_path=run_manifest_path, adapter_process=process)
+        for case_index in range(len(dataset.cases)):
+            status_callback(f"Starting case {case_index + 1}/{len(dataset.cases)}")
+            descriptor = _start_case_session(run_manifest_path, case_index=case_index)
+            status_callback(f"Session active: {descriptor.session_id}")
 
-    status_callback(f"Session active: {session_id}")
-    ready_manifest["status"] = "ready"
-    ready_manifest["adapter_pid"] = process.pid
-    ready_manifest["ready_at_utc"] = utc_now_iso()
-    write_json(run_manifest_path, ready_manifest)
-    status_callback("Run ready")
-    return TrapRunReady(run_manifest_path=run_manifest_path, adapter_process=process)
+            harness_exit_code = 1
+            try:
+                result = subprocess.run(
+                    list(harness.command),
+                    cwd=harness_cwd,
+                    check=False,
+                )
+                harness_exit_code = int(result.returncode)
+            finally:
+                _end_case_session(run_manifest_path, harness_exit_code=harness_exit_code)
+
+            if harness_exit_code == 0:
+                status_callback(f"Case {case_index + 1} completed")
+            else:
+                succeeded = False
+                status_callback(f"Case {case_index + 1} failed (exit code {harness_exit_code})")
+    finally:
+        clear_active_session_descriptor(_active_session_path(run_manifest_path))
+        _terminate_process(adapter_process)
+
+    _finalize_run(run_manifest_path, succeeded=succeeded)
+    status_callback("Run finalized")
+    return TrapRunResult(run_manifest_path=run_manifest_path, succeeded=succeeded)

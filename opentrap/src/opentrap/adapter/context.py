@@ -1,16 +1,16 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
 from fastapi import HTTPException, Request
 
-from .models import DataItemView, ManifestView
+from opentrap.execution_context import ActiveSessionDescriptor
 
-EventEmitter = Callable[[str, Mapping[str, Any]], None]
+from .models import DataItemView, ManifestView
 
 
 class RuntimeProtocol(Protocol):
@@ -79,6 +79,7 @@ class RequestContext:
     session_id: str
     request_id: str
     manifest: ManifestView
+    execution_context: ActiveSessionDescriptor
     trap_actions: object | None
 
     def path_param(self, name: str, *, required: bool = True) -> str | None:
