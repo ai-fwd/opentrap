@@ -301,6 +301,7 @@ def run_single_trap(
     product_under_test: str,
     harness: HarnessConfig,
     status_callback: StatusCallback,
+    max_cases: int | None = None,
 ) -> TrapRunResult:
     run_id = uuid.uuid4().hex
     run_dir = environment.runs_dir / run_id
@@ -347,7 +348,16 @@ def run_single_trap(
     if not dataset.cases:
         raise RuntimeError("dataset generation completed, but no execution cases were produced")
 
-    status_callback(f"Dataset ready: {len(dataset.cases)} cases")
+    total_case_count = len(dataset.cases)
+    status_callback(f"Dataset ready: {total_case_count} cases")
+    case_count_to_run = total_case_count
+    if max_cases is not None:
+        if max_cases < 1:
+            raise RuntimeError("max_cases must be >= 1")
+        case_count_to_run = min(total_case_count, max_cases)
+        status_callback(
+            f"Fast dev run mode: executing {case_count_to_run}/{total_case_count} case(s)"
+        )
 
     trap_entry = {
         "trap_id": trap_id,
@@ -356,7 +366,7 @@ def run_single_trap(
     }
     run_manifest["traps"] = [trap_entry]
     run_manifest["trap_count"] = 1
-    run_manifest["case_count"] = len(dataset.cases)
+    run_manifest["case_count"] = total_case_count
     run_manifest["status"] = "armed"
     write_json(run_manifest_path, run_manifest, atomic=True)
 
@@ -396,8 +406,8 @@ def run_single_trap(
         write_json(run_manifest_path, ready_manifest, atomic=True)
         status_callback("Adapter ready")
 
-        for case_index in range(len(dataset.cases)):
-            status_callback(f"Starting case {case_index + 1}/{len(dataset.cases)}")
+        for case_index in range(case_count_to_run):
+            status_callback(f"Starting case {case_index + 1}/{case_count_to_run}")
             descriptor = _start_case_session(run_manifest_path, case_index=case_index)
             status_callback(f"Session active: {descriptor.session_id}")
 

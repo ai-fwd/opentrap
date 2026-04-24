@@ -178,7 +178,10 @@ def cmd_init(_: argparse.Namespace) -> int:
 def cmd_trap(args: argparse.Namespace) -> int:
     """Execute a single trap id and print the resulting run manifest path."""
     trap_ref = args.trap
+    fast_dev_run = bool(getattr(args, "fast_dev_run", False))
     _status(f"Starting trap run: {trap_ref}")
+    if fast_dev_run:
+        _status("Fast dev run enabled")
     _status("Validating trap id and loading trap registry...")
 
     registry = _load_registry()
@@ -238,6 +241,7 @@ def cmd_trap(args: argparse.Namespace) -> int:
             product_under_test=loaded.product_under_test,
             harness=loaded.harness,
             status_callback=_status,
+            max_cases=1 if fast_dev_run else None,
         )
     except Exception as exc:  # noqa: BLE001
         _status(str(exc))
@@ -262,18 +266,45 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _parse_trap_execution_args(raw_args: list[str]) -> argparse.Namespace | None:
+    """Parse shorthand trap execution args with optional --fast-dev-run."""
+    trap_ref: str | None = None
+    fast_dev_run = False
+
+    for token in raw_args:
+        if token == "--fast-dev-run":
+            fast_dev_run = True
+            continue
+        if token.startswith("-"):
+            print(f"unrecognized option for trap execution: {token}", file=sys.stderr)
+            return None
+        if trap_ref is not None:
+            print(
+                "trap execution accepts exactly one argument: target/name",
+                file=sys.stderr,
+            )
+            return None
+        trap_ref = token
+
+    if trap_ref is None:
+        print(
+            "trap execution accepts exactly one argument: target/name",
+            file=sys.stderr,
+        )
+        return None
+
+    return argparse.Namespace(trap=trap_ref, fast_dev_run=fast_dev_run)
+
+
 def main(argv: list[str] | None = None) -> int:
     """Execute CLI command with backward-compatible single-arg trap shorthand."""
     raw_args = list(argv) if argv is not None else sys.argv[1:]
 
     if raw_args and raw_args[0] not in {"list", "init", "-h", "--help"}:
-        if len(raw_args) != 1:
-            print(
-                "trap execution accepts exactly one argument: target/name",
-                file=sys.stderr,
-            )
+        parsed = _parse_trap_execution_args(raw_args)
+        if parsed is None:
             return 2
-        return cmd_trap(argparse.Namespace(trap=raw_args[0]))
+        return cmd_trap(parsed)
 
     parser = build_parser()
     args = parser.parse_args(raw_args)
