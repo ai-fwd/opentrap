@@ -52,8 +52,11 @@ export async function loadEmailDetail(emailId: string, context: InboxRequestCont
   }
 
   const rawHtml = await loadRawEmailBody(emailId, context);
-  const extractedText = extractTextFromHtml(rawHtml);
+  return buildEmailDetailFromInboxItem(item, rawHtml);
+}
 
+export function buildEmailDetailFromInboxItem(item: InboxItem, rawHtml: string): EmailDetail {
+  const extractedText = extractTextFromHtml(rawHtml);
   return {
     ...item,
     rawHtml,

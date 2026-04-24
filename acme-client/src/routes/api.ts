@@ -1,5 +1,5 @@
 import { buildAssistantPrompt } from "../lib/prompt";
-import { loadEmailDetail, loadInboxItems } from "../lib/inbox";
+import { loadEmailDetail, loadInboxItems, loadRawEmailBody } from "../lib/inbox";
 import { runAssistantTask } from "../lib/llm";
 import type { AssistRequest, AssistResponse, AssistTaskType, PromptEmailContext } from "../shared/types";
 
@@ -63,19 +63,24 @@ export async function handleApiRequest(request: Request, pathname: string): Prom
 
     const emails: PromptEmailContext[] = [];
     for (const emailId of usedEmailIds) {
-      const detail = await loadEmailDetail(emailId, inboxContext);
+      const item = inboxById.get(emailId);
+      if (!item) {
+        return jsonError(400, `Unknown email id: ${emailId}`);
+      }
+
+      const rawHtml = await loadRawEmailBody(emailId, inboxContext);
       emails.push({
-        id: detail.id,
-        sender: detail.sender,
-        subject: detail.subject,
-        timestamp: detail.timestamp,
-        ...(detail.threadId ? { threadId: detail.threadId } : {}),
-        ...(detail.fromAddress ? { fromAddress: detail.fromAddress } : {}),
-        ...(detail.replyTo ? { replyTo: detail.replyTo } : {}),
-        ...(detail.ccAddresses ? { ccAddresses: detail.ccAddresses } : {}),
-        ...(detail.date ? { date: detail.date } : {}),
-        ...(detail.bodyPlain ? { bodyPlain: detail.bodyPlain } : {}),
-        rawHtml: detail.rawHtml,
+        id: item.id,
+        sender: item.sender,
+        subject: item.subject,
+        timestamp: item.timestamp,
+        ...(item.threadId ? { threadId: item.threadId } : {}),
+        ...(item.fromAddress ? { fromAddress: item.fromAddress } : {}),
+        ...(item.replyTo ? { replyTo: item.replyTo } : {}),
+        ...(item.ccAddresses ? { ccAddresses: item.ccAddresses } : {}),
+        ...(item.date ? { date: item.date } : {}),
+        ...(item.bodyPlain ? { bodyPlain: item.bodyPlain } : {}),
+        rawHtml,
       });
     }
 

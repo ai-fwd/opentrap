@@ -25,5 +25,7 @@ export default defineConfig({
     reuseExistingServer: true,
     timeout: 180_000,
     cwd: ".",
+    stdout: 'ignore',
+    stderr: 'ignore',
   },
 });
