@@ -35,7 +35,7 @@ Functions:
 - `end_session() -> FinalizeResult`
   Output: `FinalizeResult(run_id, session_id, report_path)`.
   Side effects:
-  - updates session record with end time and event count
+  - updates session record with end time
   - clears `manifest["active_session_id"]`
   - sets `manifest["status"] = "finalized"`
   - writes `report.json` and `manifest["report_path"]`
@@ -50,9 +50,8 @@ from __future__ import annotations
 
 import json
 import uuid
-from collections import Counter
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -91,8 +90,6 @@ class _ActiveSession:
     evidence_path: Path
     data_items: dict[str, DataItem]
     started_at_utc: str
-    event_count: int = 0
-    events_by_type: Counter[str] = field(default_factory=Counter)
 
 
 _active_session: _ActiveSession | None = None
@@ -200,7 +197,6 @@ def start_session(manifest_path: str | Path) -> str:
         "session_id": session_id,
         "started_at_utc": started_at_utc,
         "ended_at_utc": None,
-        "event_count": 0,
     }
     append_jsonl(session_path, session_payload)
     evidence_path.write_text("", encoding="utf-8")
@@ -266,9 +262,6 @@ def emit_event(event_type: str, payload: Mapping[str, Any]) -> None:
     with session.evidence_path.open("a", encoding="utf-8") as evidence_file:
         evidence_file.write(json.dumps(envelope) + "\n")
 
-    session.event_count += 1
-    session.events_by_type[event_type] += 1
-
 
 def end_session() -> FinalizeResult:
     """Finalize the active session and emit run-level report metadata."""
@@ -282,7 +275,6 @@ def end_session() -> FinalizeResult:
         session_id=session.session_id,
         updates={
             "ended_at_utc": ended_at_utc,
-            "event_count": session.event_count,
         },
     )
 
@@ -317,8 +309,6 @@ def end_session() -> FinalizeResult:
         "trap_count": len(trap_ids),
         "trap_ids": trap_ids,
         "data_item_count": len(session.data_items),
-        "event_count": session.event_count,
-        "events_by_type": dict(session.events_by_type),
     }
     write_json(report_path, report_payload, atomic=True)
 

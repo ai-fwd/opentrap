@@ -582,7 +582,6 @@ def test_trap_run_returns_failure_when_harness_case_fails(
     session_payload = session_payloads[0]
     assert session_payload["harness_exit_code"] == 3
     assert session_payload["item_id"] == "00001"
-    assert session_payload["event_count"] == 0
     assert "case" not in session_payload
 
 
@@ -629,12 +628,10 @@ def test_report_aggregates_match_sessions_jsonl_for_failed_run(
     computed_failed_session_count = sum(
         1 for session in session_payloads if session.get("harness_exit_code") not in {None, 0}
     )
-    computed_event_count = sum(int(session.get("event_count", 0)) for session in session_payloads)
 
     assert report["run_id"] == run_manifest["run_id"]
     assert report["session_count"] == computed_session_count
     assert report["failed_session_count"] == computed_failed_session_count
-    assert report["event_count"] == computed_event_count
 
 
 def test_trap_run_rejects_unknown_trap_key_in_yaml(capsys, tmp_path: Path, monkeypatch) -> None:

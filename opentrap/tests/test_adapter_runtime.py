@@ -14,6 +14,7 @@ from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
 
 from opentrap.adapter import RequestContext, RouteSpec, UpstreamSpec, create_app
+from opentrap.adapter.default_handlers import observe_openai_responses_default
 from opentrap.execution_context import ActiveSessionDescriptor, write_active_session_descriptor
 
 TEST_SESSION_ID = "test-session-id"
@@ -77,7 +78,6 @@ def _write_active_session(manifest_path: Path, *, case: dict[str, Any]) -> Activ
         "item_id": case.get("item_id"),
         "started_at_utc": "2026-01-01T00:00:00+00:00",
         "ended_at_utc": None,
-        "event_count": 0,
         "harness_exit_code": None,
     }
     session_path.write_text(json.dumps(session_payload) + "\n", encoding="utf-8")
@@ -99,6 +99,17 @@ def _read_evidence(manifest_path: Path) -> list[dict[str, Any]]:
     return [
         json.loads(line)
         for line in evidence_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+
+
+def _read_observations(manifest_path: Path) -> list[dict[str, Any]]:
+    observations_path = manifest_path.parent / "observations.jsonl"
+    if not observations_path.exists():
+        return []
+    return [
+        json.loads(line)
+        for line in observations_path.read_text(encoding="utf-8").splitlines()
         if line.strip()
     ]
 
@@ -372,6 +383,99 @@ def test_observe_handler_payload_is_emitted_by_runtime(tmp_path: Path) -> None:
     assert observed_events[0]["model"] == "gpt-4.1-mini"
     assert observed_events[0]["status_code"] == 201
     assert "ignored_field" not in observed_events[0]
+
+
+def test_default_openai_observer_writes_llm_observation(tmp_path: Path) -> None:
+    manifest_path = tmp_path / "run.json"
+    _write_manifest(manifest_path)
+
+    async def transport_handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            status_code=200,
+            headers={"content-type": "application/json"},
+            json={
+                "output": [
+                    {
+                        "type": "message",
+                        "content": [
+                            {"type": "output_text", "text": "hello "},
+                            {"type": "output_text", "text": "world"},
+                        ],
+                    }
+                ]
+            },
+        )
+
+    forward_client = httpx.AsyncClient(transport=httpx.MockTransport(transport_handler))
+    app = create_app(
+        manifest_path=manifest_path,
+        routes=[
+            RouteSpec(
+                name="openai-responses",
+                path="/v1/responses",
+                methods=(HTTPMethod.POST,),
+                mode="observe",
+                handler=observe_openai_responses_default,
+                upstream="origin",
+            )
+        ],
+        upstreams=[UpstreamSpec(name="origin", base_url="https://origin.test")],
+        forward_client=forward_client,
+    )
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/responses",
+            json={"model": "gpt-4.1-mini", "input": "hello"},
+        )
+
+    assert response.status_code == 200
+    observations = _read_observations(manifest_path)
+    assert len(observations) == 1
+    observation = observations[0]
+    assert observation["case_index"] == 0
+    assert observation["session_id"] == TEST_SESSION_ID
+    assert observation["request_id"]
+    assert observation["observation_type"] == "llm.response"
+    assert observation["content_type"] == "text/plain"
+    assert observation["content"] == "hello world"
+    assert observation["model"] == "gpt-4.1-mini"
+    assert observation["status_code"] == 200
+    assert observation["timestamp_utc"]
+
+
+def test_default_openai_observer_skips_observation_when_no_extractable_text(
+    tmp_path: Path,
+) -> None:
+    manifest_path = tmp_path / "run.json"
+    _write_manifest(manifest_path)
+
+    async def transport_handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            status_code=200,
+            headers={"content-type": "application/json"},
+            json={
+                "output": [
+                    {
+                        "type": "message",
+                        "content": [
+                            {"type": "refusal", "refusal": "cannot comply"},
+                        ],
+                    }
+                ]
+            },
+        )
+
+    response = _run_observe_route(
+        manifest_path=manifest_path,
+        route_name="openai-responses-no-text",
+        route_path="/v1/responses-no-text",
+        observer=observe_openai_responses_default,
+        transport_handler=transport_handler,
+    )
+
+    assert response.status_code == 200
+    assert _read_observations(manifest_path) == []
 
 
 def test_unknown_named_upstream_is_rejected(tmp_path: Path) -> None:

@@ -161,13 +161,6 @@ def _update_session_payload(
     raise RuntimeError(f"session_id {session_id!r} was not found in {sessions_path}")
 
 
-def _coerce_count(value: object) -> int:
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return 0
-
-
 def _start_case_session(manifest_path: Path, *, case_index: int) -> ActiveSessionDescriptor:
     manifest = load_json(manifest_path)
     run_id = manifest.get("run_id")
@@ -212,7 +205,6 @@ def _start_case_session(manifest_path: Path, *, case_index: int) -> ActiveSessio
         "item_id": item_id_value,
         "started_at_utc": started_at_utc,
         "ended_at_utc": None,
-        "event_count": 0,
         "harness_exit_code": None,
     }
     append_jsonl(session_path, session_payload)
@@ -246,15 +238,12 @@ def _end_case_session(manifest_path: Path, *, harness_exit_code: int) -> None:
         raise RuntimeError("active session descriptor was unexpectedly missing at session end")
 
     ended_at_utc = utc_now_iso()
-    # Evidence counting is intentionally stubbed for now while traces are decoupled.
-    event_count = 0
 
     _update_session_payload(
         sessions_path=descriptor.session_path,
         session_id=descriptor.session_id,
         updates={
             "ended_at_utc": ended_at_utc,
-            "event_count": event_count,
             "harness_exit_code": harness_exit_code,
         },
     )
@@ -286,10 +275,6 @@ def _finalize_run(manifest_path: Path, *, succeeded: bool) -> None:
             if session.get("harness_exit_code") not in {None, 0}
         ]
     )
-    total_event_count = sum(
-        _coerce_count(session.get("event_count", 0))
-        for session in session_payloads
-    )
 
     manifest["active_case_index"] = None
     manifest["active_session_id"] = None
@@ -309,7 +294,6 @@ def _finalize_run(manifest_path: Path, *, succeeded: bool) -> None:
         "case_count": manifest.get("case_count", 0),
         "session_count": session_count,
         "failed_session_count": failed_session_count,
-        "event_count": total_event_count,
     }
     write_json(report_path, report_payload, atomic=True)
     manifest["report_path"] = str(report_path)

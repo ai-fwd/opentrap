@@ -49,6 +49,29 @@ class _UpstreamHandler(BaseHTTPRequestHandler):
         self._send_json(201, payload, headers={"x-upstream-mode": "passthrough"})
 
     def do_GET(self) -> None:  # noqa: N802
+        if self.path.startswith("/observe-openai"):
+            self._capture("")
+            body = json.dumps(
+                {
+                    "output": [
+                        {
+                            "type": "message",
+                            "content": [
+                                {"type": "output_text", "text": "first "},
+                                {"type": "output_text", "text": "second"},
+                            ],
+                        }
+                    ]
+                }
+            ).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("x-upstream-mode", "observe-openai")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+
         if self.path.startswith("/observe"):
             self._capture("")
             body = b"observe-from-upstream\n"
@@ -150,7 +173,6 @@ def _write_active_session(manifest_path: Path) -> None:
                 "item_id": "00001",
                 "started_at_utc": "2026-01-01T00:00:00+00:00",
                 "ended_at_utc": None,
-                "event_count": 0,
                 "harness_exit_code": None,
             }
         )
@@ -194,6 +216,7 @@ from pathlib import Path
 
 from fastapi.responses import JSONResponse
 from opentrap.adapter import RequestContext
+import opentrap.adapter.default_handlers as handlers
 
 
 async def intercept_intercept(ctx: RequestContext):
@@ -210,6 +233,10 @@ async def observe_observe(_ctx: RequestContext, snapshot) -> None:
         json.dumps({{"status_code": snapshot.status_code}}) + "\\n",
         encoding="utf-8",
     )
+
+
+async def observe_openai_observe(ctx: RequestContext, snapshot):
+    return await handlers.observe_openai_responses_default(ctx, snapshot)
 """
 
     adapter_yaml = f"""
@@ -226,6 +253,11 @@ routes:
     upstream_path: /up/{{id}}
   - name: observe
     path: /observe
+    methods: [GET]
+    mode: observe
+    upstream: origin
+  - name: openai-observe
+    path: /observe-openai
     methods: [GET]
     mode: observe
     upstream: origin
@@ -342,6 +374,12 @@ def test_adapter_process_integrates_route_modes_and_named_upstreams(tmp_path: Pa
                 assert response.headers["x-upstream-mode"] == "observe"
                 assert response.read().decode("utf-8") == "observe-from-upstream\n"
 
+            with urlopen(f"http://127.0.0.1:{adapter_port}/observe-openai", timeout=0.5) as response:  # noqa: S310
+                assert response.status == 200
+                assert response.headers["x-upstream-mode"] == "observe-openai"
+                payload = json.loads(response.read().decode("utf-8"))
+                assert payload["output"][0]["content"][0]["type"] == "output_text"
+
             process.send_signal(signal.SIGTERM)
             assert process.wait(timeout=5) == 0
         finally:
@@ -375,7 +413,7 @@ def test_adapter_process_integrates_route_modes_and_named_upstreams(tmp_path: Pa
     assert "/observe" in post_paths
 
     captured = upstream_server.requests
-    assert len(captured) == 2
+    assert len(captured) == 3
     assert captured[0] == {
         "method": "POST",
         "path": "/up/abc?x=1",
@@ -386,7 +424,26 @@ def test_adapter_process_integrates_route_modes_and_named_upstreams(tmp_path: Pa
         "path": "/observe",
         "body": "",
     }
+    assert captured[2] == {
+        "method": "GET",
+        "path": "/observe-openai",
+        "body": "",
+    }
 
     assert observer_marker.exists()
     observer_payload = json.loads(observer_marker.read_text(encoding="utf-8"))
     assert observer_payload["status_code"] == 200
+
+    observations_path = run_dir / "observations.jsonl"
+    assert observations_path.exists()
+    observations = [
+        json.loads(line)
+        for line in observations_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert len(observations) == 1
+    assert observations[0]["case_index"] == 0
+    assert observations[0]["session_id"] == TEST_SESSION_ID
+    assert observations[0]["observation_type"] == "llm.response"
+    assert observations[0]["content_type"] == "text/plain"
+    assert observations[0]["content"] == "first second"

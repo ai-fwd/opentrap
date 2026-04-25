@@ -8,7 +8,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from opentrap.io_utils import load_json_maybe, write_json
+from opentrap.io_utils import load_json_maybe, utc_now_iso, write_json
+
+OBSERVATIONS_FILE_NAME = "observations.jsonl"
 
 
 @dataclass(frozen=True)
@@ -139,3 +141,38 @@ def emit_event(
 
     with execution_context.evidence_path.open("a", encoding="utf-8") as evidence_file:
         evidence_file.write(json.dumps(trace_row) + "\n")
+
+
+def emit_observation(
+    *,
+    execution_context: ActiveSessionDescriptor,
+    request_id: str,
+    observation_type: str,
+    content_type: str,
+    content: str,
+    model: str | None,
+    status_code: int | None,
+) -> None:
+    if not isinstance(request_id, str) or not request_id.strip():
+        raise RuntimeError("request_id must be a non-empty string")
+    if not isinstance(observation_type, str) or not observation_type.strip():
+        raise RuntimeError("observation_type must be a non-empty string")
+    if not isinstance(content_type, str) or not content_type.strip():
+        raise RuntimeError("content_type must be a non-empty string")
+    if not isinstance(content, str) or not content:
+        raise RuntimeError("content must be a non-empty string")
+
+    observations_path = execution_context.session_path.parent / OBSERVATIONS_FILE_NAME
+    observation = {
+        "case_index": execution_context.case_index,
+        "session_id": execution_context.session_id,
+        "request_id": request_id,
+        "observation_type": observation_type,
+        "content_type": content_type,
+        "content": content,
+        "model": model if isinstance(model, str) else None,
+        "status_code": status_code if isinstance(status_code, int) else None,
+        "timestamp_utc": utc_now_iso(),
+    }
+    with observations_path.open("a", encoding="utf-8") as observations_file:
+        observations_file.write(json.dumps(observation) + "\n")
