@@ -491,11 +491,14 @@ def test_trap_run_single_records_manifest_and_artifact(
     )
     run_dir = run_manifest_path.parent
     session_id = run_manifest["sessions"][0]["session_id"]
+    assert run_manifest["sessions"][0]["evidence_file"] == "traces.jsonl"
     sessions_file = run_manifest.get("sessions_file")
     assert sessions_file == "sessions.jsonl"
     sessions_path = run_dir / sessions_file
     assert sessions_path.exists()
     assert not (run_dir / f"session-{session_id}.json").exists()
+    traces_path = run_dir / "traces.jsonl"
+    assert traces_path.exists()
     assert (run_dir / "report.json").exists()
 
 
@@ -579,6 +582,7 @@ def test_trap_run_returns_failure_when_harness_case_fails(
     session_payload = session_payloads[0]
     assert session_payload["harness_exit_code"] == 3
     assert session_payload["item_id"] == "00001"
+    assert session_payload["event_count"] == 0
     assert "case" not in session_payload
 
 

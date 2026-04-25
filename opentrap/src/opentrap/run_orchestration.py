@@ -41,6 +41,7 @@ ADAPTER_POLL_INTERVAL_SECONDS = 0.1
 STATUS_HEARTBEAT_INTERVAL_SECONDS = 3.0
 ADAPTER_TERMINATE_TIMEOUT_SECONDS = 3.0
 SESSIONS_FILE_NAME = "sessions.jsonl"
+TRACES_FILE_NAME = "traces.jsonl"
 
 StatusCallback = Callable[[str], None]
 
@@ -126,12 +127,6 @@ def _active_session_path(manifest_path: Path) -> Path:
     return active_session_path_for_run(manifest_path.parent)
 
 
-def _count_evidence_events(path: Path) -> int:
-    if not path.exists():
-        return 0
-    return sum(1 for line in path.read_text(encoding="utf-8").splitlines() if line.strip())
-
-
 def _resolve_sessions_file_path(run_dir: Path, manifest: Mapping[str, Any]) -> Path:
     sessions_file = manifest.get("sessions_file")
     if isinstance(sessions_file, str) and sessions_file.strip():
@@ -198,7 +193,7 @@ def _start_case_session(manifest_path: Path, *, case_index: int) -> ActiveSessio
     run_dir = manifest_path.parent
     session_id = uuid.uuid4().hex
     session_path = _resolve_sessions_file_path(run_dir, manifest)
-    evidence_path = run_dir / f"session-{session_id}.jsonl"
+    evidence_path = run_dir / TRACES_FILE_NAME
     started_at_utc = utc_now_iso()
 
     descriptor = ActiveSessionDescriptor(
@@ -221,7 +216,7 @@ def _start_case_session(manifest_path: Path, *, case_index: int) -> ActiveSessio
         "harness_exit_code": None,
     }
     append_jsonl(session_path, session_payload)
-    evidence_path.write_text("", encoding="utf-8")
+    evidence_path.touch(exist_ok=True)
 
     sessions = manifest.get("sessions")
     if not isinstance(sessions, list):
@@ -251,7 +246,8 @@ def _end_case_session(manifest_path: Path, *, harness_exit_code: int) -> None:
         raise RuntimeError("active session descriptor was unexpectedly missing at session end")
 
     ended_at_utc = utc_now_iso()
-    event_count = _count_evidence_events(descriptor.evidence_path)
+    # Evidence counting is intentionally stubbed for now while traces are decoupled.
+    event_count = 0
 
     _update_session_payload(
         sessions_path=descriptor.session_path,

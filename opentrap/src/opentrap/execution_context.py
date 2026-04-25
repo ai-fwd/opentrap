@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from opentrap.io_utils import load_json_maybe, utc_now_iso, write_json
+from opentrap.io_utils import load_json_maybe, write_json
 
 
 @dataclass(frozen=True)
@@ -114,13 +114,28 @@ def emit_event(
     if not isinstance(event_type, str) or not event_type.strip():
         raise RuntimeError("event_type must be a non-empty string")
 
-    envelope = {
-        "event_type": event_type,
-        "timestamp_utc": utc_now_iso(),
-        "run_id": execution_context.run_id,
-        "session_id": execution_context.session_id,
+    route_name = payload.get("route_name")
+    route_mode = payload.get("route_mode")
+    method = payload.get("method")
+    path = payload.get("path")
+    query = payload.get("query")
+    status_code = payload.get("status_code")
+    duration = payload.get("duration")
+    model = payload.get("model")
+
+    trace_row: dict[str, Any] = {
         "case_index": execution_context.case_index,
-        "payload": dict(payload),
+        "event_type": event_type,
+        "route_name": route_name if isinstance(route_name, str) else None,
+        "route_mode": route_mode if isinstance(route_mode, str) else None,
+        "method": method if isinstance(method, str) else None,
+        "path": path if isinstance(path, str) else None,
+        "query": query if isinstance(query, str) else None,
+        "status_code": status_code if isinstance(status_code, int) else None,
+        "duration": duration if isinstance(duration, int | float) else None,
     }
+    if event_type == "llm_responses_observed":
+        trace_row["model"] = model if isinstance(model, str) else None
+
     with execution_context.evidence_path.open("a", encoding="utf-8") as evidence_file:
-        evidence_file.write(json.dumps(envelope) + "\n")
+        evidence_file.write(json.dumps(trace_row) + "\n")

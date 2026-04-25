@@ -140,7 +140,7 @@ def _write_manifest(path: Path, *, repo_root: Path, product: str = "default") ->
 
 def _write_active_session(manifest_path: Path) -> None:
     session_path = manifest_path.parent / "sessions.jsonl"
-    evidence_path = manifest_path.parent / f"session-{TEST_SESSION_ID}.jsonl"
+    evidence_path = manifest_path.parent / "traces.jsonl"
     session_path.write_text(
         json.dumps(
             {
@@ -352,7 +352,7 @@ def test_adapter_process_integrates_route_modes_and_named_upstreams(tmp_path: Pa
     run_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     assert run_manifest["status"] == "armed"
     assert run_manifest["active_session_id"] == TEST_SESSION_ID
-    evidence_path = run_dir / f"session-{TEST_SESSION_ID}.jsonl"
+    evidence_path = run_dir / "traces.jsonl"
 
     envelopes = [
         json.loads(line)
@@ -365,8 +365,8 @@ def test_adapter_process_integrates_route_modes_and_named_upstreams(tmp_path: Pa
     assert pre_events
     assert post_events
 
-    pre_paths = [entry["payload"]["path"] for entry in pre_events]
-    post_paths = [entry["payload"]["path"] for entry in post_events]
+    pre_paths = [entry["path"] for entry in pre_events]
+    post_paths = [entry["path"] for entry in post_events]
     assert "/intercept" in pre_paths
     assert "/passthrough/abc" in pre_paths
     assert "/observe" in pre_paths

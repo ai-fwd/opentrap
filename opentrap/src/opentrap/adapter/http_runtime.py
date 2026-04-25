@@ -191,7 +191,7 @@ async def _forward_request(*, app: FastAPI, request: Request, route: RouteSpec) 
 
 
 async def dispatch_route(*, app: FastAPI, request: Request, route: RouteSpec) -> Response:
-    request_body = await _request_body(request)
+    await _request_body(request)
     execution_context = cast(ActiveSessionDescriptor, request.state.execution_context)
     context = RequestContext(
         request=request,
@@ -215,8 +215,8 @@ async def dispatch_route(*, app: FastAPI, request: Request, route: RouteSpec) ->
         event_type="route_dispatch_pre",
         payload={
             **event_common_payload,
-            "request_headers": dict(request.headers),
-            "request_body": request_body.decode("utf-8", errors="replace"),
+            "status_code": None,
+            "duration": None,
         },
     )
     started = time.monotonic()
@@ -244,47 +244,39 @@ async def dispatch_route(*, app: FastAPI, request: Request, route: RouteSpec) ->
             )
             observer_payload = await observer(context, observer_snapshot)
             if observer_payload is not None:
+                model = observer_payload.get("model")
                 emit_event(
                     execution_context=execution_context,
                     event_type="llm_responses_observed",
                     payload={
                         **event_common_payload,
-                        **dict(observer_payload),
+                        "status_code": forwarded_response.status_code,
+                        "duration": None,
+                        "model": model if isinstance(model, str) else None,
                     },
                 )
 
         return forwarded_response
-    except Exception as exc:
+    except Exception:
         emit_event(
             execution_context=execution_context,
             event_type="route_dispatch_post",
             payload={
                 **event_common_payload,
-                "duration_ms": round((time.monotonic() - started) * 1000, 3),
-                "error": str(exc),
+                "status_code": None,
+                "duration": round((time.monotonic() - started) * 1000, 3),
             },
         )
         post_emitted = True
         raise
     finally:
         if response is not None and not post_emitted:
-            raw_response = getattr(response, "body", b"")
-            if isinstance(raw_response, str):
-                raw_response_bytes = raw_response.encode("utf-8", errors="replace")
-            elif isinstance(raw_response, bytes):
-                raw_response_bytes = raw_response
-            elif isinstance(raw_response, bytearray):
-                raw_response_bytes = bytes(raw_response)
-            else:
-                raw_response_bytes = str(raw_response).encode("utf-8", errors="replace")
             emit_event(
                 execution_context=execution_context,
                 event_type="route_dispatch_post",
                 payload={
                     **event_common_payload,
-                    "duration_ms": round((time.monotonic() - started) * 1000, 3),
+                    "duration": round((time.monotonic() - started) * 1000, 3),
                     "status_code": response.status_code,
-                    "response_headers": dict(response.headers),
-                    "response_body": raw_response_bytes.decode("utf-8", errors="replace"),
                 },
             )

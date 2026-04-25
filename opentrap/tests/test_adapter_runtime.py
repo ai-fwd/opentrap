@@ -69,7 +69,7 @@ def _write_manifest(path: Path) -> None:
 
 def _write_active_session(manifest_path: Path, *, case: dict[str, Any]) -> ActiveSessionDescriptor:
     session_path = manifest_path.parent / "sessions.jsonl"
-    evidence_path = manifest_path.parent / f"session-{TEST_SESSION_ID}.jsonl"
+    evidence_path = manifest_path.parent / "traces.jsonl"
     session_payload = {
         "run_id": "test-run-id",
         "session_id": TEST_SESSION_ID,
@@ -81,7 +81,7 @@ def _write_active_session(manifest_path: Path, *, case: dict[str, Any]) -> Activ
         "harness_exit_code": None,
     }
     session_path.write_text(json.dumps(session_payload) + "\n", encoding="utf-8")
-    evidence_path.write_text("", encoding="utf-8")
+    evidence_path.touch(exist_ok=True)
     descriptor = ActiveSessionDescriptor(
         run_id="test-run-id",
         session_id=TEST_SESSION_ID,
@@ -95,7 +95,7 @@ def _write_active_session(manifest_path: Path, *, case: dict[str, Any]) -> Activ
 
 
 def _read_evidence(manifest_path: Path) -> list[dict[str, Any]]:
-    evidence_path = manifest_path.parent / f"session-{TEST_SESSION_ID}.jsonl"
+    evidence_path = manifest_path.parent / "traces.jsonl"
     return [
         json.loads(line)
         for line in evidence_path.read_text(encoding="utf-8").splitlines()
@@ -343,9 +343,10 @@ def test_observe_handler_payload_is_emitted_by_runtime(tmp_path: Path) -> None:
 
     async def observer(ctx: RequestContext, snapshot: Response):
         return {
+            "model": "gpt-4.1-mini",
             "request_id": ctx.request_id,
             "status_code": snapshot.status_code,
-            "marker": "from-observer",
+            "ignored_field": "from-observer",
         }
 
     async def transport_handler(_request: httpx.Request) -> httpx.Response:
@@ -365,13 +366,12 @@ def test_observe_handler_payload_is_emitted_by_runtime(tmp_path: Path) -> None:
 
     assert response.status_code == 201
     observed_events = [
-        event["payload"]
-        for event in _read_evidence(manifest_path)
-        if event["event_type"] == "llm_responses_observed"
+        event for event in _read_evidence(manifest_path) if event["event_type"] == "llm_responses_observed"
     ]
     assert len(observed_events) == 1
-    assert observed_events[0]["marker"] == "from-observer"
+    assert observed_events[0]["model"] == "gpt-4.1-mini"
     assert observed_events[0]["status_code"] == 201
+    assert "ignored_field" not in observed_events[0]
 
 
 def test_unknown_named_upstream_is_rejected(tmp_path: Path) -> None:
@@ -661,6 +661,63 @@ def test_route_dispatch_events_are_emitted_for_intercept(tmp_path: Path) -> None
     assert "route_dispatch_pre" in event_types
     assert "route_dispatch_post" in event_types
     assert "http_exchange" not in event_types
+
+    expected_pre_keys = {
+        "case_index",
+        "event_type",
+        "route_name",
+        "route_mode",
+        "method",
+        "path",
+        "query",
+        "status_code",
+        "duration",
+    }
+    for event in _read_evidence(manifest_path):
+        if event["event_type"] == "route_dispatch_pre":
+            assert set(event.keys()) == expected_pre_keys
+
+
+def test_traces_are_grouped_by_case_index_in_run_order(tmp_path: Path) -> None:
+    manifest_path = tmp_path / "run.json"
+    _write_manifest(manifest_path)
+    traces_path = manifest_path.parent / "traces.jsonl"
+    traces_path.write_text("", encoding="utf-8")
+
+    async def intercept_handler(_ctx: RequestContext) -> Response:
+        return JSONResponse({"ok": True})
+
+    app = create_app(
+        manifest_path=manifest_path,
+        routes=[
+            RouteSpec(
+                name="dispatch-events",
+                path="/dispatch-events",
+                methods=(HTTPMethod.GET,),
+                mode="intercept",
+                handler=intercept_handler,
+                upstream=None,
+            )
+        ],
+        upstreams=[],
+    )
+
+    with TestClient(app) as client:
+        for case_index in (0, 1, 2):
+            _write_active_session(
+                manifest_path,
+                case={
+                    "case_index": case_index,
+                    "item_id": "00001",
+                    "data_item": {"id": "00001", "path": "dataset/item-00001.txt"},
+                    "metadata": {"item_id": "00001"},
+                },
+            )
+            response = client.get("/dispatch-events")
+            assert response.status_code == 200
+
+    case_indexes = [event["case_index"] for event in _read_evidence(manifest_path)]
+    assert case_indexes == [0, 0, 1, 1, 2, 2]
 
 
 def test_request_context_helper_methods_parse_path_and_body(tmp_path: Path) -> None:
