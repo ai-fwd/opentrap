@@ -434,7 +434,6 @@ def test_default_openai_observer_writes_llm_observation(tmp_path: Path) -> None:
     assert len(observations) == 1
     observation = observations[0]
     assert observation["case_index"] == 0
-    assert observation["session_id"] == TEST_SESSION_ID
     assert observation["request_id"]
     assert observation["observation_type"] == "llm.response"
     assert observation["content_type"] == "text/plain"
@@ -768,6 +767,7 @@ def test_route_dispatch_events_are_emitted_for_intercept(tmp_path: Path) -> None
 
     expected_pre_keys = {
         "case_index",
+        "request_id",
         "event_type",
         "route_name",
         "route_mode",

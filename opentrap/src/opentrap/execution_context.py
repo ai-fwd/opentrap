@@ -124,9 +124,11 @@ def emit_event(
     status_code = payload.get("status_code")
     duration = payload.get("duration")
     model = payload.get("model")
+    request_id = payload.get("request_id")
 
     trace_row: dict[str, Any] = {
         "case_index": execution_context.case_index,
+        "request_id": request_id if isinstance(request_id, str) else None,
         "event_type": event_type,
         "route_name": route_name if isinstance(route_name, str) else None,
         "route_mode": route_mode if isinstance(route_mode, str) else None,
@@ -165,7 +167,6 @@ def emit_observation(
     observations_path = execution_context.session_path.parent / OBSERVATIONS_FILE_NAME
     observation = {
         "case_index": execution_context.case_index,
-        "session_id": execution_context.session_id,
         "request_id": request_id,
         "observation_type": observation_type,
         "content_type": content_type,

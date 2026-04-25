@@ -443,7 +443,6 @@ def test_adapter_process_integrates_route_modes_and_named_upstreams(tmp_path: Pa
     ]
     assert len(observations) == 1
     assert observations[0]["case_index"] == 0
-    assert observations[0]["session_id"] == TEST_SESSION_ID
     assert observations[0]["observation_type"] == "llm.response"
     assert observations[0]["content_type"] == "text/plain"
     assert observations[0]["content"] == "first second"
