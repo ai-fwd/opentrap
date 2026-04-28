@@ -152,9 +152,16 @@ def test_trap_local_evaluation_pairs_and_persists_records(tmp_path: Path) -> Non
     _write_observations(run_dir)
 
     class _DeterministicRouge:
-        def score(self, *, clean_output: str, injected_output: str) -> float | None:
-            del clean_output
-            return 0.8 if "success" in injected_output else 0.2
+        def score(
+            self,
+            *,
+            baseline_output: str | None,
+            observed_output: str | None,
+        ) -> float | None:
+            del baseline_output
+            if observed_output is None:
+                return None
+            return 0.8 if "success" in observed_output else 0.2
 
     class _DeterministicSbert:
         def score(self, *, clean_output: str, injected_output: str) -> float | None:
@@ -230,6 +237,8 @@ def test_trap_local_evaluation_pairs_and_persists_records(tmp_path: Path) -> Non
     assert summary["llm_judge_success_count"] == 1
     assert summary["llm_judge_success_rate"] == 0.5
     assert summary["average_rouge_l_f1"] == 0.5
+    assert summary["min_rouge_l_f1"] == 0.2
+    assert summary["max_rouge_l_f1"] == 0.8
     assert summary["average_sbert_cosine_similarity"] == 0.9
 
     grouped_averages = summary["grouped_averages_by_injection_type"]
@@ -241,3 +250,56 @@ def test_trap_local_evaluation_pairs_and_persists_records(tmp_path: Path) -> Non
     assert grouped_success["hidden_div"]["llm_judge_success_rate"] == 1.0
     assert grouped_success["meta_tag+comment_injection"]["llm_judge_success_rate"] == 0.0
     assert grouped_success["base64_encoded"]["llm_judge_success_rate"] is None
+
+
+def test_rouge_l_identical_texts_score_one() -> None:
+    module = _load_module(
+        "evaluation.py",
+        "prompt_injection_via_html_evaluation_identical",
+    )
+    scorer = module.RougeLScoreScorer()
+    score = scorer.score(
+        baseline_output="The quick brown fox jumps over the lazy dog.",
+        observed_output="The quick brown fox jumps over the lazy dog.",
+    )
+    assert score == 1.0
+
+
+def test_rouge_l_completely_different_texts_are_low() -> None:
+    module = _load_module(
+        "evaluation.py",
+        "prompt_injection_via_html_evaluation_different",
+    )
+    scorer = module.RougeLScoreScorer()
+    score = scorer.score(
+        baseline_output="alpha beta gamma",
+        observed_output="delta epsilon zeta",
+    )
+    assert score is not None
+    assert 0.0 <= score <= 0.1
+
+
+def test_rouge_l_partial_overlap_is_between_zero_and_one() -> None:
+    module = _load_module(
+        "evaluation.py",
+        "prompt_injection_via_html_evaluation_partial",
+    )
+    scorer = module.RougeLScoreScorer()
+    score = scorer.score(
+        baseline_output="the product launch is scheduled for monday morning",
+        observed_output="the launch is scheduled for tuesday",
+    )
+    assert score is not None
+    assert 0.0 < score < 1.0
+
+
+def test_rouge_l_missing_or_empty_outputs_return_null() -> None:
+    module = _load_module(
+        "evaluation.py",
+        "prompt_injection_via_html_evaluation_missing",
+    )
+    scorer = module.RougeLScoreScorer()
+    assert scorer.score(baseline_output=None, observed_output="x") is None
+    assert scorer.score(baseline_output="x", observed_output=None) is None
+    assert scorer.score(baseline_output="", observed_output="x") is None
+    assert scorer.score(baseline_output="x", observed_output="   ") is None

@@ -369,6 +369,9 @@ def test_llm_mocked_run_writes_trap_local_evaluation_artifacts(
 
     summary_payload = json.loads(evaluation_summary.read_text(encoding="utf-8"))
     assert summary_payload["total_cases"] == 8
+    assert "average_rouge_l_f1" in summary_payload
+    assert "min_rouge_l_f1" in summary_payload
+    assert "max_rouge_l_f1" in summary_payload
     assert "grouped_averages_by_injection_type" in summary_payload
     assert "grouped_success_rate_by_injection_type" in summary_payload
 
@@ -379,6 +382,7 @@ def test_llm_mocked_run_writes_trap_local_evaluation_artifacts(
     ]
     assert len(jsonl_rows) == 8
     assert all("category" not in row for row in jsonl_rows)
+    assert all("rouge_l_f1" in row for row in jsonl_rows)
 
 
 @pytest.mark.parametrize(
