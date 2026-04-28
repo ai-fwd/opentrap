@@ -661,6 +661,7 @@ def test_trap_run_single_records_manifest_and_artifact(
     assert run_manifest["traps"][0]["dataset_cache_dir"]
     assert run_manifest["traps"][0]["dataset_source"] == "generated_then_cached"
     assert run_manifest["active_session_id"] is None
+    assert run_manifest["scorer_status"] == "completed"
 
     artifact_path = Path(run_manifest["traps"][0]["artifact_path"])
     assert (artifact_path / "data" / "00001.txt").read_text(encoding="utf-8") == (
@@ -676,7 +677,10 @@ def test_trap_run_single_records_manifest_and_artifact(
     assert not (run_dir / f"session-{session_id}.json").exists()
     traces_path = run_dir / "traces.jsonl"
     assert traces_path.exists()
-    assert (run_dir / "report.json").exists()
+    report_path = run_dir / "report.json"
+    assert report_path.exists()
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert report["scorer_status"] == "completed"
 
 
 def test_trap_run_instantiates_only_selected_trap(
@@ -809,6 +813,45 @@ def test_report_aggregates_match_sessions_jsonl_for_failed_run(
     assert report["run_id"] == run_manifest["run_id"]
     assert report["session_count"] == computed_session_count
     assert report["failed_session_count"] == computed_failed_session_count
+
+
+def test_trap_run_marks_scorer_failed_when_evaluation_raises(
+    capsys,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _write_stub_contract_with_behavior(
+        tmp_path / "traps",
+        "reasoning/chain-trap",
+        evaluate_body='raise RuntimeError("boom during evaluate")',
+    )
+    generated_root = tmp_path / "adapter" / "generated"
+    _write_generated_adapter(generated_root)
+
+    config_path = tmp_path / ".opentrap" / "opentrap.yaml"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(yaml.safe_dump(_base_payload(), sort_keys=False), encoding="utf-8")
+    samples_dir = tmp_path / ".opentrap" / "samples"
+    samples_dir.mkdir(parents=True, exist_ok=True)
+    _configure_trap_run_paths(
+        monkeypatch=monkeypatch,
+        tmp_path=tmp_path,
+        config_path=config_path,
+        samples_dir=samples_dir,
+        generated_root=generated_root,
+    )
+
+    code = main(["reasoning/chain-trap"])
+
+    captured = capsys.readouterr()
+    assert code == 0
+    run_manifest_path = Path(captured.out.strip())
+    run_manifest = json.loads(run_manifest_path.read_text(encoding="utf-8"))
+    report = json.loads((run_manifest_path.parent / "report.json").read_text(encoding="utf-8"))
+    assert run_manifest["status"] == "finalized"
+    assert run_manifest["scorer_status"] == "failed"
+    assert report["scorer_status"] == "failed"
+    assert "Trap evaluation failed: boom during evaluate" in captured.err
 
 
 def test_trap_run_rejects_unknown_trap_key_in_yaml(capsys, tmp_path: Path, monkeypatch) -> None:

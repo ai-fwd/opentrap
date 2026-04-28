@@ -16,6 +16,7 @@ from urllib.request import urlopen
 
 from opentrap.config_loader import HarnessConfig
 from opentrap.dataset_cache import resolve_cached_dataset
+from opentrap.evaluation_status import EvaluationStatusEmitter
 from opentrap.execution_context import (
     ActiveSessionDescriptor,
     active_session_path_for_run,
@@ -308,16 +309,40 @@ def _run_trap_evaluation(
     status_callback: StatusCallback,
 ) -> None:
     status_callback("Running trap evaluation...")
+    _set_scorer_status(run_manifest_path=run_manifest_path, scorer_status="running")
     report_path = run_manifest_path.parent / "report.json"
-    trap.evaluate(
-        {
-            "trap_id": trap_id,
-            "run_manifest_path": str(run_manifest_path),
-            "run_dir": str(run_manifest_path.parent),
-            "report_path": str(report_path),
-        }
+    status_emitter = EvaluationStatusEmitter(
+        status_callback=status_callback,
+        heartbeat_every=25,
     )
+    try:
+        trap.evaluate(
+            {
+                "trap_id": trap_id,
+                "run_manifest_path": str(run_manifest_path),
+                "run_dir": str(run_manifest_path.parent),
+                "report_path": str(report_path),
+                "status_emitter": status_emitter,
+            }
+        )
+    except Exception:
+        _set_scorer_status(run_manifest_path=run_manifest_path, scorer_status="failed")
+        raise
+    _set_scorer_status(run_manifest_path=run_manifest_path, scorer_status="completed")
     status_callback("Trap evaluation completed")
+
+
+def _set_scorer_status(*, run_manifest_path: Path, scorer_status: str) -> None:
+    manifest = load_json_maybe(run_manifest_path)
+    if manifest is not None:
+        manifest["scorer_status"] = scorer_status
+        write_json(run_manifest_path, manifest, atomic=True)
+
+    report_path = run_manifest_path.parent / "report.json"
+    report = load_json_maybe(report_path)
+    if report is not None:
+        report["scorer_status"] = scorer_status
+        write_json(report_path, report, atomic=True)
 
 
 def _terminate_process(process: subprocess.Popen[Any] | None) -> None:

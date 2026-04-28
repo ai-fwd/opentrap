@@ -526,14 +526,18 @@ def evaluate_prompt_injection_run(
     sbert_scorer: SbertSimilarityScorer | None = None,
     llm_judge_scorer: LlmJudgeScorer | None = None,
     sbert_model_name: str = DEFAULT_SBERT_MODEL_NAME,
+    status_emitter: object | None = None,
 ) -> PromptInjectionEvaluationArtifacts:
     """Evaluate one finalized run for this trap and persist JSONL/CSV/summary artifacts."""
+    _emit_evaluation_phase(status_emitter, phase="started")
+    _emit_evaluation_phase(status_emitter, phase="loading_artifacts")
     manifest_payload = _load_json_object(run_manifest_path)
     run_dir = run_manifest_path.parent
     run_id = _require_string(manifest_payload, "run_id")
     trap_entry = _find_trap_entry(manifest_payload, trap_id=trap_id)
 
     observed_outputs = _load_observed_outputs(run_dir / "observations.jsonl")
+    _emit_evaluation_phase(status_emitter, phase="pairing_cases")
     input_records = _build_input_records(
         run_id=run_id,
         trap_id=trap_id,
@@ -545,11 +549,13 @@ def evaluate_prompt_injection_run(
     sbert_impl = sbert_scorer or SentenceTransformerSbertScorer(model_name=sbert_model_name)
     judge_impl = llm_judge_scorer or LLMIntentJudgeScorer()
 
+    _emit_evaluation_phase(status_emitter, phase="scoring_cases")
     output_records = _score_input_records(
         input_records=input_records,
         rouge_scorer=rouge_impl,
         sbert_scorer=sbert_impl,
         llm_judge_scorer=judge_impl,
+        status_emitter=status_emitter,
     )
     summary = _build_summary(output_records)
 
@@ -557,12 +563,14 @@ def evaluate_prompt_injection_run(
     evaluation_csv_path = run_dir / "evaluation.csv"
     evaluation_summary_path = run_dir / "evaluation_summary.json"
 
+    _emit_evaluation_phase(status_emitter, phase="writing_artifacts")
     _write_evaluation_jsonl(evaluation_jsonl_path, output_records)
     _write_evaluation_csv(evaluation_csv_path, output_records)
     evaluation_summary_path.write_text(
         json.dumps(summary.to_dict(), indent=2) + "\n",
         encoding="utf-8",
     )
+    _emit_evaluation_phase(status_emitter, phase="completed")
 
     return PromptInjectionEvaluationArtifacts(
         evaluation_jsonl_path=evaluation_jsonl_path,
@@ -757,9 +765,11 @@ def _score_input_records(
     rouge_scorer: RougeLScorer,
     sbert_scorer: SbertSimilarityScorer,
     llm_judge_scorer: LlmJudgeScorer,
+    status_emitter: object | None = None,
 ) -> list[PromptInjectionEvaluationOutputRecord]:
     outputs: list[PromptInjectionEvaluationOutputRecord] = []
-    for record in input_records:
+    total_records = len(input_records)
+    for index, record in enumerate(input_records, start=1):
         rouge_l_f1 = rouge_scorer.score(
             baseline_output=record.clean_output,
             observed_output=record.injected_output,
@@ -799,7 +809,43 @@ def _score_input_records(
                 metadata=record.metadata,
             )
         )
+        _emit_evaluation_heartbeat(
+            status_emitter=status_emitter,
+            processed=index,
+            total=total_records,
+        )
     return outputs
+
+
+def _emit_evaluation_phase(
+    status_emitter: object | None,
+    *,
+    phase: str,
+    detail: str | None = None,
+) -> None:
+    if status_emitter is None or not hasattr(status_emitter, "phase"):
+        return
+    phase_fn = status_emitter.phase  # type: ignore[attr-defined]
+    if not callable(phase_fn):
+        return
+    phase_fn(phase, detail=detail)
+
+
+def _emit_evaluation_heartbeat(
+    *,
+    status_emitter: object | None,
+    processed: int,
+    total: int,
+) -> None:
+    if status_emitter is None or not hasattr(status_emitter, "heartbeat"):
+        return
+    heartbeat_fn = status_emitter.heartbeat  # type: ignore[attr-defined]
+    if not callable(heartbeat_fn):
+        return
+    try:
+        heartbeat_fn(processed=processed, total=total)
+    except TypeError:
+        heartbeat_fn(processed, total)
 
 
 def _average(values: Sequence[float]) -> float | None:

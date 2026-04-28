@@ -20,6 +20,7 @@ from opentrap.config_loader import (
     load_trap_config,
     write_trap_config,
 )
+from opentrap.evaluation_status import EvaluationStatusEmitter
 from opentrap.io_utils import load_json
 from opentrap.run_orchestration import RunEnvironment, run_single_trap
 from opentrap.trap_contract import SharedConfig, TrapFieldSpec
@@ -248,6 +249,7 @@ def cmd_trap(args: argparse.Namespace) -> int:
         _status(f"Running trap evaluation for latest finalized run: {latest_run_manifest_path}")
         run_dir = latest_run_manifest_path.parent
         report_path = run_dir / "report.json"
+        status_emitter = EvaluationStatusEmitter(status_callback=_status, heartbeat_every=25)
         try:
             selected_trap.evaluate(
                 {
@@ -255,6 +257,7 @@ def cmd_trap(args: argparse.Namespace) -> int:
                     "run_manifest_path": str(latest_run_manifest_path),
                     "run_dir": str(run_dir),
                     "report_path": str(report_path),
+                    "status_emitter": status_emitter,
                 }
             )
         except Exception as exc:  # noqa: BLE001

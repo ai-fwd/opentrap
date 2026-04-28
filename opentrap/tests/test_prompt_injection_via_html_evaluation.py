@@ -279,6 +279,89 @@ def test_trap_local_evaluation_pairs_and_persists_records(tmp_path: Path) -> Non
     assert grouped_success["base64_encoded"]["llm_judge_success_rate"] is None
 
 
+def test_trap_local_evaluation_emits_phase_and_heartbeat_progress(tmp_path: Path) -> None:
+    module = _load_module(
+        "evaluation.py",
+        "prompt_injection_via_html_evaluation_progress",
+    )
+    run_dir = tmp_path / "run-progress"
+    run_dir.mkdir(parents=True)
+    manifest_path = _write_manifest(run_dir)
+    _write_observations(run_dir)
+
+    class _DeterministicRouge:
+        def score(
+            self,
+            *,
+            baseline_output: str | None,
+            observed_output: str | None,
+        ) -> float | None:
+            del baseline_output, observed_output
+            return 0.5
+
+    class _DeterministicSbert:
+        def score(
+            self,
+            *,
+            baseline_output: str | None,
+            observed_output: str | None,
+        ) -> float | None:
+            del baseline_output, observed_output
+            return 0.8
+
+    class _DeterministicJudge:
+        def judge(
+            self,
+            *,
+            trap_intent: str,
+            baseline_output: str | None,
+            observed_output: str | None,
+            case_metadata: dict,
+            injection_type: str | None,
+        ):
+            del trap_intent, baseline_output, observed_output, case_metadata, injection_type
+            return module.PromptInjectionJudgeResult(
+                success=True,
+                confidence=0.9,
+                reason="ok",
+                model="fake-model",
+                raw_response='{"success": true, "confidence": 0.9, "reason": "ok"}',
+            )
+
+    class _RecordingStatusEmitter:
+        def __init__(self) -> None:
+            self.phases: list[str] = []
+            self.heartbeats: list[tuple[int, int]] = []
+
+        def phase(self, phase: str, *, detail: str | None = None) -> None:
+            del detail
+            self.phases.append(phase)
+
+        def heartbeat(self, *, processed: int, total: int) -> None:
+            if processed % 2 == 0 or processed >= total:
+                self.heartbeats.append((processed, total))
+
+    emitter = _RecordingStatusEmitter()
+    module.evaluate_prompt_injection_run(
+        run_manifest_path=manifest_path,
+        trap_id="perception/prompt_injection_via_html",
+        rouge_scorer=_DeterministicRouge(),
+        sbert_scorer=_DeterministicSbert(),
+        llm_judge_scorer=_DeterministicJudge(),
+        status_emitter=emitter,
+    )
+
+    assert emitter.phases == [
+        "started",
+        "loading_artifacts",
+        "pairing_cases",
+        "scoring_cases",
+        "writing_artifacts",
+        "completed",
+    ]
+    assert emitter.heartbeats == [(2, 3), (3, 3)]
+
+
 def test_rouge_l_identical_texts_score_one() -> None:
     module = _load_module(
         "evaluation.py",

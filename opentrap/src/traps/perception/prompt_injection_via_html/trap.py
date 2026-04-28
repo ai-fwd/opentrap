@@ -27,6 +27,7 @@ class TrapEvalContext:
     run_dir: Path
     report_path: Path
     trap_id: str
+    status_emitter: object | None = None
 
     @classmethod
     def from_value(
@@ -49,12 +50,14 @@ class TrapEvalContext:
             if isinstance(trap_id_value, str) and trap_id_value
             else default_trap_id
         )
+        status_emitter = value.get("status_emitter")
 
         return cls(
             run_manifest_path=run_manifest_path,
             run_dir=run_dir,
             report_path=report_path,
             trap_id=trap_id,
+            status_emitter=status_emitter,
         )
 
     @staticmethod
@@ -197,6 +200,7 @@ class Trap(
         artifacts = evaluate_prompt_injection_run(
             run_manifest_path=eval_context.run_manifest_path,
             trap_id=eval_context.trap_id,
+            status_emitter=eval_context.status_emitter,
         )
 
         success_rate = artifacts.summary.llm_judge_success_rate

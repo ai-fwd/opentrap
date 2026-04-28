@@ -405,6 +405,20 @@ def test_llm_mocked_run_writes_trap_local_evaluation_artifacts(
     assert "llm_judge_model" in csv_header
     assert "llm_judge_raw_response" not in csv_header
 
+    stderr_output = captured.err
+    phase_tokens = [
+        "evaluation.started",
+        "evaluation.loading_artifacts",
+        "evaluation.pairing_cases",
+        "evaluation.scoring_cases",
+        "evaluation.writing_artifacts",
+        "evaluation.completed",
+    ]
+    phase_positions = [stderr_output.find(token) for token in phase_tokens]
+    assert all(position >= 0 for position in phase_positions)
+    assert phase_positions == sorted(phase_positions)
+    assert "evaluation.progress:" in stderr_output
+
 
 @pytest.mark.parametrize(
     ("handlers_prelude", "use_missing_generated_root", "set_ready_timeout", "expected_error"),
