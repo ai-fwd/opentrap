@@ -20,6 +20,7 @@ import yaml
 from opentrap.cli import main
 
 TRAP_ID = "perception/prompt_injection_via_html"
+TEST_ADAPTER_PORT = 18760
 
 
 def _repo_root() -> Path:
@@ -156,6 +157,7 @@ def _prepare_llm_trap_run(
         samples_dir=samples_dir,
         generated_root=generated_root,
     )
+    monkeypatch.setattr("opentrap.run_orchestration.ADAPTER_PORT", TEST_ADAPTER_PORT)
     return config_path, samples_dir
 
 
@@ -335,6 +337,48 @@ def test_llm_mocked_run_regenerates_when_samples_change(
 
     assert trap_1["dataset_fingerprint"] != trap_2["dataset_fingerprint"]
     assert trap_1["dataset_cache_dir"] != trap_2["dataset_cache_dir"]
+
+
+def test_llm_mocked_run_writes_trap_local_evaluation_artifacts(
+    capsys,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    generated_root = tmp_path / "adapter" / "generated"
+    _write_generated_adapter(generated_root)
+    _prepare_llm_trap_run(
+        monkeypatch=monkeypatch,
+        tmp_path=tmp_path,
+        generated_root=generated_root,
+        payload=_base_payload(base_count=1),
+    )
+
+    code = main([TRAP_ID])
+    captured = capsys.readouterr()
+    assert code == 0
+    run_manifest_path = Path(captured.out.strip())
+    run_dir = run_manifest_path.parent
+
+    evaluation_jsonl = run_dir / "evaluation.jsonl"
+    evaluation_csv = run_dir / "evaluation.csv"
+    evaluation_summary = run_dir / "evaluation_summary.json"
+
+    assert evaluation_jsonl.exists()
+    assert evaluation_csv.exists()
+    assert evaluation_summary.exists()
+
+    summary_payload = json.loads(evaluation_summary.read_text(encoding="utf-8"))
+    assert summary_payload["total_cases"] == 8
+    assert "grouped_averages_by_injection_type" in summary_payload
+    assert "grouped_success_rate_by_injection_type" in summary_payload
+
+    jsonl_rows = [
+        json.loads(line)
+        for line in evaluation_jsonl.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert len(jsonl_rows) == 8
+    assert all("category" not in row for row in jsonl_rows)
 
 
 @pytest.mark.parametrize(

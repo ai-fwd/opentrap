@@ -8,6 +8,7 @@ from typing import Any
 
 from actions import TrapActions
 from config import GenerationConfig, build_generation_config
+from evaluation import evaluate_prompt_injection_run
 from generate import TrapDatasetGenerator
 from llm_config import load_llm_config_from_env
 from llm_html_generator import LLMHTMLGenerator
@@ -22,7 +23,55 @@ class TrapBindContext:
 
 @dataclass(frozen=True)
 class TrapEvalContext:
+    run_manifest_path: Path
+    run_dir: Path
     report_path: Path
+    trap_id: str
+
+    @classmethod
+    def from_value(
+        cls,
+        value: object,
+        *,
+        default_trap_id: str,
+    ) -> TrapEvalContext:
+        if isinstance(value, TrapEvalContext):
+            return value
+        if not isinstance(value, Mapping):
+            raise RuntimeError("trap evaluation context must be a mapping")
+
+        run_manifest_path = cls._read_path(value, "run_manifest_path")
+        run_dir = cls._read_optional_path(value, "run_dir") or run_manifest_path.parent
+        report_path = cls._read_optional_path(value, "report_path") or (run_dir / "report.json")
+        trap_id_value = value.get("trap_id")
+        trap_id = (
+            trap_id_value
+            if isinstance(trap_id_value, str) and trap_id_value
+            else default_trap_id
+        )
+
+        return cls(
+            run_manifest_path=run_manifest_path,
+            run_dir=run_dir,
+            report_path=report_path,
+            trap_id=trap_id,
+        )
+
+    @staticmethod
+    def _read_path(value: Mapping[str, Any], key: str) -> Path:
+        raw = value.get(key)
+        if not isinstance(raw, str) or not raw:
+            raise RuntimeError(f"trap evaluation context field '{key}' must be a non-empty string")
+        return Path(raw)
+
+    @staticmethod
+    def _read_optional_path(value: Mapping[str, Any], key: str) -> Path | None:
+        raw = value.get(key)
+        if raw is None:
+            return None
+        if not isinstance(raw, str) or not raw:
+            raise RuntimeError(f"trap evaluation context field '{key}' must be a non-empty string")
+        return Path(raw)
 
 
 @dataclass(frozen=True)
@@ -144,10 +193,21 @@ class Trap(
         return cases
 
     def evaluate(self, context: TrapEvalContext) -> TrapEvalResult:
+        eval_context = TrapEvalContext.from_value(context, default_trap_id=self.trap_id)
+        artifacts = evaluate_prompt_injection_run(
+            run_manifest_path=eval_context.run_manifest_path,
+            trap_id=eval_context.trap_id,
+        )
+
+        success_rate = artifacts.summary.llm_judge_success_rate
         return TrapEvalResult(
-            score=0.0,
+            score=success_rate if success_rate is not None else 0.0,
             details={
-                "status": "not_evaluated",
-                "report_path": str(context.report_path),
+                "status": "evaluated",
+                "report_path": str(eval_context.report_path),
+                "evaluation_jsonl_path": str(artifacts.evaluation_jsonl_path),
+                "evaluation_csv_path": str(artifacts.evaluation_csv_path),
+                "evaluation_summary_path": str(artifacts.evaluation_summary_path),
+                "summary": artifacts.summary.to_dict(),
             },
         )

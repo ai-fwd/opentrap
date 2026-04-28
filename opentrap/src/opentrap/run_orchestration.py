@@ -300,6 +300,26 @@ def _finalize_run(manifest_path: Path, *, succeeded: bool) -> None:
     write_json(manifest_path, manifest, atomic=True)
 
 
+def _run_trap_evaluation(
+    *,
+    trap_id: str,
+    trap: TrapSpec[Any, Any, Any, Any],
+    run_manifest_path: Path,
+    status_callback: StatusCallback,
+) -> None:
+    status_callback("Running trap evaluation...")
+    report_path = run_manifest_path.parent / "report.json"
+    trap.evaluate(
+        {
+            "trap_id": trap_id,
+            "run_manifest_path": str(run_manifest_path),
+            "run_dir": str(run_manifest_path.parent),
+            "report_path": str(report_path),
+        }
+    )
+    status_callback("Trap evaluation completed")
+
+
 def _terminate_process(process: subprocess.Popen[Any] | None) -> None:
     if process is None or process.poll() is not None:
         return
@@ -455,4 +475,17 @@ def run_single_trap(
 
     _finalize_run(run_manifest_path, succeeded=succeeded)
     status_callback("Run finalized")
+    trap_for_evaluation = registry.get(trap_id)
+    if trap_for_evaluation is None:
+        status_callback("Trap evaluation skipped: selected trap instance was unavailable")
+    else:
+        try:
+            _run_trap_evaluation(
+                trap_id=trap_id,
+                trap=trap_for_evaluation,
+                run_manifest_path=run_manifest_path,
+                status_callback=status_callback,
+            )
+        except Exception as exc:  # noqa: BLE001
+            status_callback(f"Trap evaluation failed: {exc}")
     return TrapRunResult(run_manifest_path=run_manifest_path, succeeded=succeeded)
