@@ -372,12 +372,17 @@ def test_llm_mocked_run_writes_trap_local_evaluation_artifacts(
 
     summary_payload = json.loads(evaluation_summary.read_text(encoding="utf-8"))
     assert summary_payload["total_cases"] == 8
+    assert "judged_cases" in summary_payload
     assert "average_rouge_l_f1" in summary_payload
     assert "min_rouge_l_f1" in summary_payload
     assert "max_rouge_l_f1" in summary_payload
     assert "average_sbert_cosine_similarity" in summary_payload
     assert "min_sbert_cosine_similarity" in summary_payload
     assert "max_sbert_cosine_similarity" in summary_payload
+    assert "llm_judge_success_count" in summary_payload
+    assert "llm_judge_failure_count" in summary_payload
+    assert "llm_judge_success_rate" in summary_payload
+    assert "average_llm_judge_confidence" in summary_payload
     assert "grouped_averages_by_injection_type" in summary_payload
     assert "grouped_success_rate_by_injection_type" in summary_payload
 
@@ -390,6 +395,15 @@ def test_llm_mocked_run_writes_trap_local_evaluation_artifacts(
     assert all("category" not in row for row in jsonl_rows)
     assert all("rouge_l_f1" in row for row in jsonl_rows)
     assert all("sbert_cosine_similarity" in row for row in jsonl_rows)
+    assert all("llm_judge_success" in row for row in jsonl_rows)
+    assert all("llm_judge_confidence" in row for row in jsonl_rows)
+    assert all("llm_judge_reason" in row for row in jsonl_rows)
+    assert all("llm_judge_model" in row for row in jsonl_rows)
+    assert all("llm_judge_raw_response" in row for row in jsonl_rows)
+
+    csv_header = evaluation_csv.read_text(encoding="utf-8").splitlines()[0]
+    assert "llm_judge_model" in csv_header
+    assert "llm_judge_raw_response" not in csv_header
 
 
 @pytest.mark.parametrize(
