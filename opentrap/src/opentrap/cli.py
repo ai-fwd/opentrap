@@ -7,6 +7,7 @@ orchestration modules so command parsing and UX remain easy to reason about.
 from __future__ import annotations
 
 import argparse
+import datetime
 import shlex
 import sys
 from collections.abc import Mapping
@@ -19,6 +20,7 @@ from opentrap.config_loader import (
     load_trap_config,
     write_trap_config,
 )
+from opentrap.io_utils import load_json
 from opentrap.run_orchestration import RunEnvironment, run_single_trap
 from opentrap.trap_contract import SharedConfig, TrapFieldSpec
 from opentrap.trap_registry import TrapRegistry, TrapRegistryError
@@ -179,9 +181,12 @@ def cmd_trap(args: argparse.Namespace) -> int:
     """Execute a single trap id and print the resulting run manifest path."""
     trap_ref = args.trap
     fast_dev_run = bool(getattr(args, "fast_dev_run", False))
+    fast_eval_run = bool(getattr(args, "fast_eval_run", False))
     _status(f"Starting trap run: {trap_ref}")
     if fast_dev_run:
         _status("Fast dev run enabled")
+    if fast_eval_run:
+        _status("Fast eval run enabled")
     _status("Validating trap id and loading trap registry...")
 
     registry = _load_registry()
@@ -230,6 +235,35 @@ def cmd_trap(args: argparse.Namespace) -> int:
         dataset_dir=DEFAULT_DATASET_DIR,
         adapter_generated_root=DEFAULT_ADAPTER_GENERATED_ROOT,
     )
+    if fast_eval_run:
+        try:
+            latest_run_manifest_path = _find_latest_finalized_run_manifest(
+                runs_dir=environment.runs_dir,
+                trap_id=resolved,
+            )
+        except Exception as exc:  # noqa: BLE001
+            _status(str(exc))
+            return 1
+
+        _status(f"Running trap evaluation for latest finalized run: {latest_run_manifest_path}")
+        run_dir = latest_run_manifest_path.parent
+        report_path = run_dir / "report.json"
+        try:
+            selected_trap.evaluate(
+                {
+                    "trap_id": resolved,
+                    "run_manifest_path": str(latest_run_manifest_path),
+                    "run_dir": str(run_dir),
+                    "report_path": str(report_path),
+                }
+            )
+        except Exception as exc:  # noqa: BLE001
+            _status(f"Fast eval run failed: {exc}")
+            return 1
+        _status("Fast eval run completed")
+        print(str(latest_run_manifest_path))
+        return 0
+
     try:
         run_ready = run_single_trap(
             trap_id=resolved,
@@ -251,6 +285,66 @@ def cmd_trap(args: argparse.Namespace) -> int:
     return 0 if run_ready.succeeded else 1
 
 
+def _parse_iso_timestamp(value: object) -> datetime.datetime | None:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        normalized = value[:-1] + "+00:00" if value.endswith("Z") else value
+        parsed = datetime.datetime.fromisoformat(normalized)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=datetime.UTC)
+    return parsed
+
+
+def _manifest_includes_trap(payload: Mapping[str, object], trap_id: str) -> bool:
+    raw_traps = payload.get("traps")
+    if not isinstance(raw_traps, list):
+        return False
+    for trap_entry in raw_traps:
+        if isinstance(trap_entry, dict) and trap_entry.get("trap_id") == trap_id:
+            return True
+    return False
+
+
+def _find_latest_finalized_run_manifest(*, runs_dir: Path, trap_id: str) -> Path:
+    if not runs_dir.exists() or not runs_dir.is_dir():
+        raise RuntimeError(
+            "No finalized run found for trap "
+            f"'{trap_id}' (runs directory does not exist: {runs_dir})"
+        )
+
+    latest: tuple[datetime.datetime, datetime.datetime, str, Path] | None = None
+    for candidate_dir in sorted(runs_dir.iterdir()):
+        if not candidate_dir.is_dir():
+            continue
+        manifest_path = candidate_dir / "run.json"
+        if not manifest_path.exists():
+            continue
+        try:
+            payload = load_json(manifest_path)
+        except Exception:  # noqa: BLE001
+            continue
+        if payload.get("status") != "finalized":
+            continue
+        if not _manifest_includes_trap(payload, trap_id):
+            continue
+        finalized = _parse_iso_timestamp(payload.get("finalized_at_utc"))
+        created = _parse_iso_timestamp(payload.get("created_at_utc"))
+        if finalized is None:
+            finalized = created
+        if finalized is None or created is None:
+            continue
+        key = (finalized, created, candidate_dir.name, manifest_path)
+        if latest is None or key > latest:
+            latest = key
+
+    if latest is None:
+        raise RuntimeError(f"No finalized run found for trap '{trap_id}' in {runs_dir}")
+    return latest[3]
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Build command parser for explicit subcommands."""
     parser = argparse.ArgumentParser(prog="opentrap", description="OpenTrap CLI")
@@ -267,13 +361,17 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _parse_trap_execution_args(raw_args: list[str]) -> argparse.Namespace | None:
-    """Parse shorthand trap execution args with optional --fast-dev-run."""
+    """Parse shorthand trap execution args with optional fast-run modes."""
     trap_ref: str | None = None
     fast_dev_run = False
+    fast_eval_run = False
 
     for token in raw_args:
         if token == "--fast-dev-run":
             fast_dev_run = True
+            continue
+        if token == "--fast-eval-run":
+            fast_eval_run = True
             continue
         if token.startswith("-"):
             print(f"unrecognized option for trap execution: {token}", file=sys.stderr)
@@ -293,7 +391,18 @@ def _parse_trap_execution_args(raw_args: list[str]) -> argparse.Namespace | None
         )
         return None
 
-    return argparse.Namespace(trap=trap_ref, fast_dev_run=fast_dev_run)
+    if fast_dev_run and fast_eval_run:
+        print(
+            "--fast-dev-run and --fast-eval-run cannot be used together",
+            file=sys.stderr,
+        )
+        return None
+
+    return argparse.Namespace(
+        trap=trap_ref,
+        fast_dev_run=fast_dev_run,
+        fast_eval_run=fast_eval_run,
+    )
 
 
 def main(argv: list[str] | None = None) -> int:

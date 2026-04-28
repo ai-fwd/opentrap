@@ -28,6 +28,7 @@ def _write_stub_contract_with_behavior(
     *,
     module_prelude: str = "",
     init_body: str = "pass",
+    evaluate_body: str = 'return {"score": 0.0, "context": dict(context)}',
 ) -> None:
     target, trap_name = trap_id.split("/", 1)
     trap_dir = root / target / trap_name
@@ -95,7 +96,7 @@ class Trap(TrapSpec[Mapping[str, Any], Mapping[str, Any], Mapping[str, Any], Map
         ]
 
     def evaluate(self, context: Mapping[str, Any]) -> Mapping[str, Any]:
-        return {{"score": 0.0, "context": dict(context)}}
+        {evaluate_body}
 """
     (trap_dir / "trap.py").write_text(textwrap.dedent(source), encoding="utf-8")
 
@@ -152,6 +153,30 @@ def _base_payload(*, trap_intent: str = "rewrite negatives", knob: int = 7) -> d
             "reasoning/chain-trap": {"knob": knob},
         },
     }
+
+
+def _write_run_manifest(
+    *,
+    runs_dir: Path,
+    run_id: str,
+    trap_id: str,
+    status: str = "finalized",
+    created_at_utc: str = "2026-01-01T00:00:00+00:00",
+    finalized_at_utc: str | None = "2026-01-01T00:10:00+00:00",
+) -> Path:
+    run_dir = runs_dir / run_id
+    run_dir.mkdir(parents=True, exist_ok=True)
+    payload: dict[str, object] = {
+        "run_id": run_id,
+        "status": status,
+        "created_at_utc": created_at_utc,
+        "traps": [{"trap_id": trap_id, "cases": []}],
+    }
+    if finalized_at_utc is not None:
+        payload["finalized_at_utc"] = finalized_at_utc
+    manifest_path = run_dir / "run.json"
+    manifest_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    return manifest_path
 
 
 def test_list_outputs_registered_traps(capsys, tmp_path: Path, monkeypatch) -> None:
@@ -427,6 +452,158 @@ def test_trap_run_fails_when_config_is_missing(capsys, tmp_path: Path, monkeypat
     captured = capsys.readouterr()
     assert code == 1
     assert "config file was not found" in captured.err
+
+
+def test_trap_run_rejects_combined_fast_dev_and_fast_eval_flags(
+    capsys,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _write_stub_contract(tmp_path / "traps", "reasoning/chain-trap")
+    monkeypatch.setattr("opentrap.cli.DEFAULT_TRAPS_DIR", tmp_path / "traps")
+    monkeypatch.setattr(
+        "opentrap.cli.DEFAULT_CONFIG_PATH",
+        tmp_path / ".opentrap" / "opentrap.yaml",
+    )
+    monkeypatch.setattr("opentrap.cli.DEFAULT_SAMPLES_DIR", tmp_path / ".opentrap" / "samples")
+
+    code = main(["reasoning/chain-trap", "--fast-dev-run", "--fast-eval-run"])
+
+    captured = capsys.readouterr()
+    assert code == 2
+    assert "--fast-dev-run and --fast-eval-run cannot be used together" in captured.err
+
+
+def test_fast_eval_run_fails_when_no_finalized_run_exists(
+    capsys,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _write_stub_contract(tmp_path / "traps", "reasoning/chain-trap")
+    config_path = tmp_path / ".opentrap" / "opentrap.yaml"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(yaml.safe_dump(_base_payload(), sort_keys=False), encoding="utf-8")
+    samples_dir = tmp_path / ".opentrap" / "samples"
+    samples_dir.mkdir(parents=True, exist_ok=True)
+    runs_dir = tmp_path / "runs"
+    runs_dir.mkdir(parents=True, exist_ok=True)
+    _write_run_manifest(
+        runs_dir=runs_dir,
+        run_id="other-trap-run",
+        trap_id="perception/vision-poison",
+    )
+
+    _configure_trap_run_paths(
+        monkeypatch=monkeypatch,
+        tmp_path=tmp_path,
+        config_path=config_path,
+        samples_dir=samples_dir,
+        generated_root=tmp_path / "adapter" / "generated",
+    )
+
+    code = main(["reasoning/chain-trap", "--fast-eval-run"])
+
+    captured = capsys.readouterr()
+    assert code == 1
+    assert "No finalized run found for trap 'reasoning/chain-trap'" in captured.err
+
+
+def test_fast_eval_run_selects_latest_finalized_run_for_trap(
+    capsys,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _write_stub_contract_with_behavior(
+        tmp_path / "traps",
+        "reasoning/chain-trap",
+        evaluate_body=(
+            'Path(context["run_dir"]).joinpath("fast_eval_marker.txt").write_text('
+            '"ok", encoding="utf-8"); return {"score": 1.0}'
+        ),
+    )
+    config_path = tmp_path / ".opentrap" / "opentrap.yaml"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(yaml.safe_dump(_base_payload(), sort_keys=False), encoding="utf-8")
+    samples_dir = tmp_path / ".opentrap" / "samples"
+    samples_dir.mkdir(parents=True, exist_ok=True)
+    runs_dir = tmp_path / "runs"
+    runs_dir.mkdir(parents=True, exist_ok=True)
+    _write_run_manifest(
+        runs_dir=runs_dir,
+        run_id="selected-run",
+        trap_id="reasoning/chain-trap",
+        created_at_utc="2026-01-01T00:00:00+00:00",
+        finalized_at_utc="2026-01-01T00:20:00+00:00",
+    )
+    _write_run_manifest(
+        runs_dir=runs_dir,
+        run_id="older-run",
+        trap_id="reasoning/chain-trap",
+        created_at_utc="2026-01-01T00:00:00+00:00",
+        finalized_at_utc="2026-01-01T00:10:00+00:00",
+    )
+    _write_run_manifest(
+        runs_dir=runs_dir,
+        run_id="other-trap-run",
+        trap_id="memory/context-overflow",
+        created_at_utc="2026-01-01T00:00:00+00:00",
+        finalized_at_utc="2026-01-01T01:10:00+00:00",
+    )
+
+    _configure_trap_run_paths(
+        monkeypatch=monkeypatch,
+        tmp_path=tmp_path,
+        config_path=config_path,
+        samples_dir=samples_dir,
+        generated_root=tmp_path / "adapter" / "generated",
+    )
+
+    code = main(["reasoning/chain-trap", "--fast-eval-run"])
+
+    captured = capsys.readouterr()
+    assert code == 0
+    run_manifest_path = Path(captured.out.strip())
+    assert run_manifest_path.parent.name == "selected-run"
+    marker_path = run_manifest_path.parent / "fast_eval_marker.txt"
+    assert marker_path.read_text(encoding="utf-8") == "ok"
+
+
+def test_fast_eval_run_returns_failure_when_trap_evaluation_raises(
+    capsys,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _write_stub_contract_with_behavior(
+        tmp_path / "traps",
+        "reasoning/chain-trap",
+        evaluate_body='raise RuntimeError("boom during evaluate")',
+    )
+    config_path = tmp_path / ".opentrap" / "opentrap.yaml"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(yaml.safe_dump(_base_payload(), sort_keys=False), encoding="utf-8")
+    samples_dir = tmp_path / ".opentrap" / "samples"
+    samples_dir.mkdir(parents=True, exist_ok=True)
+    runs_dir = tmp_path / "runs"
+    runs_dir.mkdir(parents=True, exist_ok=True)
+    _write_run_manifest(
+        runs_dir=runs_dir,
+        run_id="selected-run",
+        trap_id="reasoning/chain-trap",
+    )
+
+    _configure_trap_run_paths(
+        monkeypatch=monkeypatch,
+        tmp_path=tmp_path,
+        config_path=config_path,
+        samples_dir=samples_dir,
+        generated_root=tmp_path / "adapter" / "generated",
+    )
+
+    code = main(["reasoning/chain-trap", "--fast-eval-run"])
+
+    captured = capsys.readouterr()
+    assert code == 1
+    assert "Fast eval run failed: boom during evaluate" in captured.err
 
 
 @pytest.mark.parametrize(
