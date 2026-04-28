@@ -20,7 +20,6 @@ import yaml
 from opentrap.cli import main
 
 TRAP_ID = "perception/prompt_injection_via_html"
-TEST_ADAPTER_PORT = 18760
 
 
 def _repo_root() -> Path:
@@ -157,7 +156,11 @@ def _prepare_llm_trap_run(
         samples_dir=samples_dir,
         generated_root=generated_root,
     )
-    monkeypatch.setattr("opentrap.run_orchestration.ADAPTER_PORT", TEST_ADAPTER_PORT)
+    # Avoid fixed-port collisions across tests without opening probe sockets.
+    # The test temp path is unique per test case/process, so this produces a
+    # stable high port that is very unlikely to clash in normal CI usage.
+    port_seed = abs(hash(str(tmp_path))) % 20000
+    monkeypatch.setattr("opentrap.run_orchestration.ADAPTER_PORT", 20000 + port_seed)
     return config_path, samples_dir
 
 
@@ -372,6 +375,9 @@ def test_llm_mocked_run_writes_trap_local_evaluation_artifacts(
     assert "average_rouge_l_f1" in summary_payload
     assert "min_rouge_l_f1" in summary_payload
     assert "max_rouge_l_f1" in summary_payload
+    assert "average_sbert_cosine_similarity" in summary_payload
+    assert "min_sbert_cosine_similarity" in summary_payload
+    assert "max_sbert_cosine_similarity" in summary_payload
     assert "grouped_averages_by_injection_type" in summary_payload
     assert "grouped_success_rate_by_injection_type" in summary_payload
 
@@ -383,6 +389,7 @@ def test_llm_mocked_run_writes_trap_local_evaluation_artifacts(
     assert len(jsonl_rows) == 8
     assert all("category" not in row for row in jsonl_rows)
     assert all("rouge_l_f1" in row for row in jsonl_rows)
+    assert all("sbert_cosine_similarity" in row for row in jsonl_rows)
 
 
 @pytest.mark.parametrize(

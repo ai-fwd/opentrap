@@ -164,8 +164,13 @@ def test_trap_local_evaluation_pairs_and_persists_records(tmp_path: Path) -> Non
             return 0.8 if "success" in observed_output else 0.2
 
     class _DeterministicSbert:
-        def score(self, *, clean_output: str, injected_output: str) -> float | None:
-            del clean_output, injected_output
+        def score(
+            self,
+            *,
+            baseline_output: str | None,
+            observed_output: str | None,
+        ) -> float | None:
+            del baseline_output, observed_output
             return 0.9
 
     class _DeterministicJudge:
@@ -240,6 +245,8 @@ def test_trap_local_evaluation_pairs_and_persists_records(tmp_path: Path) -> Non
     assert summary["min_rouge_l_f1"] == 0.2
     assert summary["max_rouge_l_f1"] == 0.8
     assert summary["average_sbert_cosine_similarity"] == 0.9
+    assert summary["min_sbert_cosine_similarity"] == 0.9
+    assert summary["max_sbert_cosine_similarity"] == 0.9
 
     grouped_averages = summary["grouped_averages_by_injection_type"]
     assert grouped_averages["hidden_div"]["average_rouge_l_f1"] == 0.8
@@ -303,3 +310,103 @@ def test_rouge_l_missing_or_empty_outputs_return_null() -> None:
     assert scorer.score(baseline_output="x", observed_output=None) is None
     assert scorer.score(baseline_output="", observed_output="x") is None
     assert scorer.score(baseline_output="x", observed_output="   ") is None
+
+
+def test_sbert_fake_model_identical_embeddings_score_near_one() -> None:
+    module = _load_module(
+        "evaluation.py",
+        "prompt_injection_via_html_evaluation_sbert_identical",
+    )
+
+    class _FakeModel:
+        def encode(self, sentences: str, **kwargs):
+            del kwargs, sentences
+            return [1.0, 2.0, 3.0]
+
+    scorer = module.SentenceTransformerSbertScorer(
+        model_name="fake-model",
+        model_factory=lambda _model_name: _FakeModel(),
+    )
+    score = scorer.score(
+        baseline_output="baseline text",
+        observed_output="observed text",
+    )
+    assert score is not None
+    assert abs(score - 1.0) < 1e-9
+
+
+def test_sbert_fake_model_orthogonal_embeddings_score_near_zero() -> None:
+    module = _load_module(
+        "evaluation.py",
+        "prompt_injection_via_html_evaluation_sbert_orthogonal",
+    )
+
+    class _FakeModel:
+        def encode(self, sentences: str, **kwargs):
+            del kwargs
+            if sentences == "baseline":
+                return [1.0, 0.0]
+            return [0.0, 1.0]
+
+    scorer = module.SentenceTransformerSbertScorer(
+        model_name="fake-model",
+        model_factory=lambda _model_name: _FakeModel(),
+    )
+    score = scorer.score(
+        baseline_output="baseline",
+        observed_output="observed",
+    )
+    assert score is not None
+    assert abs(score - 0.0) < 1e-9
+
+
+def test_sbert_empty_or_missing_outputs_return_null() -> None:
+    module = _load_module(
+        "evaluation.py",
+        "prompt_injection_via_html_evaluation_sbert_missing",
+    )
+
+    class _FakeModel:
+        def encode(self, sentences: str, **kwargs):
+            del kwargs, sentences
+            return [1.0, 1.0]
+
+    scorer = module.SentenceTransformerSbertScorer(
+        model_name="fake-model",
+        model_factory=lambda _model_name: _FakeModel(),
+    )
+    assert scorer.score(baseline_output=None, observed_output="x") is None
+    assert scorer.score(baseline_output="x", observed_output=None) is None
+    assert scorer.score(baseline_output="", observed_output="x") is None
+    assert scorer.score(baseline_output="x", observed_output="   ") is None
+
+
+def test_sbert_embedding_cache_is_used_for_repeated_texts() -> None:
+    module = _load_module(
+        "evaluation.py",
+        "prompt_injection_via_html_evaluation_sbert_cache",
+    )
+
+    class _FakeModel:
+        def __init__(self) -> None:
+            self.encode_call_count = 0
+
+        def encode(self, sentences: str, **kwargs):
+            del kwargs
+            self.encode_call_count += 1
+            if sentences == "A":
+                return [1.0, 0.0]
+            if sentences == "B":
+                return [0.0, 1.0]
+            return [0.5, 0.5]
+
+    fake_model = _FakeModel()
+    scorer = module.SentenceTransformerSbertScorer(
+        model_name="fake-model",
+        model_factory=lambda _model_name: fake_model,
+    )
+    first = scorer.score(baseline_output="A", observed_output="B")
+    second = scorer.score(baseline_output="A", observed_output="B")
+
+    assert first == second
+    assert fake_model.encode_call_count == 2
