@@ -40,6 +40,8 @@ from opentrap.evaluation import (
     write_evaluation_artifacts,
 )
 from opentrap.evaluation.scorers import DEFAULT_SBERT_MODEL_NAME
+from opentrap.evaluation.status import emit_evaluation_phase, emit_evaluation_progress
+from opentrap.events import EventSink
 
 
 @dataclass(frozen=True)
@@ -188,18 +190,18 @@ def evaluate_prompt_injection_run(
     sbert_scorer: SbertSimilarityScorer | None = None,
     llm_judge_scorer: LlmJudgeScorer | None = None,
     sbert_model_name: str = DEFAULT_SBERT_MODEL_NAME,
-    status_emitter: object | None = None,
+    event_sink: EventSink | None = None,
 ) -> EvaluationArtifacts:
     """Evaluate one finalized run for this trap and persist artifacts."""
-    _emit_evaluation_phase(status_emitter, phase="started")
-    _emit_evaluation_phase(status_emitter, phase="loading_artifacts")
+    emit_evaluation_phase(event_sink, phase="started")
+    emit_evaluation_phase(event_sink, phase="loading_artifacts")
     manifest_payload = load_run_manifest(run_manifest_path)
     run_dir = run_manifest_path.parent
     run_id = _require_manifest_string(manifest_payload, "run_id")
     trap_entry = find_trap_entry(manifest_payload, trap_id=trap_id)
 
     observed_outputs = load_observed_outputs(run_dir / "observations.jsonl")
-    _emit_evaluation_phase(status_emitter, phase="pairing_cases")
+    emit_evaluation_phase(event_sink, phase="pairing_cases")
     input_records = _build_input_records(
         run_id=run_id,
         trap_id=trap_id,
@@ -207,18 +209,18 @@ def evaluate_prompt_injection_run(
         observed_outputs=observed_outputs,
     )
 
-    _emit_evaluation_phase(status_emitter, phase="scoring_cases")
+    emit_evaluation_phase(event_sink, phase="scoring_cases")
     output_records = _score_input_records(
         input_records=input_records,
         rouge_scorer=rouge_scorer or RougeLScoreScorer(),
         sbert_scorer=sbert_scorer
         or SentenceTransformerSbertScorer(model_name=sbert_model_name),
         llm_judge_scorer=llm_judge_scorer or LLMIntentJudgeScorer(),
-        status_emitter=status_emitter,
+        event_sink=event_sink,
     )
     summary = _build_summary(output_records)
 
-    _emit_evaluation_phase(status_emitter, phase="writing_artifacts")
+    emit_evaluation_phase(event_sink, phase="writing_artifacts")
     artifacts = write_evaluation_artifacts(
         run_dir=run_dir,
         records=output_records,
@@ -227,7 +229,7 @@ def evaluate_prompt_injection_run(
         record_to_payload=_record_to_json_payload,
         csv_exclude_fields={"llm_judge_raw_response"},
     )
-    _emit_evaluation_phase(status_emitter, phase="completed")
+    emit_evaluation_phase(event_sink, phase="completed")
     return artifacts
 
 
@@ -326,7 +328,7 @@ def _score_input_records(
     rouge_scorer: RougeLScorer,
     sbert_scorer: SbertSimilarityScorer,
     llm_judge_scorer: LlmJudgeScorer,
-    status_emitter: object | None = None,
+    event_sink: EventSink | None = None,
 ) -> list[PromptInjectionEvaluationOutputRecord]:
     outputs: list[PromptInjectionEvaluationOutputRecord] = []
     total_records = len(input_records)
@@ -370,42 +372,12 @@ def _score_input_records(
                 metadata=record.metadata,
             )
         )
-        _emit_evaluation_heartbeat(
-            status_emitter=status_emitter,
+        emit_evaluation_progress(
+            event_sink,
             processed=index,
             total=total_records,
         )
     return outputs
-
-
-def _emit_evaluation_phase(
-    status_emitter: object | None,
-    *,
-    phase: str,
-    detail: str | None = None,
-) -> None:
-    if status_emitter is None or not hasattr(status_emitter, "phase"):
-        return
-    phase_fn = status_emitter.phase  # type: ignore[attr-defined]
-    if callable(phase_fn):
-        phase_fn(phase, detail=detail)
-
-
-def _emit_evaluation_heartbeat(
-    *,
-    status_emitter: object | None,
-    processed: int,
-    total: int,
-) -> None:
-    if status_emitter is None or not hasattr(status_emitter, "heartbeat"):
-        return
-    heartbeat_fn = status_emitter.heartbeat  # type: ignore[attr-defined]
-    if not callable(heartbeat_fn):
-        return
-    try:
-        heartbeat_fn(processed=processed, total=total)
-    except TypeError:
-        heartbeat_fn(processed, total)
 
 
 def _average(values: Sequence[float]) -> float | None:

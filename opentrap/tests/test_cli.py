@@ -28,7 +28,9 @@ def _write_stub_contract_with_behavior(
     *,
     module_prelude: str = "",
     init_body: str = "pass",
-    evaluate_body: str = "return EvaluationResult(success_count=0, evaluated_count=1, details=None)",
+    evaluate_body: str = (
+        "return EvaluationResult(success_count=0, evaluated_count=1, details=None)"
+    ),
 ) -> None:
     target, trap_name = trap_id.split("/", 1)
     trap_dir = root / target / trap_name
@@ -336,14 +338,13 @@ def test_init_prompts_for_harness_and_parses_command_tokens(
     code = main(["init"])
 
     assert code == 0
-    assert prompts == [
-        "Scenario: ",
-        "Content style: ",
-        "Trap intent: ",
-        "Seed (optional integer): ",
-        "What command runs your test suite? (e.g. bunx playwright test): ",
-        "Where should this command be run? (relative path, e.g. acme-client): ",
-    ]
+    assert len(prompts) == 6
+    assert prompts[0].startswith("Scenario")
+    assert prompts[1].startswith("Content style")
+    assert prompts[2].startswith("Trap intent")
+    assert prompts[3].startswith("Seed (optional integer)")
+    assert prompts[4].startswith("What command runs your test suite?")
+    assert prompts[5].startswith("Where should this command be run?")
     payload = yaml.safe_load(config_path.read_text(encoding="utf-8"))
     assert payload["harness"] == {
         "command": ["bunx", "playwright", "test", "--grep", "critical path"],
@@ -455,7 +456,7 @@ def test_trap_run_fails_when_config_is_missing(capsys, tmp_path: Path, monkeypat
     )
     monkeypatch.setattr("opentrap.cli.DEFAULT_SAMPLES_DIR", tmp_path / ".opentrap" / "samples")
 
-    code = main(["reasoning/chain-trap"])
+    code = main(["run", "reasoning/chain-trap"])
 
     captured = capsys.readouterr()
     assert code == 1
@@ -475,7 +476,7 @@ def test_trap_run_rejects_combined_fast_dev_and_fast_eval_flags(
     )
     monkeypatch.setattr("opentrap.cli.DEFAULT_SAMPLES_DIR", tmp_path / ".opentrap" / "samples")
 
-    code = main(["reasoning/chain-trap", "--fast-dev-run", "--fast-eval-run"])
+    code = main(["run", "reasoning/chain-trap", "--fast-dev-run", "--fast-eval-run"])
 
     captured = capsys.readouterr()
     assert code == 2
@@ -509,7 +510,7 @@ def test_fast_eval_run_fails_when_no_finalized_run_exists(
         generated_root=tmp_path / "adapter" / "generated",
     )
 
-    code = main(["reasoning/chain-trap", "--fast-eval-run"])
+    code = main(["run", "reasoning/chain-trap", "--fast-eval-run"])
 
     captured = capsys.readouterr()
     assert code == 1
@@ -571,7 +572,7 @@ def test_fast_eval_run_selects_latest_finalized_run_for_trap(
         generated_root=tmp_path / "adapter" / "generated",
     )
 
-    code = main(["reasoning/chain-trap", "--fast-eval-run"])
+    code = main(["run", "reasoning/chain-trap", "--fast-eval-run"])
 
     captured = capsys.readouterr()
     assert code == 0
@@ -621,7 +622,7 @@ def test_fast_eval_run_returns_failure_when_trap_evaluation_raises(
         generated_root=tmp_path / "adapter" / "generated",
     )
 
-    code = main(["reasoning/chain-trap", "--fast-eval-run"])
+    code = main(["run", "reasoning/chain-trap", "--fast-eval-run"])
 
     captured = capsys.readouterr()
     assert code == 1
@@ -671,12 +672,17 @@ def test_trap_run_single_records_manifest_and_artifact(
         generated_root=generated_root,
     )
 
-    code = main(["reasoning/chain-trap"])
+    code = main(["run", "reasoning/chain-trap"])
 
     captured = capsys.readouterr()
     assert code == 0
     run_manifest_path = _extract_manifest_path(captured.out)
     assert run_manifest_path.exists()
+    assert "Generation summary" in captured.out
+    assert "Trap | Cases" in captured.out
+    assert "reasoning/chain-trap | 1" in captured.out
+    assert "Starting case 1/1" in captured.err
+    assert "Case 1/1 completed" in captured.err
 
     run_manifest = json.loads(run_manifest_path.read_text(encoding="utf-8"))
     assert run_manifest["requested"] == "reasoning/chain-trap"
@@ -742,7 +748,7 @@ def test_trap_run_instantiates_only_selected_trap(
         generated_root=generated_root,
     )
 
-    code = main(["reasoning/chain-trap"])
+    code = main(["run", "reasoning/chain-trap"])
 
     captured = capsys.readouterr()
     assert code == 0
@@ -774,7 +780,7 @@ def test_trap_run_returns_failure_when_harness_case_fails(
         generated_root=generated_root,
     )
 
-    code = main(["reasoning/chain-trap"])
+    code = main(["run", "reasoning/chain-trap"])
 
     captured = capsys.readouterr()
     assert code == 1
@@ -823,7 +829,7 @@ def test_report_aggregates_match_sessions_jsonl_for_failed_run(
         generated_root=generated_root,
     )
 
-    code = main(["reasoning/chain-trap"])
+    code = main(["run", "reasoning/chain-trap"])
 
     captured = capsys.readouterr()
     assert code == 1
@@ -875,7 +881,7 @@ def test_trap_run_marks_scorer_failed_when_evaluation_raises(
         generated_root=generated_root,
     )
 
-    code = main(["reasoning/chain-trap"])
+    code = main(["run", "reasoning/chain-trap"])
 
     captured = capsys.readouterr()
     assert code == 0
@@ -939,7 +945,7 @@ def test_trap_run_writes_security_result_and_prints_summary(
         generated_root=generated_root,
     )
 
-    code = main(["reasoning/chain-trap"])
+    code = main(["run", "reasoning/chain-trap"])
 
     captured = capsys.readouterr()
     assert code == 0
@@ -998,7 +1004,7 @@ def test_trap_run_marks_scorer_failed_when_evaluation_returns_legacy_mapping(
         generated_root=generated_root,
     )
 
-    code = main(["reasoning/chain-trap"])
+    code = main(["run", "reasoning/chain-trap"])
 
     captured = capsys.readouterr()
     assert code == 0
@@ -1036,7 +1042,7 @@ def test_trap_run_rejects_unknown_trap_key_in_yaml(capsys, tmp_path: Path, monke
     monkeypatch.setattr("opentrap.cli.DEFAULT_CONFIG_PATH", config_path)
     monkeypatch.setattr("opentrap.cli.DEFAULT_SAMPLES_DIR", tmp_path / ".opentrap" / "samples")
 
-    code = main(["reasoning/chain-trap"])
+    code = main(["run", "reasoning/chain-trap"])
 
     captured = capsys.readouterr()
     assert code == 1
@@ -1066,14 +1072,14 @@ def test_trap_run_reuses_dataset_when_config_is_unchanged(
         generated_root=generated_root,
     )
 
-    code1 = main(["reasoning/chain-trap"])
+    code1 = main(["run", "reasoning/chain-trap"])
     captured1 = capsys.readouterr()
     assert code1 == 0
     run_manifest_path_1 = _extract_manifest_path(captured1.out)
     run_1 = json.loads(run_manifest_path_1.read_text(encoding="utf-8"))
     trap_1 = run_1["traps"][0]
 
-    code2 = main(["reasoning/chain-trap"])
+    code2 = main(["run", "reasoning/chain-trap"])
     captured2 = capsys.readouterr()
     assert code2 == 0
     run_manifest_path_2 = _extract_manifest_path(captured2.out)

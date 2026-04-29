@@ -139,7 +139,7 @@ class Trap(
         artifacts = evaluate_prompt_injection_run(
             run_manifest_path=eval_context.run_manifest_path,
             trap_id=eval_context.trap_id,
-            status_emitter=eval_context.status_emitter,
+            event_sink=eval_context.event_sink,
         )
         return EvaluationResult(
             success_count=artifacts.summary.llm_judge_success_count,

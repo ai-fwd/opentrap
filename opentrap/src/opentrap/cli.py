@@ -1,17 +1,17 @@
-"""Command-line entrypoint for listing, initializing, and running OpenTrap traps.
-
-This module keeps user-facing CLI behavior and delegates trap-run internals to
-orchestration modules so command parsing and UX remain easy to reason about.
-"""
+"""Command-line entrypoint for listing, initializing, and running OpenTrap traps."""
 
 from __future__ import annotations
 
-import argparse
 import shlex
 import sys
 from collections.abc import Mapping
 from pathlib import Path
+from typing import Annotated
 
+import click
+import typer
+
+from opentrap.cli_renderers import build_renderer
 from opentrap.config_loader import (
     ConfigError,
     HarnessConfig,
@@ -20,7 +20,7 @@ from opentrap.config_loader import (
     write_trap_config,
 )
 from opentrap.evaluation import find_latest_finalized_run_manifest, run_trap_evaluation
-from opentrap.io_utils import load_json_maybe
+from opentrap.events import emit_event
 from opentrap.run_orchestration import RunEnvironment, run_single_trap
 from opentrap.trap import SharedConfig, TrapFieldSpec
 from opentrap.trap.loader import load_registry_from_candidates
@@ -34,73 +34,13 @@ DEFAULT_CONFIG_PATH = DEFAULT_STATE_DIR / "opentrap.yaml"
 DEFAULT_SAMPLES_DIR = DEFAULT_STATE_DIR / "samples"
 DEFAULT_DATASET_DIR = DEFAULT_STATE_DIR / "dataset"
 DEFAULT_ADAPTER_GENERATED_ROOT = DEFAULT_REPO_ROOT / "adapter" / "generated"
-STATUS_PREFIX = "[opentrap]"
 
-
-def _status(message: str) -> None:
-    """Emit one user-facing status line for trap runs."""
-    print(f"{STATUS_PREFIX} {message}", file=sys.stderr)
-
-
-def _print_run_summary(run_manifest_path: Path) -> None:
-    report_path = run_manifest_path.parent / "report.json"
-    report = load_json_maybe(report_path) or {}
-    security_result = report.get("security_result")
-    if not isinstance(security_result, Mapping):
-        security_result = {
-            "status": "unavailable",
-            "trap_success_count": 0,
-            "trap_failure_count": 0,
-            "evaluated_count": 0,
-            "trap_success_rate": None,
-            "details": {},
-        }
-
-    status_value = security_result.get("status")
-    security_status = status_value if isinstance(status_value, str) else "unavailable"
-    display_status = (
-        "no successful traps detected"
-        if security_status == "no_successful_traps_detected"
-        else security_status
-    )
-
-    case_count = _int_or_default(report.get("case_count"), default=0)
-    failed_session_count = _int_or_default(report.get("failed_session_count"), default=0)
-    trap_success_count = _int_or_default(security_result.get("trap_success_count"), default=0)
-    evaluated_count = _int_or_default(security_result.get("evaluated_count"), default=0)
-    trap_success_rate = security_result.get("trap_success_rate")
-    rate_percent = _format_percent(trap_success_rate)
-
-    run_id = report.get("run_id")
-    if not isinstance(run_id, str) or not run_id:
-        run_id = run_manifest_path.parent.name
-
-    print("OpenTrap run complete")
-    print()
-    print(f"Trap cases executed: {case_count}")
-    print(f"Harness failures: {failed_session_count}")
-    print()
-    print(f"Security result: {display_status}")
-    if security_status == "unavailable" and evaluated_count == 0:
-        print("Reason: no cases were evaluated")
-    else:
-        print(f"Trap successes: {trap_success_count} / {evaluated_count}")
-        print(f"Success rate: {rate_percent}")
-    print()
-    print("Detailed report:")
-    print(f"runs/{run_id}/evaluation.csv")
-
-
-def _int_or_default(value: object, *, default: int) -> int:
-    if isinstance(value, int):
-        return value
-    return default
-
-
-def _format_percent(value: object) -> str:
-    if isinstance(value, int | float):
-        return f"{float(value) * 100.0:.1f}%"
-    return "0.0%"
+app = typer.Typer(
+    add_completion=False,
+    no_args_is_help=True,
+    pretty_exceptions_enable=False,
+    help="OpenTrap CLI",
+)
 
 
 def _resolve_trap_ref(trap_ref: str) -> str:
@@ -128,16 +68,16 @@ def _load_registry() -> TrapRegistry | None:
 
 
 def _prompt_non_empty(prompt: str) -> str:
-    """Collect a required text prompt value for interactive `init` flow."""
+    """Prompt until a required non-empty string value is provided."""
     while True:
         value = input(prompt).strip()
         if value:
             return value
-        print("Value cannot be empty.", file=sys.stderr)
+        typer.echo("Value cannot be empty.", err=True)
 
 
 def _prompt_seed(prompt: str) -> int | None:
-    """Collect an optional integer seed used for deterministic trap generation."""
+    """Prompt for optional deterministic integer seed (blank -> None)."""
     while True:
         value = input(prompt).strip()
         if not value:
@@ -145,49 +85,49 @@ def _prompt_seed(prompt: str) -> int | None:
         try:
             return int(value)
         except ValueError:
-            print("Seed must be an integer or blank.", file=sys.stderr)
+            typer.echo("Seed must be an integer or blank.", err=True)
 
 
 def _prompt_command(prompt: str) -> tuple[str, ...]:
-    """Collect a required shell-style command and tokenize it safely."""
+    """Prompt for a non-empty shell command and tokenize with shlex."""
     while True:
         value = input(prompt).strip()
         if not value:
-            print("Command cannot be empty.", file=sys.stderr)
+            typer.echo("Command cannot be empty.", err=True)
             continue
         try:
             command = tuple(shlex.split(value))
         except ValueError as exc:
-            print(f"Command is invalid: {exc}", file=sys.stderr)
+            typer.echo(f"Command is invalid: {exc}", err=True)
             continue
         if not command:
-            print("Command cannot be empty.", file=sys.stderr)
+            typer.echo("Command cannot be empty.", err=True)
             continue
         return command
 
 
 def _prompt_relative_path(prompt: str) -> str:
-    """Collect a required relative path for harness command execution."""
+    """Prompt for a required relative path used as harness working directory."""
     while True:
         value = input(prompt).strip()
         if not value:
-            print("Path cannot be empty.", file=sys.stderr)
+            typer.echo("Path cannot be empty.", err=True)
             continue
         if Path(value).is_absolute():
-            print("Path must be relative.", file=sys.stderr)
+            typer.echo("Path must be relative.", err=True)
             continue
         return value
 
 
-def cmd_list(args: argparse.Namespace) -> int:
+def cmd_list(target: str | None) -> int:
     """List available trap ids, optionally filtered by target prefix."""
     registry = _load_registry()
     if registry is None:
         return 1
 
     traps = list(registry.trap_ids)
-    if args.target:
-        prefix = f"{args.target.strip().lower()}/"
+    if target:
+        prefix = f"{target.strip().lower()}/"
         traps = [trap_id for trap_id in traps if trap_id.lower().startswith(prefix)]
 
     for trap_id in traps:
@@ -195,7 +135,7 @@ def cmd_list(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_init(_: argparse.Namespace) -> int:
+def cmd_init() -> int:
     """Initialize default config and samples directory for first trap runs."""
     registry = _load_registry()
     if registry is None:
@@ -208,19 +148,14 @@ def cmd_init(_: argparse.Namespace) -> int:
         seed=_prompt_seed("Seed (optional integer): "),
     )
     harness = HarnessConfig(
-        command=_prompt_command(
-            "What command runs your test suite? (e.g. bunx playwright test): "
-        ),
+        command=_prompt_command("What command runs your test suite? (e.g. bunx playwright test): "),
         cwd=_prompt_relative_path(
             "Where should this command be run? (relative path, e.g. acme-client): "
         ),
     )
 
     try:
-        trap_fields = {
-            trap_id: registry.load_trap_fields(trap_id)
-            for trap_id in registry.trap_ids
-        }
+        trap_fields = {trap_id: registry.load_trap_fields(trap_id) for trap_id in registry.trap_ids}
         payload = build_initial_trap_config(shared, trap_fields, harness)
     except (ConfigError, TrapRegistryError) as exc:
         print(str(exc), file=sys.stderr)
@@ -238,42 +173,41 @@ def cmd_init(_: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_trap(args: argparse.Namespace) -> int:
-    """Execute a single trap id and print the resulting run manifest path."""
-    trap_ref = args.trap
-    fast_dev_run = bool(getattr(args, "fast_dev_run", False))
-    fast_eval_run = bool(getattr(args, "fast_eval_run", False))
-    _status(f"Starting trap run: {trap_ref}")
-    if fast_dev_run:
-        _status("Fast dev run enabled")
-    if fast_eval_run:
-        _status("Fast eval run enabled")
-    _status("Validating trap id and loading trap registry...")
+def cmd_run(trap_ref: str, *, fast_dev_run: bool, fast_eval_run: bool) -> int:
+    """Execute one trap run, with optional fast dev/eval modes."""
+    event_sink = build_renderer()
+
+    if fast_dev_run and fast_eval_run:
+        print("--fast-dev-run and --fast-eval-run cannot be used together", file=sys.stderr)
+        return 2
 
     registry = _load_registry()
     if registry is None:
-        _status("Failed during trap validation: could not load trap registry")
+        emit_event(event_sink, "run_failed", stage="validate", error="could not load trap registry")
         return 1
 
     try:
         resolved = _resolve_trap_ref(trap_ref)
     except ValueError as exc:
-        _status(f"Failed during trap validation: {exc}")
+        emit_event(event_sink, "run_failed", stage="validate", error=str(exc))
         return 1
     if not registry.has_trap(resolved):
-        _status(f"Failed during trap validation: trap '{resolved}' was not found")
+        emit_event(
+            event_sink,
+            "run_failed",
+            stage="validate",
+            error=f"trap '{resolved}' was not found",
+        )
         return 1
 
     try:
         trap_fields: dict[str, Mapping[str, TrapFieldSpec]] = {
-            trap_id: registry.load_trap_fields(trap_id)
-            for trap_id in registry.trap_ids
+            trap_id: registry.load_trap_fields(trap_id) for trap_id in registry.trap_ids
         }
     except TrapRegistryError as exc:
-        _status(f"Failed during trap validation: {exc}")
+        emit_event(event_sink, "run_failed", stage="validate", error=str(exc))
         return 1
 
-    _status(f"Loading config: {DEFAULT_CONFIG_PATH}")
     try:
         loaded = load_trap_config(
             DEFAULT_CONFIG_PATH,
@@ -281,13 +215,13 @@ def cmd_trap(args: argparse.Namespace) -> int:
             samples_dir=DEFAULT_SAMPLES_DIR,
         )
     except ConfigError as exc:
-        _status(f"Failed during config load: {exc}")
+        emit_event(event_sink, "run_failed", stage="config", error=str(exc))
         return 1
 
     try:
         selected_trap = registry.create_trap(resolved)
     except TrapRegistryError as exc:
-        _status(f"Failed during trap initialization: {exc}")
+        emit_event(event_sink, "run_failed", stage="trap_init", error=str(exc))
         return 1
 
     environment = RunEnvironment(
@@ -296,29 +230,34 @@ def cmd_trap(args: argparse.Namespace) -> int:
         dataset_dir=DEFAULT_DATASET_DIR,
         adapter_generated_root=DEFAULT_ADAPTER_GENERATED_ROOT,
     )
+
     if fast_eval_run:
+        emit_event(event_sink, "run_started", trap_id=resolved, requested_trap_ref=trap_ref)
         try:
             latest_run_manifest_path = find_latest_finalized_run_manifest(
                 runs_dir=environment.runs_dir,
                 trap_id=resolved,
             )
         except Exception as exc:  # noqa: BLE001
-            _status(str(exc))
+            emit_event(event_sink, "run_failed", stage="fast_eval_select", error=str(exc))
             return 1
 
-        _status(f"Running trap evaluation for latest finalized run: {latest_run_manifest_path}")
         try:
             run_trap_evaluation(
                 trap_id=resolved,
                 trap=selected_trap,
                 run_manifest_path=latest_run_manifest_path,
-                status_callback=_status,
+                event_sink=event_sink,
             )
         except Exception as exc:  # noqa: BLE001
-            _status(f"Fast eval run failed: {exc}")
+            emit_event(
+                event_sink,
+                "run_failed",
+                stage="fast_eval",
+                error=f"Fast eval run failed: {exc}",
+            )
             return 1
-        _status("Fast eval run completed")
-        _print_run_summary(latest_run_manifest_path)
+
         print(str(latest_run_manifest_path))
         return 0
 
@@ -332,95 +271,56 @@ def cmd_trap(args: argparse.Namespace) -> int:
             environment=environment,
             product_under_test=loaded.product_under_test,
             harness=loaded.harness,
-            status_callback=_status,
+            event_sink=event_sink,
             max_cases=1 if fast_dev_run else None,
         )
     except Exception as exc:  # noqa: BLE001
-        _status(str(exc))
+        emit_event(event_sink, "run_failed", stage="run", error=str(exc))
         return 1
 
-    _print_run_summary(run_ready.run_manifest_path)
     print(str(run_ready.run_manifest_path))
     return 0 if run_ready.succeeded else 1
 
 
-def build_parser() -> argparse.ArgumentParser:
-    """Build command parser for explicit subcommands."""
-    parser = argparse.ArgumentParser(prog="opentrap", description="OpenTrap CLI")
-    subparsers = parser.add_subparsers(dest="command", required=False)
-
-    list_parser = subparsers.add_parser("list", help="List available traps")
-    list_parser.add_argument("--target", default=None)
-    list_parser.set_defaults(handler=cmd_list)
-
-    init_parser = subparsers.add_parser("init", help="Create .opentrap/opentrap.yaml")
-    init_parser.set_defaults(handler=cmd_init)
-
-    return parser
+@app.command("list")
+def list_command(
+    target: Annotated[str, typer.Option("--target")] = "",
+) -> int:
+    """List trap ids, optionally filtered by target."""
+    return cmd_list(target if target else None)
 
 
-def _parse_trap_execution_args(raw_args: list[str]) -> argparse.Namespace | None:
-    """Parse shorthand trap execution args with optional fast-run modes."""
-    trap_ref: str | None = None
-    fast_dev_run = False
-    fast_eval_run = False
+@app.command("init")
+def init_command() -> int:
+    """Create `.opentrap/opentrap.yaml` and `.opentrap/samples/`."""
+    return cmd_init()
 
-    for token in raw_args:
-        if token == "--fast-dev-run":
-            fast_dev_run = True
-            continue
-        if token == "--fast-eval-run":
-            fast_eval_run = True
-            continue
-        if token.startswith("-"):
-            print(f"unrecognized option for trap execution: {token}", file=sys.stderr)
-            return None
-        if trap_ref is not None:
-            print(
-                "trap execution accepts exactly one argument: target/name",
-                file=sys.stderr,
-            )
-            return None
-        trap_ref = token
 
-    if trap_ref is None:
-        print(
-            "trap execution accepts exactly one argument: target/name",
-            file=sys.stderr,
-        )
-        return None
-
-    if fast_dev_run and fast_eval_run:
-        print(
-            "--fast-dev-run and --fast-eval-run cannot be used together",
-            file=sys.stderr,
-        )
-        return None
-
-    return argparse.Namespace(
-        trap=trap_ref,
-        fast_dev_run=fast_dev_run,
-        fast_eval_run=fast_eval_run,
-    )
+@app.command("run")
+def run_command(
+    trap: Annotated[str, typer.Argument(help="Trap reference in target/name format.")],
+    fast_dev_run: Annotated[bool, typer.Option("--fast-dev-run")] = False,
+    fast_eval_run: Annotated[bool, typer.Option("--fast-eval-run")] = False,
+) -> int:
+    """Run one trap with optional fast execution/evaluation modes."""
+    return cmd_run(trap, fast_dev_run=fast_dev_run, fast_eval_run=fast_eval_run)
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Execute CLI command with backward-compatible single-arg trap shorthand."""
+    """Invoke the Typer CLI and normalize click exit behavior to integer codes."""
     raw_args = list(argv) if argv is not None else sys.argv[1:]
-
-    if raw_args and raw_args[0] not in {"list", "init", "-h", "--help"}:
-        parsed = _parse_trap_execution_args(raw_args)
-        if parsed is None:
-            return 2
-        return cmd_trap(parsed)
-
-    parser = build_parser()
-    args = parser.parse_args(raw_args)
-    handler = getattr(args, "handler", None)
-    if handler is None:
-        parser.print_help(sys.stderr)
-        return 2
-    return handler(args)
+    try:
+        result = app(args=raw_args, prog_name="opentrap", standalone_mode=False)
+        return int(result) if isinstance(result, int) else 0
+    except typer.Exit as exc:
+        code = exc.exit_code
+        return int(code) if isinstance(code, int) else 0
+    except click.ClickException as exc:
+        exc.show(file=sys.stderr)
+        return int(exc.exit_code)
+    except click.Abort:
+        print("Aborted!", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":

@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from opentrap.events import EventSink
+
 
 @dataclass(frozen=True)
 class EvaluationContext:
@@ -16,7 +18,7 @@ class EvaluationContext:
     run_dir: Path
     report_path: Path
     trap_id: str
-    status_emitter: object | None = None
+    event_sink: EventSink | None = None
 
     @classmethod
     def from_value(
@@ -45,7 +47,7 @@ class EvaluationContext:
             run_dir=run_dir,
             report_path=report_path,
             trap_id=trap_id,
-            status_emitter=value.get("status_emitter"),
+            event_sink=value.get("event_sink"),
         )
 
     @staticmethod

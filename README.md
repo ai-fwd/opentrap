@@ -32,7 +32,7 @@ uv run opentrap list --target reasoning
 uv run opentrap init
 
 # Run a single trap by target/name
-uv run opentrap perception/prompt_injection_via_html
+uv run opentrap run perception/prompt_injection_via_html
 ```
 
 ## Sample Boundaries

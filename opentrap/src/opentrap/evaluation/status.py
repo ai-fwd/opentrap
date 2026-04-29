@@ -1,33 +1,39 @@
-"""Reusable evaluation status utilities shared across traps."""
+"""Evaluation lifecycle helper emitters built on top of OpenTrap run events."""
 
 from __future__ import annotations
 
-from collections.abc import Callable
-from dataclasses import dataclass
+from opentrap.events import EventSink, emit_event
 
 
-@dataclass(frozen=True)
-class EvaluationStatusEmitter:
-    """Emit standardized evaluation phase and progress status lines."""
+def emit_evaluation_phase(
+    event_sink: EventSink | None,
+    phase: str,
+    *,
+    detail: str | None = None,
+) -> None:
+    """Emit one structured evaluation phase event when a sink is available."""
+    if event_sink is None:
+        return
+    emit_event(
+        event_sink,
+        "evaluate_phase",
+        phase=phase,
+        detail=detail,
+    )
 
-    status_callback: Callable[[str], None]
-    heartbeat_every: int = 25
-    prefix: str = "evaluation"
 
-    def phase(self, phase: str, *, detail: str | None = None) -> None:
-        token = f"{self.prefix}.{phase}"
-        message = f"{token}: {detail}" if detail else token
-        self.status_callback(message)
-
-    def heartbeat(self, *, processed: int, total: int, force: bool = False) -> None:
-        if total <= 0:
-            return
-        step = self.heartbeat_every if self.heartbeat_every > 0 else 1
-        processed_count = max(0, min(processed, total))
-        should_emit = force or processed_count >= total or (processed_count % step == 0)
-        if not should_emit:
-            return
-        percent = (processed_count / total) * 100.0
-        self.status_callback(
-            f"{self.prefix}.progress: {processed_count}/{total} ({percent:.1f}%)"
-        )
+def emit_evaluation_progress(
+    event_sink: EventSink | None,
+    *,
+    processed: int,
+    total: int,
+) -> None:
+    """Emit one structured evaluation progress event when a sink is available."""
+    if event_sink is None or total <= 0:
+        return
+    emit_event(
+        event_sink,
+        "evaluate_progress",
+        processed=max(0, min(processed, total)),
+        total=total,
+    )

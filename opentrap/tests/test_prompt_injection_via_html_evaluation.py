@@ -328,30 +328,35 @@ def test_trap_local_evaluation_emits_phase_and_heartbeat_progress(tmp_path: Path
                 raw_response='{"success": true, "confidence": 0.9, "reason": "ok"}',
             )
 
-    class _RecordingStatusEmitter:
+    class _RecordingEventSink:
         def __init__(self) -> None:
-            self.phases: list[str] = []
-            self.heartbeats: list[tuple[int, int]] = []
+            self.events: list[dict[str, object]] = []
 
-        def phase(self, phase: str, *, detail: str | None = None) -> None:
-            del detail
-            self.phases.append(phase)
+        def __call__(self, event) -> None:  # noqa: ANN001
+            self.events.append({"type": event.type, "payload": dict(event.payload)})
 
-        def heartbeat(self, *, processed: int, total: int) -> None:
-            if processed % 2 == 0 or processed >= total:
-                self.heartbeats.append((processed, total))
-
-    emitter = _RecordingStatusEmitter()
+    sink = _RecordingEventSink()
     module.evaluate_prompt_injection_run(
         run_manifest_path=manifest_path,
         trap_id="perception/prompt_injection_via_html",
         rouge_scorer=_DeterministicRouge(),
         sbert_scorer=_DeterministicSbert(),
         llm_judge_scorer=_DeterministicJudge(),
-        status_emitter=emitter,
+        event_sink=sink,
     )
 
-    assert emitter.phases == [
+    phase_events = [
+        event["payload"]["phase"]
+        for event in sink.events
+        if event["type"] == "evaluate_phase"
+    ]
+    progress_events = [
+        (event["payload"]["processed"], event["payload"]["total"])
+        for event in sink.events
+        if event["type"] == "evaluate_progress"
+    ]
+
+    assert phase_events == [
         "started",
         "loading_artifacts",
         "pairing_cases",
@@ -359,7 +364,7 @@ def test_trap_local_evaluation_emits_phase_and_heartbeat_progress(tmp_path: Path
         "writing_artifacts",
         "completed",
     ]
-    assert emitter.heartbeats == [(2, 3), (3, 3)]
+    assert progress_events == [(1, 3), (2, 3), (3, 3)]
 
 
 def test_rouge_l_identical_texts_score_one() -> None:

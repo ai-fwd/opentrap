@@ -17,6 +17,7 @@ from urllib.request import urlopen
 from opentrap.config_loader import HarnessConfig
 from opentrap.dataset_cache import resolve_cached_dataset
 from opentrap.evaluation import run_trap_evaluation
+from opentrap.events import EventSink, emit_event
 from opentrap.execution_context import (
     ActiveSessionDescriptor,
     active_session_path_for_run,
@@ -43,8 +44,6 @@ STATUS_HEARTBEAT_INTERVAL_SECONDS = 3.0
 ADAPTER_TERMINATE_TIMEOUT_SECONDS = 3.0
 SESSIONS_FILE_NAME = "sessions.jsonl"
 TRACES_FILE_NAME = "traces.jsonl"
-
-StatusCallback = Callable[[str], None]
 
 
 @dataclass(frozen=True)
@@ -330,9 +329,10 @@ def run_single_trap(
     environment: RunEnvironment,
     product_under_test: str,
     harness: HarnessConfig,
-    status_callback: StatusCallback,
+    event_sink: EventSink,
     max_cases: int | None = None,
 ) -> TrapRunResult:
+    emit_event(event_sink, "run_started", trap_id=trap_id, requested_trap_ref=requested_trap_ref)
     run_id = uuid.uuid4().hex
     run_dir = environment.runs_dir / run_id
     run_dir.mkdir(parents=True, exist_ok=False)
@@ -355,7 +355,7 @@ def run_single_trap(
     }
     write_json(run_manifest_path, run_manifest)
 
-    status_callback("Resolving dataset cache...")
+    emit_event(event_sink, "generate_started", trap_id=trap_id)
     try:
         dataset = resolve_cached_dataset(
             trap_id=trap_id,
@@ -365,12 +365,25 @@ def run_single_trap(
             registry=registry,
             dataset_dir=environment.dataset_dir,
             heartbeat_interval_seconds=STATUS_HEARTBEAT_INTERVAL_SECONDS,
-            on_cache_hit=lambda fingerprint: status_callback(
-                f"Dataset cache hit: {fingerprint[:12]}"
+            on_cache_hit=lambda fingerprint: emit_event(
+                event_sink,
+                "generate_progress",
+                trap_id=trap_id,
+                state="cache_hit",
+                fingerprint=fingerprint,
             ),
-            on_cache_miss=lambda: status_callback("Cache miss; generating dataset..."),
-            on_generation_heartbeat=lambda elapsed: status_callback(
-                f"Generating dataset... still working ({int(elapsed)}s)"
+            on_cache_miss=lambda: emit_event(
+                event_sink,
+                "generate_progress",
+                trap_id=trap_id,
+                state="cache_miss",
+            ),
+            on_generation_heartbeat=lambda elapsed: emit_event(
+                event_sink,
+                "generate_progress",
+                trap_id=trap_id,
+                state="generating",
+                elapsed_seconds=int(elapsed),
             ),
         )
     except Exception as exc:  # noqa: BLE001
@@ -380,15 +393,18 @@ def run_single_trap(
         raise RuntimeError("dataset generation completed, but no execution cases were produced")
 
     total_case_count = len(dataset.cases)
-    status_callback(f"Dataset ready: {total_case_count} cases")
     case_count_to_run = total_case_count
     if max_cases is not None:
         if max_cases < 1:
             raise RuntimeError("max_cases must be >= 1")
         case_count_to_run = min(total_case_count, max_cases)
-        status_callback(
-            f"Fast dev run mode: executing {case_count_to_run}/{total_case_count} case(s)"
-        )
+    emit_event(
+        event_sink,
+        "generate_completed",
+        trap_id=trap_id,
+        case_count=total_case_count,
+        executing_case_count=case_count_to_run,
+    )
 
     trap_entry = {
         "trap_id": trap_id,
@@ -406,7 +422,12 @@ def run_single_trap(
     adapter_process: subprocess.Popen[Any] | None = None
     succeeded = True
     try:
-        status_callback(f"Launching adapter runtime for product '{product_under_test}'")
+        emit_event(
+            event_sink,
+            "adapter_launching",
+            product_under_test=product_under_test,
+            port=adapter_port,
+        )
         try:
             adapter_process = _launch_adapter(
                 run_manifest_path,
@@ -422,8 +443,12 @@ def run_single_trap(
                 adapter_process,
                 port=adapter_port,
                 heartbeat_interval_seconds=STATUS_HEARTBEAT_INTERVAL_SECONDS,
-                on_wait_heartbeat=lambda elapsed: status_callback(
-                    f"Waiting for adapter health... ({int(elapsed)}s)"
+                on_wait_heartbeat=lambda elapsed: emit_event(
+                    event_sink,
+                    "generate_progress",
+                    trap_id=trap_id,
+                    state="adapter_wait",
+                    elapsed_seconds=int(elapsed),
                 ),
             )
         except Exception as exc:  # noqa: BLE001
@@ -435,12 +460,17 @@ def run_single_trap(
         ready_manifest["adapter_port"] = adapter_port
         ready_manifest["ready_at_utc"] = utc_now_iso()
         write_json(run_manifest_path, ready_manifest, atomic=True)
-        status_callback("Adapter ready")
+        emit_event(event_sink, "adapter_ready", port=adapter_port)
 
         for case_index in range(case_count_to_run):
-            status_callback(f"Starting case {case_index + 1}/{case_count_to_run}")
+            emit_event(
+                event_sink,
+                "case_started",
+                case_index=case_index,
+                display_case_index=case_index + 1,
+                total_cases=case_count_to_run,
+            )
             descriptor = _start_case_session(run_manifest_path, case_index=case_index)
-            status_callback(f"Session active: {descriptor.session_id}")
 
             harness_exit_code = 1
             try:
@@ -454,27 +484,53 @@ def run_single_trap(
                 _end_case_session(run_manifest_path, harness_exit_code=harness_exit_code)
 
             if harness_exit_code == 0:
-                status_callback(f"Case {case_index + 1} completed")
+                emit_event(
+                    event_sink,
+                    "case_finished",
+                    case_index=case_index,
+                    display_case_index=case_index + 1,
+                    total_cases=case_count_to_run,
+                    exit_code=harness_exit_code,
+                    session_id=descriptor.session_id,
+                    succeeded=True,
+                )
             else:
                 succeeded = False
-                status_callback(f"Case {case_index + 1} failed (exit code {harness_exit_code})")
+                emit_event(
+                    event_sink,
+                    "case_finished",
+                    case_index=case_index,
+                    display_case_index=case_index + 1,
+                    total_cases=case_count_to_run,
+                    exit_code=harness_exit_code,
+                    session_id=descriptor.session_id,
+                    succeeded=False,
+                )
     finally:
         clear_active_session_descriptor(_active_session_path(run_manifest_path))
         _terminate_process(adapter_process)
 
     _finalize_run(run_manifest_path, succeeded=succeeded)
-    status_callback("Run finalized")
+    emit_event(
+        event_sink,
+        "run_finalized",
+        run_manifest_path=str(run_manifest_path),
+        succeeded=succeeded,
+    )
     trap_for_evaluation = registry.get(trap_id)
-    if trap_for_evaluation is None:
-        status_callback("Trap evaluation skipped: selected trap instance was unavailable")
-    else:
+    if trap_for_evaluation is not None:
         try:
             run_trap_evaluation(
                 trap_id=trap_id,
                 trap=trap_for_evaluation,
                 run_manifest_path=run_manifest_path,
-                status_callback=status_callback,
+                event_sink=event_sink,
             )
         except Exception as exc:  # noqa: BLE001
-            status_callback(f"Trap evaluation failed: {exc}")
+            emit_event(
+                event_sink,
+                "run_failed",
+                stage="evaluate",
+                error=f"Trap evaluation failed: {exc}",
+            )
     return TrapRunResult(run_manifest_path=run_manifest_path, succeeded=succeeded)

@@ -3,17 +3,15 @@
 from __future__ import annotations
 
 import datetime
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
 from opentrap.evaluation.result import EvaluationResult
-from opentrap.evaluation.status import EvaluationStatusEmitter
+from opentrap.events import EventSink, emit_event
 from opentrap.io_utils import load_json, load_json_maybe, write_json
 from opentrap.report import SecurityResult
 from opentrap.trap import TrapSpec
-
-StatusCallback = Callable[[str], None]
 
 
 def run_trap_evaluation(
@@ -21,15 +19,16 @@ def run_trap_evaluation(
     trap_id: str,
     trap: TrapSpec[Any, Any, Any, Any],
     run_manifest_path: Path,
-    status_callback: StatusCallback,
+    event_sink: EventSink,
 ) -> None:
-    status_callback("Running trap evaluation...")
+    emit_event(
+        event_sink,
+        "evaluate_started",
+        trap_id=trap_id,
+        run_manifest_path=str(run_manifest_path),
+    )
     set_scorer_status(run_manifest_path=run_manifest_path, scorer_status="running")
     report_path = run_manifest_path.parent / "report.json"
-    status_emitter = EvaluationStatusEmitter(
-        status_callback=status_callback,
-        heartbeat_every=25,
-    )
     try:
         raw_result = trap.evaluate(
             {
@@ -37,7 +36,7 @@ def run_trap_evaluation(
                 "run_manifest_path": str(run_manifest_path),
                 "run_dir": str(run_manifest_path.parent),
                 "report_path": str(report_path),
-                "status_emitter": status_emitter,
+                "event_sink": event_sink,
             }
         )
         result = _require_trap_eval_result(raw_result)
@@ -57,7 +56,12 @@ def run_trap_evaluation(
         )
         raise
     set_scorer_status(run_manifest_path=run_manifest_path, scorer_status="completed")
-    status_callback("Trap evaluation completed")
+    emit_event(
+        event_sink,
+        "evaluate_completed",
+        trap_id=trap_id,
+        run_manifest_path=str(run_manifest_path),
+    )
 
 
 def set_scorer_status(*, run_manifest_path: Path, scorer_status: str) -> None:

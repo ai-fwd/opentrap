@@ -186,13 +186,13 @@ def test_llm_mocked_run_reuses_dataset_when_inputs_are_unchanged(
         payload=_base_payload(),
     )
 
-    code1 = main([TRAP_ID])
+    code1 = main(["run", TRAP_ID])
     captured1 = capsys.readouterr()
     assert code1 == 0
     run_manifest_path_1 = _extract_manifest_path(captured1.out)
     trap_1 = _read_trap_entry(run_manifest_path_1)
 
-    code2 = main([TRAP_ID])
+    code2 = main(["run", TRAP_ID])
     captured2 = capsys.readouterr()
     assert code2 == 0
     run_manifest_path_2 = _extract_manifest_path(captured2.out)
@@ -229,7 +229,7 @@ def test_llm_selected_trap_fails_fast_when_llm_env_is_missing(
         generated_root=generated_root,
     )
 
-    code = main([TRAP_ID])
+    code = main(["run", TRAP_ID])
 
     captured = capsys.readouterr()
     assert code == 1
@@ -254,12 +254,12 @@ def test_llm_mocked_run_uses_final_cache_paths_for_manifest_data_items(
         payload=_base_payload(),
     )
 
-    code1 = main([TRAP_ID])
+    code1 = main(["run", TRAP_ID])
     captured1 = capsys.readouterr()
     assert code1 == 0
     trap_1 = _read_trap_entry(_extract_manifest_path(captured1.out))
 
-    code2 = main([TRAP_ID])
+    code2 = main(["run", TRAP_ID])
     captured2 = capsys.readouterr()
     assert code2 == 0
     trap_2 = _read_trap_entry(_extract_manifest_path(captured2.out))
@@ -289,7 +289,7 @@ def test_llm_mocked_run_regenerates_when_shared_or_trap_config_changes(
         payload=_base_payload(),
     )
 
-    code1 = main([TRAP_ID])
+    code1 = main(["run", TRAP_ID])
     captured1 = capsys.readouterr()
     assert code1 == 0
     trap_1 = _read_trap_entry(_extract_manifest_path(captured1.out))
@@ -298,7 +298,7 @@ def test_llm_mocked_run_regenerates_when_shared_or_trap_config_changes(
         yaml.safe_dump(_base_payload(trap_intent="changed intent"), sort_keys=False),
         encoding="utf-8",
     )
-    code2 = main([TRAP_ID])
+    code2 = main(["run", TRAP_ID])
     captured2 = capsys.readouterr()
     assert code2 == 0
     trap_2 = _read_trap_entry(_extract_manifest_path(captured2.out))
@@ -306,7 +306,7 @@ def test_llm_mocked_run_regenerates_when_shared_or_trap_config_changes(
     changed_payload = _base_payload()
     changed_payload["traps"][TRAP_ID]["base_count"] = 2
     config_path.write_text(yaml.safe_dump(changed_payload, sort_keys=False), encoding="utf-8")
-    code3 = main([TRAP_ID])
+    code3 = main(["run", TRAP_ID])
     captured3 = capsys.readouterr()
     assert code3 == 0
     trap_3 = _read_trap_entry(_extract_manifest_path(captured3.out))
@@ -334,13 +334,13 @@ def test_llm_mocked_run_regenerates_when_samples_change(
     sample_file = samples_dir / "example.html"
     sample_file.write_text("<html>one</html>", encoding="utf-8")
 
-    code1 = main([TRAP_ID])
+    code1 = main(["run", TRAP_ID])
     captured1 = capsys.readouterr()
     assert code1 == 0
     trap_1 = _read_trap_entry(_extract_manifest_path(captured1.out))
 
     sample_file.write_text("<html>two</html>", encoding="utf-8")
-    code2 = main([TRAP_ID])
+    code2 = main(["run", TRAP_ID])
     captured2 = capsys.readouterr()
     assert code2 == 0
     trap_2 = _read_trap_entry(_extract_manifest_path(captured2.out))
@@ -363,7 +363,7 @@ def test_llm_mocked_run_writes_trap_local_evaluation_artifacts(
         payload=_base_payload(base_count=1),
     )
 
-    code = main([TRAP_ID])
+    code = main(["run", TRAP_ID])
     captured = capsys.readouterr()
     assert code == 0
     run_manifest_path = _extract_manifest_path(captured.out)
@@ -467,7 +467,7 @@ def test_trap_run_surfaces_adapter_startup_failures(
         monkeypatch.setattr("opentrap.run_orchestration.ADAPTER_READY_TIMEOUT_SECONDS", 0.1)
         monkeypatch.setattr("opentrap.run_orchestration.ADAPTER_POLL_INTERVAL_SECONDS", 0.01)
 
-    code = main([TRAP_ID])
+    code = main(["run", TRAP_ID])
 
     captured = capsys.readouterr()
     assert code == 1

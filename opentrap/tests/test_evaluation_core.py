@@ -7,12 +7,14 @@ from types import SimpleNamespace
 from typing import Any
 
 from opentrap.evaluation import (
-    EvaluationStatusEmitter,
     JudgeResult,
     LLMJudge,
     RougeLScoreScorer,
+    emit_evaluation_phase,
+    emit_evaluation_progress,
     write_evaluation_artifacts,
 )
+from opentrap.events import RunEvent
 
 
 def _fake_chat_response(content: str) -> Any:
@@ -21,19 +23,18 @@ def _fake_chat_response(content: str) -> Any:
     return SimpleNamespace(choices=[choice])
 
 
-def test_evaluation_status_emitter_formats_phase_and_progress() -> None:
-    messages: list[str] = []
-    emitter = EvaluationStatusEmitter(messages.append, heartbeat_every=2)
+def test_evaluation_status_helpers_emit_phase_and_progress_events() -> None:
+    events: list[RunEvent] = []
+    emit_evaluation_phase(events.append, "started")
+    emit_evaluation_progress(events.append, processed=1, total=3)
+    emit_evaluation_progress(events.append, processed=2, total=3)
+    emit_evaluation_progress(events.append, processed=3, total=3)
 
-    emitter.phase("started")
-    emitter.heartbeat(processed=1, total=3)
-    emitter.heartbeat(processed=2, total=3)
-    emitter.heartbeat(processed=3, total=3)
-
-    assert messages == [
-        "evaluation.started",
-        "evaluation.progress: 2/3 (66.7%)",
-        "evaluation.progress: 3/3 (100.0%)",
+    assert events == [
+        RunEvent(type="evaluate_phase", payload={"phase": "started", "detail": None}),
+        RunEvent(type="evaluate_progress", payload={"processed": 1, "total": 3}),
+        RunEvent(type="evaluate_progress", payload={"processed": 2, "total": 3}),
+        RunEvent(type="evaluate_progress", payload={"processed": 3, "total": 3}),
     ]
 
 
