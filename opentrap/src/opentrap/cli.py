@@ -21,9 +21,9 @@ from opentrap.config_loader import (
 )
 from opentrap.evaluation import find_latest_finalized_run_manifest, run_trap_evaluation
 from opentrap.run_orchestration import RunEnvironment, run_single_trap
-from opentrap.trap_contract import SharedConfig, TrapFieldSpec
-from opentrap.trap_registry import TrapRegistry, TrapRegistryError
-from opentrap.trap_registry_loader import load_registry_from_candidates
+from opentrap.trap import SharedConfig, TrapFieldSpec
+from opentrap.trap.loader import load_registry_from_candidates
+from opentrap.trap.registry import TrapRegistry, TrapRegistryError
 
 DEFAULT_TRAPS_DIR = Path(__file__).resolve().parents[1] / "traps"
 DEFAULT_REPO_ROOT = Path(__file__).resolve().parents[3]

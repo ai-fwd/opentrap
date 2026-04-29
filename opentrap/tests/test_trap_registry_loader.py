@@ -5,8 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from opentrap.trap_registry import TrapRegistryError
-from opentrap.trap_registry_loader import load_registry_from_candidates
+from opentrap.trap.loader import load_registry_from_candidates
+from opentrap.trap.registry import TrapRegistryError
 
 
 def _write_valid_trap(root: Path, trap_id: str) -> None:
@@ -19,7 +19,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Mapping
 
-from opentrap.trap_contract import SharedConfig, TrapFieldSpec, TrapSpec
+from opentrap.trap import SharedConfig, TrapFieldSpec, TrapSpec
 
 
 class Trap(TrapSpec[Mapping[str, Any], Mapping[str, Any], Mapping[str, Any], Mapping[str, Any]]):

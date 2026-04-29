@@ -33,7 +33,7 @@ from opentrap.io_utils import (
     write_json,
     write_jsonl,
 )
-from opentrap.trap_contract import SharedConfig, TrapSpec
+from opentrap.trap import SharedConfig, TrapSpec
 
 ADAPTER_HOST = "127.0.0.1"
 ADAPTER_PORT = 7860  # default port so it's easier for PUT changes

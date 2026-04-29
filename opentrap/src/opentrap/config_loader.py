@@ -5,7 +5,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
-from opentrap.trap_contract import (
+from opentrap.trap import (
     MISSING_DEFAULT,
     SampleBoundary,
     SharedConfig,

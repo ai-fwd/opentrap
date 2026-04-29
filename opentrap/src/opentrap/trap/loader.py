@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from opentrap.trap_registry import TrapRegistry, TrapRegistryError, build_trap_registry
+from opentrap.trap.registry import TrapRegistry, TrapRegistryError, build_trap_registry
 
 
 def load_registry_from_candidates(candidate_dirs: tuple[Path, ...]) -> TrapRegistry | None:

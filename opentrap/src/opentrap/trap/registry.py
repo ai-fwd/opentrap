@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
 
-from opentrap.trap_contract import TrapFieldSpec, TrapSpec
+from opentrap.trap.contract import TrapFieldSpec, TrapSpec
 
 
 class TrapRegistryError(RuntimeError):

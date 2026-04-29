@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from opentrap.io_utils import load_json_maybe, utc_now_iso, write_json
-from opentrap.trap_contract import SharedConfig, TrapCaseContext, TrapSpec
+from opentrap.trap import SharedConfig, TrapCaseContext, TrapSpec
 
 CACHE_WAIT_TIMEOUT_SECONDS = 2.0
 CACHE_WAIT_POLL_INTERVAL_SECONDS = 0.05

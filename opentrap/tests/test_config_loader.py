@@ -8,7 +8,7 @@ import pytest
 import yaml
 
 from opentrap.config_loader import ConfigError, load_trap_config
-from opentrap.trap_contract import TrapFieldSpec
+from opentrap.trap import TrapFieldSpec
 
 
 def _trap_fields_registry() -> dict[str, dict[str, TrapFieldSpec]]:

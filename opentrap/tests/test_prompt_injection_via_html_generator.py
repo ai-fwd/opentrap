@@ -303,7 +303,7 @@ def test_trap_constructor_defers_llm_config_without_injection(monkeypatch) -> No
 
 def test_trap_generate_uses_injected_dataset_generator(monkeypatch, tmp_path: Path) -> None:
     trap_module = _load_module("trap.py", "prompt_injection_via_html_trap_generate_injected")
-    from opentrap.trap_contract import SharedConfig
+    from opentrap.trap import SharedConfig
 
     calls = {"load_count": 0, "dataset_generate_count": 0}
 
@@ -347,7 +347,7 @@ def test_trap_generate_uses_injected_dataset_generator(monkeypatch, tmp_path: Pa
 
 def test_trap_generate_initializes_default_generator_once(monkeypatch, tmp_path: Path) -> None:
     trap_module = _load_module("trap.py", "prompt_injection_via_html_trap_generate_default")
-    from opentrap.trap_contract import SharedConfig
+    from opentrap.trap import SharedConfig
 
     calls = {"load_count": 0, "llm_generator_init_count": 0}
 

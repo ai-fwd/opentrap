@@ -18,7 +18,7 @@ from html_utils import (
     _replace_opening_tag,
 )
 
-from opentrap.trap_contract import SampleBoundary
+from opentrap.trap import SampleBoundary
 
 ATTACK_TYPES = (
     "hidden_div",

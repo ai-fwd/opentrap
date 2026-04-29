@@ -3,8 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
-from opentrap.trap_registry import TrapRegistryError
-from opentrap.trap_registry_loader import load_registry_from_candidates
+from opentrap.trap.loader import load_registry_from_candidates
+from opentrap.trap.registry import TrapRegistryError
 
 from .models import ManifestTrapView, ManifestView
 

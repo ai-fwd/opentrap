@@ -14,7 +14,7 @@ from llm_config import load_llm_config_from_env
 from llm_html_generator import LLMHTMLGenerator
 
 from opentrap.evaluation import EvaluationContext
-from opentrap.trap_contract import SharedConfig, TrapCaseContext, TrapFieldSpec, TrapSpec
+from opentrap.trap import SharedConfig, TrapCaseContext, TrapFieldSpec, TrapSpec
 
 
 @dataclass(frozen=True)

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from opentrap.trap_contract import SampleBoundary
+from opentrap.trap import SampleBoundary
 
 
 @dataclass(frozen=True)

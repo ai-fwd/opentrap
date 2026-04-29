@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from opentrap.trap_registry import TrapRegistryError, build_trap_registry
+from opentrap.trap.registry import TrapRegistryError, build_trap_registry
 
 
 def _write_trap(trap_dir: Path, source: str) -> None:
@@ -22,7 +22,7 @@ def test_build_trap_registry_discovers_trap_ids_without_instantiation(tmp_path: 
         from __future__ import annotations
         from pathlib import Path
         from typing import Any, Mapping
-        from opentrap.trap_contract import SharedConfig, TrapCaseContext, TrapFieldSpec, TrapSpec
+        from opentrap.trap import SharedConfig, TrapCaseContext, TrapFieldSpec, TrapSpec
 
         class Trap(TrapSpec):
             trap_id = ""
@@ -55,7 +55,7 @@ def test_build_trap_registry_discovers_trap_ids_without_instantiation(tmp_path: 
         from __future__ import annotations
         from pathlib import Path
         from typing import Any, Mapping
-        from opentrap.trap_contract import SharedConfig, TrapCaseContext, TrapFieldSpec, TrapSpec
+        from opentrap.trap import SharedConfig, TrapCaseContext, TrapFieldSpec, TrapSpec
 
         class Trap(TrapSpec):
             trap_id = ""
@@ -92,7 +92,7 @@ def test_build_trap_registry_fails_when_contract_missing(tmp_path: Path) -> None
         from __future__ import annotations
         from pathlib import Path
         from typing import Any, Mapping
-        from opentrap.trap_contract import SharedConfig, TrapCaseContext, TrapFieldSpec, TrapSpec
+        from opentrap.trap import SharedConfig, TrapCaseContext, TrapFieldSpec, TrapSpec
 
         class Trap(TrapSpec):
             trap_id = ""
@@ -171,7 +171,7 @@ def test_load_trap_fields_does_not_instantiate_trap(tmp_path: Path) -> None:
         from __future__ import annotations
         from pathlib import Path
         from typing import Any, Mapping
-        from opentrap.trap_contract import SharedConfig, TrapCaseContext, TrapFieldSpec, TrapSpec
+        from opentrap.trap import SharedConfig, TrapCaseContext, TrapFieldSpec, TrapSpec
 
         class Trap(TrapSpec):
             trap_id = ""
@@ -212,7 +212,7 @@ def test_create_trap_instantiates_and_assigns_trap_id(tmp_path: Path) -> None:
         from __future__ import annotations
         from pathlib import Path
         from typing import Any, Mapping
-        from opentrap.trap_contract import SharedConfig, TrapCaseContext, TrapFieldSpec, TrapSpec
+        from opentrap.trap import SharedConfig, TrapCaseContext, TrapFieldSpec, TrapSpec
 
         class Trap(TrapSpec):
             trap_id = ""
@@ -253,7 +253,7 @@ def test_create_trap_surfaces_constructor_failure(tmp_path: Path) -> None:
         from __future__ import annotations
         from pathlib import Path
         from typing import Any, Mapping
-        from opentrap.trap_contract import SharedConfig, TrapCaseContext, TrapFieldSpec, TrapSpec
+        from opentrap.trap import SharedConfig, TrapCaseContext, TrapFieldSpec, TrapSpec
 
         class Trap(TrapSpec):
             trap_id = ""

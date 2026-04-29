@@ -41,7 +41,7 @@ import json
 from pathlib import Path
 from typing import Any, Mapping
 
-from opentrap.trap_contract import SharedConfig, TrapCaseContext, TrapFieldSpec, TrapSpec
+from opentrap.trap import SharedConfig, TrapCaseContext, TrapFieldSpec, TrapSpec
 
 {module_prelude}
 

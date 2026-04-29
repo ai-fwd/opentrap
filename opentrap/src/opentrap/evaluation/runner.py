@@ -9,7 +9,7 @@ from typing import Any
 
 from opentrap.evaluation.status import EvaluationStatusEmitter
 from opentrap.io_utils import load_json, load_json_maybe, write_json
-from opentrap.trap_contract import TrapSpec
+from opentrap.trap import TrapSpec
 
 StatusCallback = Callable[[str], None]
 

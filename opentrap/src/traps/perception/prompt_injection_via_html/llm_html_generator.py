@@ -5,7 +5,7 @@ from collections.abc import Sequence
 from html_utils import _is_minimally_valid_html, _strip_markdown_fences
 from llm_config import LLMConfig
 
-from opentrap.trap_contract import SampleBoundary
+from opentrap.trap import SampleBoundary
 
 MIN_HTML_RETRY_COUNT = 3
 
