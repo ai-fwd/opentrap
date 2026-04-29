@@ -130,6 +130,13 @@ def _read_trap_entry(run_manifest_path: Path) -> dict:
     return run_manifest["traps"][0]
 
 
+def _extract_manifest_path(output: str) -> Path:
+    lines = [line.strip() for line in output.splitlines() if line.strip()]
+    if not lines:
+        raise AssertionError("CLI output did not contain a manifest path")
+    return Path(lines[-1])
+
+
 def _prepare_llm_trap_run(
     *,
     monkeypatch,
@@ -182,13 +189,13 @@ def test_llm_mocked_run_reuses_dataset_when_inputs_are_unchanged(
     code1 = main([TRAP_ID])
     captured1 = capsys.readouterr()
     assert code1 == 0
-    run_manifest_path_1 = Path(captured1.out.strip())
+    run_manifest_path_1 = _extract_manifest_path(captured1.out)
     trap_1 = _read_trap_entry(run_manifest_path_1)
 
     code2 = main([TRAP_ID])
     captured2 = capsys.readouterr()
     assert code2 == 0
-    run_manifest_path_2 = Path(captured2.out.strip())
+    run_manifest_path_2 = _extract_manifest_path(captured2.out)
     trap_2 = _read_trap_entry(run_manifest_path_2)
 
     assert trap_1["dataset_source"] == "generated_then_cached"
@@ -250,12 +257,12 @@ def test_llm_mocked_run_uses_final_cache_paths_for_manifest_data_items(
     code1 = main([TRAP_ID])
     captured1 = capsys.readouterr()
     assert code1 == 0
-    trap_1 = _read_trap_entry(Path(captured1.out.strip()))
+    trap_1 = _read_trap_entry(_extract_manifest_path(captured1.out))
 
     code2 = main([TRAP_ID])
     captured2 = capsys.readouterr()
     assert code2 == 0
-    trap_2 = _read_trap_entry(Path(captured2.out.strip()))
+    trap_2 = _read_trap_entry(_extract_manifest_path(captured2.out))
 
     for trap in (trap_1, trap_2):
         data_dir = Path(trap["data_dir"])
@@ -285,7 +292,7 @@ def test_llm_mocked_run_regenerates_when_shared_or_trap_config_changes(
     code1 = main([TRAP_ID])
     captured1 = capsys.readouterr()
     assert code1 == 0
-    trap_1 = _read_trap_entry(Path(captured1.out.strip()))
+    trap_1 = _read_trap_entry(_extract_manifest_path(captured1.out))
 
     config_path.write_text(
         yaml.safe_dump(_base_payload(trap_intent="changed intent"), sort_keys=False),
@@ -294,7 +301,7 @@ def test_llm_mocked_run_regenerates_when_shared_or_trap_config_changes(
     code2 = main([TRAP_ID])
     captured2 = capsys.readouterr()
     assert code2 == 0
-    trap_2 = _read_trap_entry(Path(captured2.out.strip()))
+    trap_2 = _read_trap_entry(_extract_manifest_path(captured2.out))
 
     changed_payload = _base_payload()
     changed_payload["traps"][TRAP_ID]["base_count"] = 2
@@ -302,7 +309,7 @@ def test_llm_mocked_run_regenerates_when_shared_or_trap_config_changes(
     code3 = main([TRAP_ID])
     captured3 = capsys.readouterr()
     assert code3 == 0
-    trap_3 = _read_trap_entry(Path(captured3.out.strip()))
+    trap_3 = _read_trap_entry(_extract_manifest_path(captured3.out))
 
     assert trap_1["dataset_fingerprint"] != trap_2["dataset_fingerprint"]
     assert trap_2["dataset_fingerprint"] != trap_3["dataset_fingerprint"]
@@ -330,13 +337,13 @@ def test_llm_mocked_run_regenerates_when_samples_change(
     code1 = main([TRAP_ID])
     captured1 = capsys.readouterr()
     assert code1 == 0
-    trap_1 = _read_trap_entry(Path(captured1.out.strip()))
+    trap_1 = _read_trap_entry(_extract_manifest_path(captured1.out))
 
     sample_file.write_text("<html>two</html>", encoding="utf-8")
     code2 = main([TRAP_ID])
     captured2 = capsys.readouterr()
     assert code2 == 0
-    trap_2 = _read_trap_entry(Path(captured2.out.strip()))
+    trap_2 = _read_trap_entry(_extract_manifest_path(captured2.out))
 
     assert trap_1["dataset_fingerprint"] != trap_2["dataset_fingerprint"]
     assert trap_1["dataset_cache_dir"] != trap_2["dataset_cache_dir"]
@@ -359,7 +366,7 @@ def test_llm_mocked_run_writes_trap_local_evaluation_artifacts(
     code = main([TRAP_ID])
     captured = capsys.readouterr()
     assert code == 0
-    run_manifest_path = Path(captured.out.strip())
+    run_manifest_path = _extract_manifest_path(captured.out)
     run_dir = run_manifest_path.parent
 
     evaluation_jsonl = run_dir / "evaluation.jsonl"

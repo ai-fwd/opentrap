@@ -295,6 +295,14 @@ def _finalize_run(manifest_path: Path, *, succeeded: bool) -> None:
         "case_count": manifest.get("case_count", 0),
         "session_count": session_count,
         "failed_session_count": failed_session_count,
+        "security_result": {
+            "status": "unavailable",
+            "trap_success_count": 0,
+            "trap_failure_count": 0,
+            "evaluated_count": 0,
+            "trap_success_rate": None,
+            "details": {},
+        },
     }
     write_json(report_path, report_payload, atomic=True)
     manifest["report_path"] = str(report_path)

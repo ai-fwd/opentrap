@@ -13,7 +13,7 @@ from generate import TrapDatasetGenerator
 from llm_config import load_llm_config_from_env
 from llm_html_generator import LLMHTMLGenerator
 
-from opentrap.evaluation import EvaluationContext
+from opentrap.evaluation import EvaluationContext, EvaluationResult
 from opentrap.trap import SharedConfig, TrapCaseContext, TrapFieldSpec, TrapSpec
 
 
@@ -22,18 +22,12 @@ class TrapBindContext:
     data_dir: Path
 
 
-@dataclass(frozen=True)
-class TrapEvalResult:
-    score: float
-    details: Mapping[str, Any]
-
-
 class Trap(
     TrapSpec[
         TrapBindContext,
         TrapActions,
         EvaluationContext,
-        TrapEvalResult,
+        EvaluationResult,
     ]
 ):
     trap_id = ""
@@ -140,23 +134,15 @@ class Trap(
             )
         return cases
 
-    def evaluate(self, context: EvaluationContext) -> TrapEvalResult:
+    def evaluate(self, context: EvaluationContext) -> EvaluationResult:
         eval_context = EvaluationContext.from_value(context, default_trap_id=self.trap_id)
         artifacts = evaluate_prompt_injection_run(
             run_manifest_path=eval_context.run_manifest_path,
             trap_id=eval_context.trap_id,
             status_emitter=eval_context.status_emitter,
         )
-
-        success_rate = artifacts.summary.llm_judge_success_rate
-        return TrapEvalResult(
-            score=success_rate if success_rate is not None else 0.0,
-            details={
-                "status": "evaluated",
-                "report_path": str(eval_context.report_path),
-                "evaluation_jsonl_path": str(artifacts.evaluation_jsonl_path),
-                "evaluation_csv_path": str(artifacts.evaluation_csv_path),
-                "evaluation_summary_path": str(artifacts.evaluation_summary_path),
-                "summary": artifacts.summary.to_dict(),
-            },
+        return EvaluationResult(
+            success_count=artifacts.summary.llm_judge_success_count,
+            evaluated_count=artifacts.summary.judged_cases,
+            details=None,
         )

@@ -7,8 +7,10 @@ from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
+from opentrap.evaluation.result import EvaluationResult
 from opentrap.evaluation.status import EvaluationStatusEmitter
 from opentrap.io_utils import load_json, load_json_maybe, write_json
+from opentrap.report import SecurityResult
 from opentrap.trap import TrapSpec
 
 StatusCallback = Callable[[str], None]
@@ -29,7 +31,7 @@ def run_trap_evaluation(
         heartbeat_every=25,
     )
     try:
-        trap.evaluate(
+        raw_result = trap.evaluate(
             {
                 "trap_id": trap_id,
                 "run_manifest_path": str(run_manifest_path),
@@ -38,8 +40,21 @@ def run_trap_evaluation(
                 "status_emitter": status_emitter,
             }
         )
+        result = _require_trap_eval_result(raw_result)
+        _set_security_result(
+            run_manifest_path=run_manifest_path,
+            security_result=SecurityResult.from_counts(
+                success_count=result.success_count,
+                evaluated_count=result.evaluated_count,
+                details=result.details,
+            ),
+        )
     except Exception:
         set_scorer_status(run_manifest_path=run_manifest_path, scorer_status="failed")
+        _set_security_result(
+            run_manifest_path=run_manifest_path,
+            security_result=SecurityResult.unavailable(),
+        )
         raise
     set_scorer_status(run_manifest_path=run_manifest_path, scorer_status="completed")
     status_callback("Trap evaluation completed")
@@ -56,6 +71,30 @@ def set_scorer_status(*, run_manifest_path: Path, scorer_status: str) -> None:
     if report is not None:
         report["scorer_status"] = scorer_status
         write_json(report_path, report, atomic=True)
+
+
+def _require_trap_eval_result(value: Any) -> EvaluationResult:
+    if not isinstance(value, EvaluationResult):
+        raise RuntimeError(
+            "trap.evaluate(...) must return EvaluationResult "
+            "(success_count, evaluated_count, details)"
+        )
+    value.validate()
+    return value
+
+
+def _set_security_result(*, run_manifest_path: Path, security_result: SecurityResult) -> None:
+    report_path = run_manifest_path.parent / "report.json"
+    report = load_json_maybe(report_path) or _build_minimal_report(run_manifest_path)
+    report["security_result"] = security_result.to_report_payload()
+    write_json(report_path, report, atomic=True)
+
+
+def _build_minimal_report(run_manifest_path: Path) -> dict[str, Any]:
+    manifest = load_json_maybe(run_manifest_path) or {}
+    return {
+        "run_id": manifest.get("run_id"),
+    }
 
 
 def find_latest_finalized_run_manifest(*, runs_dir: Path, trap_id: str) -> Path:

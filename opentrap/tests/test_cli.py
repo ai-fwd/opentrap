@@ -28,7 +28,7 @@ def _write_stub_contract_with_behavior(
     *,
     module_prelude: str = "",
     init_body: str = "pass",
-    evaluate_body: str = 'return {"score": 0.0, "context": dict(context)}',
+    evaluate_body: str = "return EvaluationResult(success_count=0, evaluated_count=1, details=None)",
 ) -> None:
     target, trap_name = trap_id.split("/", 1)
     trap_dir = root / target / trap_name
@@ -41,6 +41,7 @@ import json
 from pathlib import Path
 from typing import Any, Mapping
 
+from opentrap.evaluation import EvaluationResult
 from opentrap.trap import SharedConfig, TrapCaseContext, TrapFieldSpec, TrapSpec
 
 {module_prelude}
@@ -99,6 +100,13 @@ class Trap(TrapSpec[Mapping[str, Any], Mapping[str, Any], Mapping[str, Any], Map
         {evaluate_body}
 """
     (trap_dir / "trap.py").write_text(textwrap.dedent(source), encoding="utf-8")
+
+
+def _extract_manifest_path(output: str) -> Path:
+    lines = [line.strip() for line in output.splitlines() if line.strip()]
+    if not lines:
+        raise AssertionError("CLI output did not contain a manifest path")
+    return Path(lines[-1])
 
 
 def _write_generated_adapter(
@@ -518,7 +526,8 @@ def test_fast_eval_run_selects_latest_finalized_run_for_trap(
         "reasoning/chain-trap",
         evaluate_body=(
             'Path(context["run_dir"]).joinpath("fast_eval_marker.txt").write_text('
-            '"ok", encoding="utf-8"); return {"score": 1.0}'
+            '"ok", encoding="utf-8"); return EvaluationResult('
+            "success_count=1, evaluated_count=1, details=None)"
         ),
     )
     config_path = tmp_path / ".opentrap" / "opentrap.yaml"
@@ -566,8 +575,9 @@ def test_fast_eval_run_selects_latest_finalized_run_for_trap(
 
     captured = capsys.readouterr()
     assert code == 0
-    run_manifest_path = Path(captured.out.strip())
+    run_manifest_path = _extract_manifest_path(captured.out)
     assert run_manifest_path.parent.name == "selected-run"
+    assert "OpenTrap run complete" in captured.out
     marker_path = run_manifest_path.parent / "fast_eval_marker.txt"
     assert marker_path.read_text(encoding="utf-8") == "ok"
     run_manifest = json.loads(run_manifest_path.read_text(encoding="utf-8"))
@@ -620,6 +630,7 @@ def test_fast_eval_run_returns_failure_when_trap_evaluation_raises(
     report = json.loads((selected_manifest_path.parent / "report.json").read_text(encoding="utf-8"))
     assert run_manifest["scorer_status"] == "failed"
     assert report["scorer_status"] == "failed"
+    assert report["security_result"]["status"] == "unavailable"
 
 
 @pytest.mark.parametrize(
@@ -664,7 +675,7 @@ def test_trap_run_single_records_manifest_and_artifact(
 
     captured = capsys.readouterr()
     assert code == 0
-    run_manifest_path = Path(captured.out.strip())
+    run_manifest_path = _extract_manifest_path(captured.out)
     assert run_manifest_path.exists()
 
     run_manifest = json.loads(run_manifest_path.read_text(encoding="utf-8"))
@@ -697,6 +708,10 @@ def test_trap_run_single_records_manifest_and_artifact(
     assert report_path.exists()
     report = json.loads(report_path.read_text(encoding="utf-8"))
     assert report["scorer_status"] == "completed"
+    assert report["security_result"]["status"] == "no_successful_traps_detected"
+    assert report["security_result"]["trap_success_count"] == 0
+    assert report["security_result"]["evaluated_count"] == 1
+    assert report["security_result"]["details"] == {}
 
 
 def test_trap_run_instantiates_only_selected_trap(
@@ -731,7 +746,7 @@ def test_trap_run_instantiates_only_selected_trap(
 
     captured = capsys.readouterr()
     assert code == 0
-    run_manifest_path = Path(captured.out.strip())
+    run_manifest_path = _extract_manifest_path(captured.out)
     run_manifest = json.loads(run_manifest_path.read_text(encoding="utf-8"))
     assert run_manifest["traps"][0]["trap_id"] == "reasoning/chain-trap"
 
@@ -763,7 +778,7 @@ def test_trap_run_returns_failure_when_harness_case_fails(
 
     captured = capsys.readouterr()
     assert code == 1
-    run_manifest_path = Path(captured.out.strip())
+    run_manifest_path = _extract_manifest_path(captured.out)
     run_manifest = json.loads(run_manifest_path.read_text(encoding="utf-8"))
     assert run_manifest["status"] == "finalized"
     assert run_manifest["succeeded"] is False
@@ -780,6 +795,9 @@ def test_trap_run_returns_failure_when_harness_case_fails(
     assert session_payload["harness_exit_code"] == 3
     assert session_payload["item_id"] == "00001"
     assert "case" not in session_payload
+    report = json.loads((run_manifest_path.parent / "report.json").read_text(encoding="utf-8"))
+    assert report["security_result"]["status"] == "no_successful_traps_detected"
+    assert report["security_result"]["evaluated_count"] == 1
 
 
 def test_report_aggregates_match_sessions_jsonl_for_failed_run(
@@ -809,7 +827,7 @@ def test_report_aggregates_match_sessions_jsonl_for_failed_run(
 
     captured = capsys.readouterr()
     assert code == 1
-    run_manifest_path = Path(captured.out.strip())
+    run_manifest_path = _extract_manifest_path(captured.out)
     run_manifest = json.loads(run_manifest_path.read_text(encoding="utf-8"))
     report = json.loads((run_manifest_path.parent / "report.json").read_text(encoding="utf-8"))
 
@@ -861,13 +879,134 @@ def test_trap_run_marks_scorer_failed_when_evaluation_raises(
 
     captured = capsys.readouterr()
     assert code == 0
-    run_manifest_path = Path(captured.out.strip())
+    run_manifest_path = _extract_manifest_path(captured.out)
     run_manifest = json.loads(run_manifest_path.read_text(encoding="utf-8"))
     report = json.loads((run_manifest_path.parent / "report.json").read_text(encoding="utf-8"))
     assert run_manifest["status"] == "finalized"
     assert run_manifest["scorer_status"] == "failed"
     assert report["scorer_status"] == "failed"
+    assert report["security_result"]["status"] == "unavailable"
     assert "Trap evaluation failed: boom during evaluate" in captured.err
+
+
+@pytest.mark.parametrize(
+    ("evaluate_body", "expected_status", "expected_display"),
+    [
+        (
+            "return EvaluationResult(success_count=1, evaluated_count=2, details={'judge': 'ok'})",
+            "vulnerable",
+            "vulnerable",
+        ),
+        (
+            "return EvaluationResult(success_count=0, evaluated_count=2, details=None)",
+            "no_successful_traps_detected",
+            "no successful traps detected",
+        ),
+        (
+            "return EvaluationResult(success_count=0, evaluated_count=0, details=None)",
+            "unavailable",
+            "unavailable",
+        ),
+    ],
+    ids=["vulnerable", "no-successes", "unavailable"],
+)
+def test_trap_run_writes_security_result_and_prints_summary(
+    capsys,
+    tmp_path: Path,
+    monkeypatch,
+    evaluate_body: str,
+    expected_status: str,
+    expected_display: str,
+) -> None:
+    _write_stub_contract_with_behavior(
+        tmp_path / "traps",
+        "reasoning/chain-trap",
+        evaluate_body=evaluate_body,
+    )
+    generated_root = tmp_path / "adapter" / "generated"
+    _write_generated_adapter(generated_root)
+
+    config_path = tmp_path / ".opentrap" / "opentrap.yaml"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(yaml.safe_dump(_base_payload(), sort_keys=False), encoding="utf-8")
+    samples_dir = tmp_path / ".opentrap" / "samples"
+    samples_dir.mkdir(parents=True, exist_ok=True)
+    _configure_trap_run_paths(
+        monkeypatch=monkeypatch,
+        tmp_path=tmp_path,
+        config_path=config_path,
+        samples_dir=samples_dir,
+        generated_root=generated_root,
+    )
+
+    code = main(["reasoning/chain-trap"])
+
+    captured = capsys.readouterr()
+    assert code == 0
+    run_manifest_path = _extract_manifest_path(captured.out)
+    report = json.loads((run_manifest_path.parent / "report.json").read_text(encoding="utf-8"))
+    assert report["security_result"]["status"] == expected_status
+    assert f"Security result: {expected_display}" in captured.out
+    assert "OpenTrap run complete" in captured.out
+    assert "Detailed report:" in captured.out
+    assert f"runs/{run_manifest_path.parent.name}/evaluation.csv" in captured.out
+
+    if expected_status == "vulnerable":
+        assert report["security_result"]["trap_success_count"] == 1
+        assert report["security_result"]["trap_failure_count"] == 1
+        assert report["security_result"]["evaluated_count"] == 2
+        assert report["security_result"]["trap_success_rate"] == 0.5
+        assert report["security_result"]["details"] == {"judge": "ok"}
+        assert "Trap successes: 1 / 2" in captured.out
+        assert "Success rate: 50.0%" in captured.out
+    elif expected_status == "no_successful_traps_detected":
+        assert report["security_result"]["trap_success_count"] == 0
+        assert report["security_result"]["evaluated_count"] == 2
+        assert report["security_result"]["trap_success_rate"] == 0.0
+        assert report["security_result"]["details"] == {}
+        assert "Trap successes: 0 / 2" in captured.out
+        assert "Success rate: 0.0%" in captured.out
+    else:
+        assert report["security_result"]["evaluated_count"] == 0
+        assert report["security_result"]["details"] == {}
+        assert "Reason: no cases were evaluated" in captured.out
+
+
+def test_trap_run_marks_scorer_failed_when_evaluation_returns_legacy_mapping(
+    capsys,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _write_stub_contract_with_behavior(
+        tmp_path / "traps",
+        "reasoning/chain-trap",
+        evaluate_body='return {"score": 1.0}',
+    )
+    generated_root = tmp_path / "adapter" / "generated"
+    _write_generated_adapter(generated_root)
+
+    config_path = tmp_path / ".opentrap" / "opentrap.yaml"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(yaml.safe_dump(_base_payload(), sort_keys=False), encoding="utf-8")
+    samples_dir = tmp_path / ".opentrap" / "samples"
+    samples_dir.mkdir(parents=True, exist_ok=True)
+    _configure_trap_run_paths(
+        monkeypatch=monkeypatch,
+        tmp_path=tmp_path,
+        config_path=config_path,
+        samples_dir=samples_dir,
+        generated_root=generated_root,
+    )
+
+    code = main(["reasoning/chain-trap"])
+
+    captured = capsys.readouterr()
+    assert code == 0
+    run_manifest_path = _extract_manifest_path(captured.out)
+    report = json.loads((run_manifest_path.parent / "report.json").read_text(encoding="utf-8"))
+    assert report["scorer_status"] == "failed"
+    assert report["security_result"]["status"] == "unavailable"
+    assert "must return EvaluationResult" in captured.err
 
 
 def test_trap_run_rejects_unknown_trap_key_in_yaml(capsys, tmp_path: Path, monkeypatch) -> None:
@@ -930,14 +1069,14 @@ def test_trap_run_reuses_dataset_when_config_is_unchanged(
     code1 = main(["reasoning/chain-trap"])
     captured1 = capsys.readouterr()
     assert code1 == 0
-    run_manifest_path_1 = Path(captured1.out.strip())
+    run_manifest_path_1 = _extract_manifest_path(captured1.out)
     run_1 = json.loads(run_manifest_path_1.read_text(encoding="utf-8"))
     trap_1 = run_1["traps"][0]
 
     code2 = main(["reasoning/chain-trap"])
     captured2 = capsys.readouterr()
     assert code2 == 0
-    run_manifest_path_2 = Path(captured2.out.strip())
+    run_manifest_path_2 = _extract_manifest_path(captured2.out)
     run_2 = json.loads(run_manifest_path_2.read_text(encoding="utf-8"))
     trap_2 = run_2["traps"][0]
 

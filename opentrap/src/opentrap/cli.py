@@ -20,6 +20,7 @@ from opentrap.config_loader import (
     write_trap_config,
 )
 from opentrap.evaluation import find_latest_finalized_run_manifest, run_trap_evaluation
+from opentrap.io_utils import load_json_maybe
 from opentrap.run_orchestration import RunEnvironment, run_single_trap
 from opentrap.trap import SharedConfig, TrapFieldSpec
 from opentrap.trap.loader import load_registry_from_candidates
@@ -39,6 +40,67 @@ STATUS_PREFIX = "[opentrap]"
 def _status(message: str) -> None:
     """Emit one user-facing status line for trap runs."""
     print(f"{STATUS_PREFIX} {message}", file=sys.stderr)
+
+
+def _print_run_summary(run_manifest_path: Path) -> None:
+    report_path = run_manifest_path.parent / "report.json"
+    report = load_json_maybe(report_path) or {}
+    security_result = report.get("security_result")
+    if not isinstance(security_result, Mapping):
+        security_result = {
+            "status": "unavailable",
+            "trap_success_count": 0,
+            "trap_failure_count": 0,
+            "evaluated_count": 0,
+            "trap_success_rate": None,
+            "details": {},
+        }
+
+    status_value = security_result.get("status")
+    security_status = status_value if isinstance(status_value, str) else "unavailable"
+    display_status = (
+        "no successful traps detected"
+        if security_status == "no_successful_traps_detected"
+        else security_status
+    )
+
+    case_count = _int_or_default(report.get("case_count"), default=0)
+    failed_session_count = _int_or_default(report.get("failed_session_count"), default=0)
+    trap_success_count = _int_or_default(security_result.get("trap_success_count"), default=0)
+    evaluated_count = _int_or_default(security_result.get("evaluated_count"), default=0)
+    trap_success_rate = security_result.get("trap_success_rate")
+    rate_percent = _format_percent(trap_success_rate)
+
+    run_id = report.get("run_id")
+    if not isinstance(run_id, str) or not run_id:
+        run_id = run_manifest_path.parent.name
+
+    print("OpenTrap run complete")
+    print()
+    print(f"Trap cases executed: {case_count}")
+    print(f"Harness failures: {failed_session_count}")
+    print()
+    print(f"Security result: {display_status}")
+    if security_status == "unavailable" and evaluated_count == 0:
+        print("Reason: no cases were evaluated")
+    else:
+        print(f"Trap successes: {trap_success_count} / {evaluated_count}")
+        print(f"Success rate: {rate_percent}")
+    print()
+    print("Detailed report:")
+    print(f"runs/{run_id}/evaluation.csv")
+
+
+def _int_or_default(value: object, *, default: int) -> int:
+    if isinstance(value, int):
+        return value
+    return default
+
+
+def _format_percent(value: object) -> str:
+    if isinstance(value, int | float):
+        return f"{float(value) * 100.0:.1f}%"
+    return "0.0%"
 
 
 def _resolve_trap_ref(trap_ref: str) -> str:
@@ -256,6 +318,7 @@ def cmd_trap(args: argparse.Namespace) -> int:
             _status(f"Fast eval run failed: {exc}")
             return 1
         _status("Fast eval run completed")
+        _print_run_summary(latest_run_manifest_path)
         print(str(latest_run_manifest_path))
         return 0
 
@@ -276,6 +339,7 @@ def cmd_trap(args: argparse.Namespace) -> int:
         _status(str(exc))
         return 1
 
+    _print_run_summary(run_ready.run_manifest_path)
     print(str(run_ready.run_manifest_path))
     return 0 if run_ready.succeeded else 1
 

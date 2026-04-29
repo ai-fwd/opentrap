@@ -11,6 +11,7 @@ from opentrap.evaluation.artifacts import (
 )
 from opentrap.evaluation.context import EvaluationContext
 from opentrap.evaluation.judge import JudgeResult, LLMJudge
+from opentrap.evaluation.result import EvaluationResult
 from opentrap.evaluation.runner import find_latest_finalized_run_manifest, run_trap_evaluation
 from opentrap.evaluation.scorers import RougeLScoreScorer, SentenceTransformerSbertScorer
 from opentrap.evaluation.status import EvaluationStatusEmitter
@@ -23,6 +24,7 @@ __all__ = [
     "LLMJudge",
     "RougeLScoreScorer",
     "SentenceTransformerSbertScorer",
+    "EvaluationResult",
     "find_latest_finalized_run_manifest",
     "find_trap_entry",
     "load_observed_outputs",
