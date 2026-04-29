@@ -134,6 +134,13 @@ def _extract_manifest_path(output: str) -> Path:
     lines = [line.strip() for line in output.splitlines() if line.strip()]
     if not lines:
         raise AssertionError("CLI output did not contain a manifest path")
+    for line in reversed(lines):
+        if line.startswith("Run manifest"):
+            return Path(line.removeprefix("Run manifest").strip())
+        if line.startswith("Report"):
+            return Path(line.removeprefix("Report").strip()).parent / "run.json"
+        if line.startswith("Run:"):
+            return Path(line.removeprefix("Run:").strip()) / "run.json"
     return Path(lines[-1])
 
 
@@ -363,11 +370,14 @@ def test_llm_mocked_run_writes_trap_local_evaluation_artifacts(
         payload=_base_payload(base_count=1),
     )
 
-    code = main(["run", TRAP_ID])
+    code = main(["run", TRAP_ID, "--verbose"])
     captured = capsys.readouterr()
     assert code == 0
     run_manifest_path = _extract_manifest_path(captured.out)
     run_dir = run_manifest_path.parent
+    assert f"Run manifest   {run_manifest_path}" in captured.out
+    assert f"Sessions       {run_dir / 'sessions.jsonl'}" in captured.out
+    assert f"Traces         {run_dir / 'traces.jsonl'}" in captured.out
 
     evaluation_jsonl = run_dir / "evaluation.jsonl"
     evaluation_csv = run_dir / "evaluation.csv"

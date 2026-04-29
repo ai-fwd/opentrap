@@ -7,9 +7,11 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
-from rich.console import Console
+from rich.console import Console, Group
+from rich.live import Live
+from rich.markup import escape
 from rich.panel import Panel
-from rich.status import Status
+from rich.spinner import Spinner
 from rich.table import Table
 
 from opentrap.events import EventSink, RunEvent
@@ -24,6 +26,7 @@ class SecuritySummary:
 
     run_id: str
     case_count: int
+    session_count: int
     failed_session_count: int
     security_status: str
     display_status: str
@@ -31,311 +34,603 @@ class SecuritySummary:
     evaluated_count: int
     rate_percent: str
 
+    @property
+    def passed_session_count(self) -> int:
+        return max(0, self.session_count - self.failed_session_count)
+
+
+@dataclass
+class _RunDisplayState:
+    trap_id: str = "-"
+    run_dir: str = "-"
+    run_manifest_path: str = ""
+    mode: str = "run"
+    case_count: int | None = None
+    executing_case_count: int | None = None
+    dataset_from_cache: bool = False
+    generation_status: str = "pending"
+    generation_message: str = "Dataset pending"
+    adapter_status: str = "pending"
+    adapter_message: str = "Adapter pending"
+    harness_status: str = "pending"
+    harness_message: str = "Harness pending"
+    harness_passed: int = 0
+    harness_failed: int = 0
+    evaluation_status: str = "pending"
+    evaluation_message: str = "Evaluation pending"
+
 
 class PlainRenderer:
     """Deterministic line renderer for non-TTY environments."""
+
+    def __init__(self, *, verbose: bool = False) -> None:
+        self.verbose = verbose
+        self._state = _RunDisplayState()
+        self._run_header_printed = False
 
     def __call__(self, event: RunEvent) -> None:
         event_type = event.type
         payload = event.payload
 
         if event_type == "run_started":
-            trap_id = payload.get("trap_id")
-            self._status(f"Run started for trap '{trap_id}'")
+            self._on_run_started(payload)
             return
 
         if event_type == "generate_started":
-            self._status("Generating dataset")
+            self._state.generation_status = "running"
+            self._state.generation_message = "Generating dataset"
+            self._progress("... Generating dataset")
             return
 
         if event_type == "generate_progress":
             state = payload.get("state")
             elapsed = payload.get("elapsed_seconds")
             if state == "cache_hit":
-                self._status("Dataset cache hit")
+                self._state.dataset_from_cache = True
+                self._state.generation_message = "Dataset cache hit"
+                self._verbose_status("Dataset cache hit")
             elif state == "cache_miss":
-                self._status("Dataset cache miss")
+                self._state.dataset_from_cache = False
+                self._verbose_status("Dataset cache miss")
             elif state == "generating" and isinstance(elapsed, int):
-                self._status(f"Generating dataset... ({elapsed}s)")
+                self._verbose_status(f"Generating dataset... ({elapsed}s)")
             elif state == "adapter_wait" and isinstance(elapsed, int):
-                self._status(f"Waiting for adapter health... ({elapsed}s)")
+                self._verbose_status(f"Waiting for adapter health... ({elapsed}s)")
             return
 
         if event_type == "generate_completed":
-            trap_id = str(payload.get("trap_id") or "-")
             case_count = _int_or_default(payload.get("case_count"), default=0)
-            print("Generation summary")
-            print("Trap | Cases")
-            print(f"{trap_id} | {case_count}")
+            executing = _int_or_default(payload.get("executing_case_count"), default=case_count)
+            self._state.case_count = case_count
+            self._state.executing_case_count = executing
+            self._state.generation_status = "completed"
+            source = "(from cache)" if self._state.dataset_from_cache else ""
+            self._state.generation_message = f"Dataset generated {source}".strip()
+            self._progress(f"✓ {self._state.generation_message}")
             return
 
         if event_type == "adapter_launching":
-            product = payload.get("product_under_test")
-            self._status(f"Launching adapter runtime for product '{product}'")
+            self._state.adapter_status = "running"
+            self._state.adapter_message = "Launching adapter"
+            self._progress("... Launching adapter")
             return
 
         if event_type == "adapter_ready":
-            self._status("Adapter ready")
+            self._state.adapter_status = "completed"
+            self._state.adapter_message = "Adapter ready"
+            self._progress("✓ Adapter ready")
             return
 
         if event_type == "adapter_status_update":
             message = payload.get("message")
             if isinstance(message, str):
-                self._status(f"Adapter: {message}")
+                self._verbose_status(f"Adapter: {message}")
+            return
+
+        if event_type == "adapter_log":
+            message = payload.get("message")
+            if isinstance(message, str) and self.verbose:
+                print(f"Adapter log: {message}", file=sys.stderr)
             return
 
         if event_type == "case_started":
+            self._state.harness_status = "running"
             index = _int_or_default(payload.get("display_case_index"), default=0)
             total = _int_or_default(payload.get("total_cases"), default=0)
-            self._status(f"Starting case {index}/{total}")
+            self._state.harness_message = f"Running case {index}/{total}"
+            return
+
+        if event_type == "harness_output":
+            if self.verbose:
+                self._print_harness_output(payload)
             return
 
         if event_type == "case_finished":
-            index = _int_or_default(payload.get("display_case_index"), default=0)
-            total = _int_or_default(payload.get("total_cases"), default=0)
             succeeded = bool(payload.get("succeeded"))
             if succeeded:
-                self._status(f"Case {index}/{total} completed")
+                self._state.harness_passed += 1
             else:
-                exit_code = _int_or_default(payload.get("exit_code"), default=1)
-                self._status(f"Case {index}/{total} failed (exit code {exit_code})")
+                self._state.harness_failed += 1
+            total = _int_or_default(payload.get("total_cases"), default=0)
+            completed = self._state.harness_passed + self._state.harness_failed
+            self._state.harness_message = f"Harness cases {completed}/{total}"
+            return
+
+        if event_type == "run_finalized":
+            if self._state.harness_failed:
+                self._state.harness_status = "failed"
+                self._progress("✗ Harness completed with failures")
+            else:
+                self._state.harness_status = "completed"
+                self._progress("✓ Harness completed")
             return
 
         if event_type == "evaluate_started":
-            self._status("Running trap evaluation")
+            self._state.evaluation_status = "running"
+            self._state.evaluation_message = "Evaluating results"
+            self._progress("... Evaluating results")
+            return
+
+        if event_type == "evaluate_phase":
+            if self.verbose:
+                self._print_evaluation_phase(payload)
+            return
+
+        if event_type == "evaluate_progress":
+            if self.verbose:
+                self._print_evaluation_progress(payload)
+            return
+
+        if event_type == "evaluate_completed":
+            run_manifest_path = _path_from_payload(payload, "run_manifest_path")
+            if run_manifest_path is None:
+                return
+            summary = load_security_summary(run_manifest_path)
+            if summary.security_status == "unavailable" and summary.evaluated_count == 0:
+                self._state.evaluation_status = "skipped"
+                self._state.evaluation_message = "Evaluation skipped"
+                self._progress("⚠ Evaluation skipped: no cases were evaluated")
+            else:
+                self._state.evaluation_status = "completed"
+                self._state.evaluation_message = "Evaluation completed"
+                self._progress("✓ Evaluation completed")
+            self.print_final_summary(run_manifest_path)
+            return
+
+        if event_type == "run_failed":
+            error = payload.get("error")
+            if isinstance(error, str) and error:
+                print(f"{STATUS_PREFIX} Run failed: {error}", file=sys.stderr)
+            return
+
+    def print_final_summary(self, run_manifest_path: Path) -> None:
+        """Render final textual report summary for one trap run."""
+        summary = load_security_summary(run_manifest_path)
+        print()
+        if summary.security_status == "unavailable" and summary.evaluated_count == 0:
+            print("Evaluation")
+            print("⚠ Skipped  no cases were evaluated")
+            print()
+        print("Summary")
+        print(
+            "Harness        "
+            f"{summary.passed_session_count} passed, {summary.failed_session_count} failed"
+        )
+        print(f"Trap result    {summary.display_status}")
+        if summary.security_status != "unavailable" or summary.evaluated_count > 0:
+            print(f"Trap successes {summary.trap_success_count} / {summary.evaluated_count}")
+            print(f"Success rate   {summary.rate_percent}")
+        print(f"Report         {_display_path(run_manifest_path.parent / 'evaluation.csv')}")
+        if self.verbose:
+            print()
+            print("Artifacts")
+            print(f"Run manifest   {_display_path(run_manifest_path)}")
+            print(f"Sessions       {_display_path(run_manifest_path.parent / 'sessions.jsonl')}")
+            print(f"Traces         {_display_path(run_manifest_path.parent / 'traces.jsonl')}")
+
+    def _on_run_started(self, payload: Mapping[str, object]) -> None:
+        trap_id = payload.get("trap_id")
+        if isinstance(trap_id, str) and trap_id:
+            self._state.trap_id = trap_id
+        run_dir = payload.get("run_dir")
+        if isinstance(run_dir, str) and run_dir:
+            self._state.run_dir = _display_path(Path(run_dir))
+        run_manifest_path = payload.get("run_manifest_path")
+        if isinstance(run_manifest_path, str) and run_manifest_path:
+            self._state.run_manifest_path = run_manifest_path
+        mode = payload.get("mode")
+        if isinstance(mode, str) and mode:
+            self._state.mode = mode
+        case_count = payload.get("case_count")
+        if isinstance(case_count, int):
+            self._state.case_count = case_count
+        if not self._run_header_printed:
+            print("OpenTrap Run")
+            print(f"Trap:      {self._state.trap_id}")
+            if self._state.case_count is not None:
+                print(f"Cases:     {self._state.case_count}")
+            if self._state.run_dir != "-":
+                print(f"Run:       {self._state.run_dir}")
+            print()
+            self._run_header_printed = True
+
+    def _progress(self, message: str) -> None:
+        print(message)
+
+    def _verbose_status(self, message: str) -> None:
+        if self.verbose:
+            print(f"{STATUS_PREFIX} {message}", file=sys.stderr)
+
+    def _print_harness_output(self, payload: Mapping[str, object]) -> None:
+        index = _int_or_default(payload.get("display_case_index"), default=0)
+        total = _int_or_default(payload.get("total_cases"), default=0)
+        exit_code = _int_or_default(payload.get("exit_code"), default=1)
+        stdout = payload.get("stdout")
+        stderr = payload.get("stderr")
+        stdout_text = stdout if isinstance(stdout, str) else ""
+        stderr_text = stderr if isinstance(stderr, str) else ""
+        if not stdout_text.strip() and not stderr_text.strip():
+            return
+
+        print(f"Harness output case {index}/{total} (exit {exit_code})", file=sys.stderr)
+        if stdout_text.strip():
+            print("stdout:", file=sys.stderr)
+            print(stdout_text.rstrip(), file=sys.stderr)
+        if stderr_text.strip():
+            print("stderr:", file=sys.stderr)
+            print(stderr_text.rstrip(), file=sys.stderr)
+
+    def _print_evaluation_phase(self, payload: Mapping[str, object]) -> None:
+        phase = payload.get("phase")
+        detail = payload.get("detail")
+        if isinstance(phase, str) and phase:
+            token = f"evaluation.{phase}"
+            rendered = f"{token}: {detail}" if isinstance(detail, str) and detail else token
+            print(rendered, file=sys.stderr)
+
+    def _print_evaluation_progress(self, payload: Mapping[str, object]) -> None:
+        processed = _int_or_default(payload.get("processed"), default=0)
+        total = _int_or_default(payload.get("total"), default=0)
+        if total > 0:
+            percent = (processed / total) * 100.0
+            print(
+                f"evaluation.progress: {processed}/{total} ({percent:.1f}%)",
+                file=sys.stderr,
+            )
+
+
+class RichRenderer:
+    """Rich renderer for interactive terminals."""
+
+    def __init__(self, *, verbose: bool = False) -> None:
+        self.verbose = verbose
+        self.console = Console(stderr=True)
+        self.stdout = Console()
+        self._state = _RunDisplayState()
+        self._live: Live | None = None
+
+    def __call__(self, event: RunEvent) -> None:
+        event_type = event.type
+        payload = event.payload
+
+        if event_type == "run_started":
+            self._on_run_started(payload)
+            return
+
+        if event_type == "generate_started":
+            self._state.generation_status = "running"
+            self._state.generation_message = "Generating dataset"
+            self._refresh()
+            return
+
+        if event_type == "generate_progress":
+            state = payload.get("state")
+            elapsed = payload.get("elapsed_seconds")
+            if state == "cache_hit":
+                self._state.dataset_from_cache = True
+                self._state.generation_message = "Dataset cache hit"
+                self._verbose_status("Dataset cache hit")
+            elif state == "cache_miss":
+                self._state.dataset_from_cache = False
+                self._verbose_status("Dataset cache miss")
+            elif state == "generating" and isinstance(elapsed, int):
+                self._state.generation_message = f"Generating dataset ({elapsed}s)"
+                self._verbose_status(f"Generating dataset... ({elapsed}s)")
+            elif state == "adapter_wait" and isinstance(elapsed, int):
+                self._state.adapter_message = f"Waiting for adapter health ({elapsed}s)"
+                self._verbose_status(f"Waiting for adapter health... ({elapsed}s)")
+            self._refresh()
+            return
+
+        if event_type == "generate_completed":
+            case_count = _int_or_default(payload.get("case_count"), default=0)
+            executing = _int_or_default(payload.get("executing_case_count"), default=case_count)
+            self._state.case_count = case_count
+            self._state.executing_case_count = executing
+            source = "(from cache)" if self._state.dataset_from_cache else ""
+            self._state.generation_status = "completed"
+            self._state.generation_message = f"Dataset generated {source}".strip()
+            self._refresh()
+            return
+
+        if event_type == "adapter_launching":
+            self._state.adapter_status = "running"
+            self._state.adapter_message = "Launching adapter"
+            self._refresh()
+            return
+
+        if event_type == "adapter_ready":
+            self._state.adapter_status = "completed"
+            self._state.adapter_message = "Adapter ready"
+            self._refresh()
+            return
+
+        if event_type == "adapter_status_update":
+            message = payload.get("message")
+            if isinstance(message, str) and message:
+                self._verbose_status(f"Adapter: {message}")
+            return
+
+        if event_type == "adapter_log":
+            message = payload.get("message")
+            if isinstance(message, str) and self.verbose:
+                self.console.print(f"[dim]Adapter log:[/dim] {escape(message)}")
+            return
+
+        if event_type == "case_started":
+            self._state.harness_status = "running"
+            index = _int_or_default(payload.get("display_case_index"), default=0)
+            total = _int_or_default(payload.get("total_cases"), default=0)
+            self._state.harness_message = f"Running case {index}/{total}"
+            self._refresh()
+            return
+
+        if event_type == "harness_output":
+            if self.verbose:
+                self._print_harness_output(payload)
+            return
+
+        if event_type == "case_finished":
+            if bool(payload.get("succeeded")):
+                self._state.harness_passed += 1
+            else:
+                self._state.harness_failed += 1
+            total = _int_or_default(payload.get("total_cases"), default=0)
+            completed = self._state.harness_passed + self._state.harness_failed
+            self._state.harness_message = f"Harness cases {completed}/{total}"
+            self._refresh()
+            return
+
+        if event_type == "run_finalized":
+            if self._state.harness_failed:
+                self._state.harness_status = "failed"
+                self._state.harness_message = "Harness completed with failures"
+            else:
+                self._state.harness_status = "completed"
+                self._state.harness_message = "Harness completed"
+            self._refresh()
+            return
+
+        if event_type == "evaluate_started":
+            self._state.evaluation_status = "running"
+            self._state.evaluation_message = "Evaluating results"
+            self._refresh()
             return
 
         if event_type == "evaluate_phase":
             phase = payload.get("phase")
-            detail = payload.get("detail")
             if isinstance(phase, str) and phase:
-                token = f"evaluation.{phase}"
-                rendered = f"{token}: {detail}" if isinstance(detail, str) and detail else token
-                print(rendered, file=sys.stderr)
+                self._state.evaluation_message = f"Evaluation: {phase}"
+                if self.verbose:
+                    self._print_evaluation_phase(payload)
+            self._refresh()
             return
 
         if event_type == "evaluate_progress":
             processed = _int_or_default(payload.get("processed"), default=0)
             total = _int_or_default(payload.get("total"), default=0)
             if total > 0:
-                percent = (processed / total) * 100.0
-                print(
-                    f"evaluation.progress: {processed}/{total} ({percent:.1f}%)",
-                    file=sys.stderr,
-                )
+                self._state.evaluation_message = f"Evaluation {processed}/{total}"
+                if self.verbose:
+                    self._print_evaluation_progress(payload)
+            self._refresh()
             return
 
         if event_type == "evaluate_completed":
-            run_manifest_path_raw = payload.get("run_manifest_path")
-            if isinstance(run_manifest_path_raw, str) and run_manifest_path_raw:
-                self.print_final_summary(Path(run_manifest_path_raw))
-            return
-
-        if event_type == "run_finalized":
-            self._status("Run finalized")
-            return
-
-        if event_type == "run_failed":
-            error = payload.get("error")
-            if isinstance(error, str) and error:
-                self._status(f"Run failed: {error}")
-            return
-
-    def print_final_summary(self, run_manifest_path: Path) -> None:
-        """Render final textual report summary for one trap run."""
-        summary = load_security_summary(run_manifest_path)
-        print("OpenTrap run complete")
-        print()
-        print(f"Trap cases executed: {summary.case_count}")
-        print(f"Harness failures: {summary.failed_session_count}")
-        print()
-        print(f"Security result: {summary.display_status}")
-        if summary.security_status == "unavailable" and summary.evaluated_count == 0:
-            print("Reason: no cases were evaluated")
-        else:
-            print(f"Trap successes: {summary.trap_success_count} / {summary.evaluated_count}")
-            print(f"Success rate: {summary.rate_percent}")
-        print()
-        print("Detailed report:")
-        print(f"runs/{summary.run_id}/evaluation.csv")
-
-    def _status(self, message: str) -> None:
-        print(f"{STATUS_PREFIX} {message}", file=sys.stderr)
-
-
-class RichRenderer:
-    """Rich renderer for interactive terminals."""
-
-    def __init__(self) -> None:
-        self.console = Console(stderr=True)
-        self.stdout = Console()
-        self._generate_status: Status | None = None
-        self._evaluate_status: Status | None = None
-        self._run_status: Status | None = None
-
-    def __call__(self, event: RunEvent) -> None:
-        event_type = event.type
-        payload = event.payload
-
-        if event_type == "run_started":
-            trap_id = payload.get("trap_id")
-            self.console.print(f"[bold cyan]Run started[/bold cyan] for [bold]{trap_id}[/bold]")
-            return
-
-        if event_type == "generate_started":
-            self._start_generate_status("Generating dataset...")
-            return
-
-        if event_type == "generate_progress":
-            if self._generate_status is None:
-                self._start_generate_status("Generating dataset...")
-            state = payload.get("state")
-            elapsed = payload.get("elapsed_seconds")
-            if state == "cache_hit":
-                self._update_generate_status("Dataset cache hit")
-            elif state == "cache_miss":
-                self._update_generate_status("Dataset cache miss")
-            elif state == "generating" and isinstance(elapsed, int):
-                self._update_generate_status(f"Generating dataset... ({elapsed}s)")
-            elif state == "adapter_wait" and isinstance(elapsed, int):
-                self._update_generate_status(f"Waiting for adapter health... ({elapsed}s)")
-            return
-
-        if event_type == "generate_completed":
-            self._stop_generate_status()
-            table = Table(title="Generation Summary")
-            table.add_column("Trap")
-            table.add_column("Cases", justify="right")
-            table.add_row(
-                str(payload.get("trap_id") or "-"),
-                str(_int_or_default(payload.get("case_count"), default=0)),
-            )
-            self.stdout.print(table)
-            return
-
-        if event_type == "adapter_launching":
-            self.console.print("[cyan]Launching adapter runtime...[/cyan]")
-            return
-
-        if event_type == "adapter_ready":
-            self.console.print("[green]Adapter ready[/green]")
-            return
-
-        if event_type == "adapter_status_update":
-            message = payload.get("message")
-            if isinstance(message, str):
-                self.console.print(f"[magenta]Adapter[/magenta]: {message}")
-            return
-
-        if event_type == "case_started":
-            index = _int_or_default(payload.get("display_case_index"), default=0)
-            total = _int_or_default(payload.get("total_cases"), default=0)
-            if self._run_status is None:
-                self._run_status = self.console.status("Running cases...", spinner="dots")
-                self._run_status.start()
-            self._run_status.update(status=f"Running case {index}/{total}")
-            return
-
-        if event_type == "case_finished":
-            index = _int_or_default(payload.get("display_case_index"), default=0)
-            total = _int_or_default(payload.get("total_cases"), default=0)
-            succeeded = bool(payload.get("succeeded"))
-            result = "ok" if succeeded else "failed"
-            if self._run_status is not None:
-                self._run_status.update(status=f"Case {index}/{total} {result}")
-            return
-
-        if event_type == "evaluate_started":
-            if self._evaluate_status is None:
-                self._evaluate_status = self.console.status("Evaluating...", spinner="dots")
-                self._evaluate_status.start()
-            return
-
-        if event_type == "evaluate_phase":
-            phase = payload.get("phase")
-            if isinstance(phase, str) and phase and self._evaluate_status is not None:
-                self._evaluate_status.update(status=f"Evaluating: {phase}")
-            return
-
-        if event_type == "evaluate_progress":
-            processed = _int_or_default(payload.get("processed"), default=0)
-            total = _int_or_default(payload.get("total"), default=0)
-            if total > 0 and self._evaluate_status is not None:
-                self._evaluate_status.update(status=f"Evaluating: {processed}/{total}")
-            return
-
-        if event_type == "evaluate_completed":
-            self._stop_evaluate_status()
-            run_manifest_path_raw = payload.get("run_manifest_path")
-            if isinstance(run_manifest_path_raw, str) and run_manifest_path_raw:
-                self.print_final_summary(Path(run_manifest_path_raw))
-            return
-
-        if event_type == "run_finalized":
-            self._stop_run_status()
+            run_manifest_path = _path_from_payload(payload, "run_manifest_path")
+            if run_manifest_path is None:
+                return
+            summary = load_security_summary(run_manifest_path)
+            if summary.security_status == "unavailable" and summary.evaluated_count == 0:
+                self._state.evaluation_status = "skipped"
+                self._state.evaluation_message = "Evaluation skipped"
+            else:
+                self._state.evaluation_status = "completed"
+                self._state.evaluation_message = "Evaluation completed"
+            self._refresh()
+            self._stop_live()
+            self.print_final_summary(run_manifest_path)
             return
 
         if event_type == "run_failed":
-            self._stop_generate_status()
-            self._stop_run_status()
-            self._stop_evaluate_status()
+            stage = payload.get("stage")
+            if stage == "evaluate":
+                self._state.evaluation_status = "failed"
+            elif stage == "run":
+                if self._state.adapter_status == "running":
+                    self._state.adapter_status = "failed"
+                elif self._state.harness_status == "running":
+                    self._state.harness_status = "failed"
+            self._refresh()
+            self._stop_live()
             error = payload.get("error")
             if isinstance(error, str) and error:
-                self.console.print(f"[red]Run failed:[/red] {error}")
+                self.console.print(f"[red]Run failed:[/red] {escape(error)}")
             return
 
     def print_final_summary(self, run_manifest_path: Path) -> None:
         """Render final rich panel summary for one trap run."""
         summary = load_security_summary(run_manifest_path)
-        body = (
-            f"[bold]Trap cases executed:[/bold] {summary.case_count}\n"
-            f"[bold]Harness failures:[/bold] {summary.failed_session_count}\n"
-            f"[bold]Security result:[/bold] {summary.display_status}\n"
-            "[bold]Trap successes:[/bold] "
-            f"{summary.trap_success_count} / {summary.evaluated_count}\n"
-            f"[bold]Success rate:[/bold] {summary.rate_percent}\n"
-            f"[bold]Detailed report:[/bold] runs/{summary.run_id}/evaluation.csv"
+        table = Table.grid(padding=(0, 3))
+        table.add_column(style="bold cyan")
+        table.add_column()
+        table.add_row(
+            "Harness",
+            f"{summary.passed_session_count} passed, {summary.failed_session_count} failed",
         )
+        table.add_row("Trap result", summary.display_status)
         if summary.security_status == "unavailable" and summary.evaluated_count == 0:
-            body = (
-                f"[bold]Trap cases executed:[/bold] {summary.case_count}\n"
-                f"[bold]Harness failures:[/bold] {summary.failed_session_count}\n"
-                f"[bold]Security result:[/bold] {summary.display_status}\n"
-                "[bold]Reason:[/bold] no cases were evaluated\n"
-                f"[bold]Detailed report:[/bold] runs/{summary.run_id}/evaluation.csv"
+            table.add_row("Reason", "no cases were evaluated")
+        else:
+            table.add_row(
+                "Trap successes",
+                f"{summary.trap_success_count} / {summary.evaluated_count}",
             )
-        self.stdout.print(Panel(body, title="OpenTrap Run Complete"))
+            table.add_row("Success rate", summary.rate_percent)
+        table.add_row("Report", _display_path(run_manifest_path.parent / "evaluation.csv"))
+        if self.verbose:
+            table.add_row("Run manifest", _display_path(run_manifest_path))
+            table.add_row("Sessions", _display_path(run_manifest_path.parent / "sessions.jsonl"))
+            table.add_row("Traces", _display_path(run_manifest_path.parent / "traces.jsonl"))
+        self.stdout.print(Panel(table, title="Summary", border_style="blue"))
 
-    def _start_generate_status(self, status: str) -> None:
-        self._stop_generate_status()
-        self._generate_status = self.console.status(status, spinner="dots")
-        self._generate_status.start()
+    def _on_run_started(self, payload: Mapping[str, object]) -> None:
+        trap_id = payload.get("trap_id")
+        if isinstance(trap_id, str) and trap_id:
+            self._state.trap_id = trap_id
+        run_dir = payload.get("run_dir")
+        if isinstance(run_dir, str) and run_dir:
+            self._state.run_dir = _display_path(Path(run_dir))
+        run_manifest_path = payload.get("run_manifest_path")
+        if isinstance(run_manifest_path, str) and run_manifest_path:
+            self._state.run_manifest_path = run_manifest_path
+        mode = payload.get("mode")
+        if isinstance(mode, str) and mode:
+            self._state.mode = mode
+        case_count = payload.get("case_count")
+        if isinstance(case_count, int):
+            self._state.case_count = case_count
+        if self._live is None:
+            self._start_live()
+        else:
+            self._refresh()
 
-    def _update_generate_status(self, status: str) -> None:
-        if self._generate_status is not None:
-            self._generate_status.update(status=status)
+    def _start_live(self) -> None:
+        self._stop_live()
+        self._live = Live(
+            self._render(),
+            console=self.console,
+            refresh_per_second=8,
+            transient=False,
+            redirect_stdout=True,
+            redirect_stderr=True,
+        )
+        self._live.start()
 
-    def _stop_generate_status(self) -> None:
-        if self._generate_status is not None:
-            self._generate_status.stop()
-            self._generate_status = None
+    def _stop_live(self) -> None:
+        if self._live is not None:
+            self._live.stop()
+            self._live = None
 
-    def _stop_run_status(self) -> None:
-        if self._run_status is not None:
-            self._run_status.stop()
-            self._run_status = None
+    def _refresh(self) -> None:
+        if self._live is not None:
+            self._live.update(self._render())
 
-    def _stop_evaluate_status(self) -> None:
-        if self._evaluate_status is not None:
-            self._evaluate_status.stop()
-            self._evaluate_status = None
+    def _render(self) -> Group:
+        header = Table.grid()
+        header.add_column()
+        header.add_row("[bold cyan]OpenTrap[/bold cyan] run")
+
+        config = Table.grid(padding=(0, 3))
+        config.add_column(style="bold")
+        config.add_column()
+        config.add_row("Trap", escape(self._state.trap_id))
+        if self._state.case_count is not None:
+            config.add_row("Cases", str(self._state.case_count))
+        config.add_row("Run", escape(self._state.run_dir))
+
+        steps = Table.grid(padding=(0, 2))
+        steps.add_column(width=3)
+        steps.add_column()
+        steps.add_row(
+            *self._step_cells(self._state.generation_status, self._state.generation_message)
+        )
+        steps.add_row(*self._step_cells(self._state.adapter_status, self._state.adapter_message))
+        harness_detail = self._state.harness_message
+        if self._state.harness_status in {"running", "completed", "failed"}:
+            harness_detail = (
+                f"{self._state.harness_message} "
+                f"({self._state.harness_passed} passed, {self._state.harness_failed} failed)"
+            )
+        steps.add_row(*self._step_cells(self._state.harness_status, harness_detail))
+        steps.add_row(
+            *self._step_cells(self._state.evaluation_status, self._state.evaluation_message)
+        )
+
+        return Group(
+            header,
+            Panel(config, title="Run Configuration", border_style="blue"),
+            Panel(steps, title="Progress", border_style="green"),
+        )
+
+    def _step_cells(self, status: str, message: str) -> tuple[object, str]:
+        escaped = escape(message)
+        if status == "running":
+            return Spinner("dots", style="cyan"), f"[cyan]{escaped}[/cyan]"
+        if status == "completed":
+            return "[green]✓[/green]", f"[green]{escaped}[/green]"
+        if status == "failed":
+            return "[red]✗[/red]", f"[red]{escaped}[/red]"
+        if status == "skipped":
+            return "[yellow]⚠[/yellow]", f"[yellow]{escaped}[/yellow]"
+        return "[dim]-[/dim]", f"[dim]{escaped}[/dim]"
+
+    def _verbose_status(self, message: str) -> None:
+        if self.verbose:
+            self.console.print(f"[dim]{escape(STATUS_PREFIX)}[/dim] {escape(message)}")
+
+    def _print_harness_output(self, payload: Mapping[str, object]) -> None:
+        index = _int_or_default(payload.get("display_case_index"), default=0)
+        total = _int_or_default(payload.get("total_cases"), default=0)
+        exit_code = _int_or_default(payload.get("exit_code"), default=1)
+        stdout = payload.get("stdout")
+        stderr = payload.get("stderr")
+        stdout_text = stdout if isinstance(stdout, str) else ""
+        stderr_text = stderr if isinstance(stderr, str) else ""
+        if not stdout_text.strip() and not stderr_text.strip():
+            return
+
+        self.console.print(f"[bold]Harness output case {index}/{total} (exit {exit_code})[/bold]")
+        if stdout_text.strip():
+            self.console.print("[dim]stdout:[/dim]")
+            self.console.print(stdout_text.rstrip())
+        if stderr_text.strip():
+            self.console.print("[dim]stderr:[/dim]")
+            self.console.print(stderr_text.rstrip())
+
+    def _print_evaluation_phase(self, payload: Mapping[str, object]) -> None:
+        phase = payload.get("phase")
+        detail = payload.get("detail")
+        if isinstance(phase, str) and phase:
+            token = f"evaluation.{phase}"
+            rendered = f"{token}: {detail}" if isinstance(detail, str) and detail else token
+            self.console.print(f"[dim]{escape(rendered)}[/dim]")
+
+    def _print_evaluation_progress(self, payload: Mapping[str, object]) -> None:
+        processed = _int_or_default(payload.get("processed"), default=0)
+        total = _int_or_default(payload.get("total"), default=0)
+        if total > 0:
+            percent = (processed / total) * 100.0
+            self.console.print(
+                f"[dim]evaluation.progress: {processed}/{total} ({percent:.1f}%)[/dim]"
+            )
 
 
-def build_renderer() -> EventSink:
+def build_renderer(*, verbose: bool = False) -> EventSink:
     """Choose rich or plain renderer based on current terminal capabilities."""
     if sys.stderr.isatty() and sys.stdout.isatty():
-        return RichRenderer()
-    return PlainRenderer()
+        return RichRenderer(verbose=verbose)
+    return PlainRenderer(verbose=verbose)
 
 
 def load_security_summary(run_manifest_path: Path) -> SecuritySummary:
@@ -362,6 +657,7 @@ def load_security_summary(run_manifest_path: Path) -> SecuritySummary:
     )
 
     case_count = _int_or_default(report.get("case_count"), default=0)
+    session_count = _int_or_default(report.get("session_count"), default=case_count)
     failed_session_count = _int_or_default(report.get("failed_session_count"), default=0)
     trap_success_count = _int_or_default(security_result.get("trap_success_count"), default=0)
     evaluated_count = _int_or_default(security_result.get("evaluated_count"), default=0)
@@ -375,6 +671,7 @@ def load_security_summary(run_manifest_path: Path) -> SecuritySummary:
     return SecuritySummary(
         run_id=run_id,
         case_count=case_count,
+        session_count=session_count,
         failed_session_count=failed_session_count,
         security_status=security_status,
         display_status=display_status,
@@ -382,6 +679,20 @@ def load_security_summary(run_manifest_path: Path) -> SecuritySummary:
         evaluated_count=evaluated_count,
         rate_percent=rate_percent,
     )
+
+
+def _path_from_payload(payload: Mapping[str, object], key: str) -> Path | None:
+    raw = payload.get(key)
+    if isinstance(raw, str) and raw:
+        return Path(raw)
+    return None
+
+
+def _display_path(path: Path) -> str:
+    try:
+        return str(path.relative_to(Path.cwd()))
+    except ValueError:
+        return str(path)
 
 
 def _int_or_default(value: object, *, default: int) -> int:

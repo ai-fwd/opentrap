@@ -108,6 +108,13 @@ def _extract_manifest_path(output: str) -> Path:
     lines = [line.strip() for line in output.splitlines() if line.strip()]
     if not lines:
         raise AssertionError("CLI output did not contain a manifest path")
+    for line in reversed(lines):
+        if line.startswith("Run manifest"):
+            return Path(line.removeprefix("Run manifest").strip())
+        if line.startswith("Report"):
+            return Path(line.removeprefix("Report").strip()).parent / "run.json"
+        if line.startswith("Run:"):
+            return Path(line.removeprefix("Run:").strip()) / "run.json"
     return Path(lines[-1])
 
 
@@ -578,7 +585,9 @@ def test_fast_eval_run_selects_latest_finalized_run_for_trap(
     assert code == 0
     run_manifest_path = _extract_manifest_path(captured.out)
     assert run_manifest_path.parent.name == "selected-run"
-    assert "OpenTrap run complete" in captured.out
+    assert "Cases:     0" in captured.out
+    assert f"Run:       {run_manifest_path.parent}" in captured.out
+    assert "Summary" in captured.out
     marker_path = run_manifest_path.parent / "fast_eval_marker.txt"
     assert marker_path.read_text(encoding="utf-8") == "ok"
     run_manifest = json.loads(run_manifest_path.read_text(encoding="utf-8"))
@@ -678,13 +687,14 @@ def test_trap_run_single_records_manifest_and_artifact(
     assert code == 0
     run_manifest_path = _extract_manifest_path(captured.out)
     assert run_manifest_path.exists()
-    assert "Generation summary" in captured.out
-    assert "Trap | Cases" in captured.out
-    assert "reasoning/chain-trap | 1" in captured.out
-    assert "Adapter: Host starting on" in captured.err
-    assert "Adapter: Shutdown complete" in captured.err
-    assert "Starting case 1/1" in captured.err
-    assert "Case 1/1 completed" in captured.err
+    assert "OpenTrap Run" in captured.out
+    assert "Trap:      reasoning/chain-trap" in captured.out
+    assert "✓ Dataset generated" in captured.out
+    assert "✓ Adapter ready" in captured.out
+    assert "✓ Harness completed" in captured.out
+    assert "Summary" in captured.out
+    assert "Adapter: Host starting on" not in captured.err
+    assert "Adapter: Shutdown complete" not in captured.err
 
     run_manifest = json.loads(run_manifest_path.read_text(encoding="utf-8"))
     assert run_manifest["requested"] == "reasoning/chain-trap"
@@ -720,6 +730,57 @@ def test_trap_run_single_records_manifest_and_artifact(
     assert report["security_result"]["trap_success_count"] == 0
     assert report["security_result"]["evaluated_count"] == 1
     assert report["security_result"]["details"] == {}
+
+
+def test_trap_run_surfaces_harness_output_only_when_verbose(
+    tmp_path: Path,
+    capsys,
+    monkeypatch,
+) -> None:
+    _write_stub_contract(tmp_path / "traps", "reasoning/chain-trap")
+    generated_root = tmp_path / "adapter" / "generated"
+    _write_generated_adapter(generated_root)
+
+    config_path = tmp_path / ".opentrap" / "opentrap.yaml"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    payload = _base_payload()
+    payload["harness"]["command"] = [
+        sys.executable,
+        "-c",
+        "import sys; print('harness stdout'); print('harness stderr', file=sys.stderr)",
+    ]
+    config_path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
+    samples_dir = tmp_path / ".opentrap" / "samples"
+    samples_dir.mkdir(parents=True, exist_ok=True)
+
+    _configure_trap_run_paths(
+        monkeypatch=monkeypatch,
+        tmp_path=tmp_path,
+        config_path=config_path,
+        samples_dir=samples_dir,
+        generated_root=generated_root,
+    )
+
+    clean_code = main(["run", "reasoning/chain-trap"])
+    clean_captured = capsys.readouterr()
+    assert clean_code == 0
+    assert "harness stdout" not in clean_captured.out
+    assert "harness stdout" not in clean_captured.err
+    assert "harness stderr" not in clean_captured.out
+    assert "harness stderr" not in clean_captured.err
+
+    verbose_code = main(["run", "reasoning/chain-trap", "--verbose"])
+    verbose_captured = capsys.readouterr()
+    assert verbose_code == 0
+    verbose_run_manifest_path = _extract_manifest_path(verbose_captured.out)
+    assert "Harness output case 1/1 (exit 0)" in verbose_captured.err
+    assert "harness stdout" in verbose_captured.err
+    assert "harness stderr" in verbose_captured.err
+    assert "Adapter: Host starting on" in verbose_captured.err
+    assert f"Run manifest   {verbose_run_manifest_path}" in verbose_captured.out
+    assert f"Traces         {verbose_run_manifest_path.parent / 'traces.jsonl'}" in (
+        verbose_captured.out
+    )
 
 
 def test_trap_run_instantiates_only_selected_trap(
@@ -954,10 +1015,9 @@ def test_trap_run_writes_security_result_and_prints_summary(
     run_manifest_path = _extract_manifest_path(captured.out)
     report = json.loads((run_manifest_path.parent / "report.json").read_text(encoding="utf-8"))
     assert report["security_result"]["status"] == expected_status
-    assert f"Security result: {expected_display}" in captured.out
-    assert "OpenTrap run complete" in captured.out
-    assert "Detailed report:" in captured.out
-    assert f"runs/{run_manifest_path.parent.name}/evaluation.csv" in captured.out
+    assert f"Trap result    {expected_display}" in captured.out
+    assert "Summary" in captured.out
+    assert f"Report         {run_manifest_path.parent / 'evaluation.csv'}" in captured.out
 
     if expected_status == "vulnerable":
         assert report["security_result"]["trap_success_count"] == 1
@@ -965,19 +1025,19 @@ def test_trap_run_writes_security_result_and_prints_summary(
         assert report["security_result"]["evaluated_count"] == 2
         assert report["security_result"]["trap_success_rate"] == 0.5
         assert report["security_result"]["details"] == {"judge": "ok"}
-        assert "Trap successes: 1 / 2" in captured.out
-        assert "Success rate: 50.0%" in captured.out
+        assert "Trap successes 1 / 2" in captured.out
+        assert "Success rate   50.0%" in captured.out
     elif expected_status == "no_successful_traps_detected":
         assert report["security_result"]["trap_success_count"] == 0
         assert report["security_result"]["evaluated_count"] == 2
         assert report["security_result"]["trap_success_rate"] == 0.0
         assert report["security_result"]["details"] == {}
-        assert "Trap successes: 0 / 2" in captured.out
-        assert "Success rate: 0.0%" in captured.out
+        assert "Trap successes 0 / 2" in captured.out
+        assert "Success rate   0.0%" in captured.out
     else:
         assert report["security_result"]["evaluated_count"] == 0
         assert report["security_result"]["details"] == {}
-        assert "Reason: no cases were evaluated" in captured.out
+        assert "⚠ Skipped  no cases were evaluated" in captured.out
 
 
 def test_trap_run_marks_scorer_failed_when_evaluation_returns_legacy_mapping(

@@ -21,6 +21,7 @@ from opentrap.config_loader import (
 )
 from opentrap.evaluation import find_latest_finalized_run_manifest, run_trap_evaluation
 from opentrap.events import emit_event
+from opentrap.io_utils import load_json_maybe
 from opentrap.run_orchestration import RunEnvironment, run_single_trap
 from opentrap.trap import SharedConfig, TrapFieldSpec
 from opentrap.trap.loader import load_registry_from_candidates
@@ -173,9 +174,42 @@ def cmd_init() -> int:
     return 0
 
 
-def cmd_run(trap_ref: str, *, fast_dev_run: bool, fast_eval_run: bool) -> int:
+def _run_started_payload_from_manifest(
+    *,
+    trap_id: str,
+    requested_trap_ref: str,
+    run_manifest_path: Path,
+    mode: str,
+) -> dict[str, object]:
+    manifest = load_json_maybe(run_manifest_path) or {}
+    run_id = manifest.get("run_id")
+    if not isinstance(run_id, str) or not run_id:
+        run_id = run_manifest_path.parent.name
+
+    case_count = manifest.get("case_count")
+    if not isinstance(case_count, int):
+        traps = manifest.get("traps")
+        if isinstance(traps, list) and traps and isinstance(traps[0], Mapping):
+            cases = traps[0].get("cases")
+            if isinstance(cases, list):
+                case_count = len(cases)
+
+    payload: dict[str, object] = {
+        "trap_id": trap_id,
+        "requested_trap_ref": requested_trap_ref,
+        "run_id": run_id,
+        "run_dir": str(run_manifest_path.parent),
+        "run_manifest_path": str(run_manifest_path),
+        "mode": mode,
+    }
+    if isinstance(case_count, int):
+        payload["case_count"] = case_count
+    return payload
+
+
+def cmd_run(trap_ref: str, *, fast_dev_run: bool, fast_eval_run: bool, verbose: bool) -> int:
     """Execute one trap run, with optional fast dev/eval modes."""
-    event_sink = build_renderer()
+    event_sink = build_renderer(verbose=verbose)
 
     if fast_dev_run and fast_eval_run:
         print("--fast-dev-run and --fast-eval-run cannot be used together", file=sys.stderr)
@@ -232,7 +266,6 @@ def cmd_run(trap_ref: str, *, fast_dev_run: bool, fast_eval_run: bool) -> int:
     )
 
     if fast_eval_run:
-        emit_event(event_sink, "run_started", trap_id=resolved, requested_trap_ref=trap_ref)
         try:
             latest_run_manifest_path = find_latest_finalized_run_manifest(
                 runs_dir=environment.runs_dir,
@@ -241,6 +274,16 @@ def cmd_run(trap_ref: str, *, fast_dev_run: bool, fast_eval_run: bool) -> int:
         except Exception as exc:  # noqa: BLE001
             emit_event(event_sink, "run_failed", stage="fast_eval_select", error=str(exc))
             return 1
+        emit_event(
+            event_sink,
+            "run_started",
+            **_run_started_payload_from_manifest(
+                trap_id=resolved,
+                requested_trap_ref=trap_ref,
+                run_manifest_path=latest_run_manifest_path,
+                mode="fast_eval",
+            ),
+        )
 
         try:
             run_trap_evaluation(
@@ -258,7 +301,6 @@ def cmd_run(trap_ref: str, *, fast_dev_run: bool, fast_eval_run: bool) -> int:
             )
             return 1
 
-        print(str(latest_run_manifest_path))
         return 0
 
     try:
@@ -278,7 +320,6 @@ def cmd_run(trap_ref: str, *, fast_dev_run: bool, fast_eval_run: bool) -> int:
         emit_event(event_sink, "run_failed", stage="run", error=str(exc))
         return 1
 
-    print(str(run_ready.run_manifest_path))
     return 0 if run_ready.succeeded else 1
 
 
@@ -301,9 +342,15 @@ def run_command(
     trap: Annotated[str, typer.Argument(help="Trap reference in target/name format.")],
     fast_dev_run: Annotated[bool, typer.Option("--fast-dev-run")] = False,
     fast_eval_run: Annotated[bool, typer.Option("--fast-eval-run")] = False,
+    verbose: Annotated[bool, typer.Option("--verbose")] = False,
 ) -> int:
     """Run one trap with optional fast execution/evaluation modes."""
-    return cmd_run(trap, fast_dev_run=fast_dev_run, fast_eval_run=fast_eval_run)
+    return cmd_run(
+        trap,
+        fast_dev_run=fast_dev_run,
+        fast_eval_run=fast_eval_run,
+        verbose=verbose,
+    )
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -134,6 +134,7 @@ def _start_adapter_stderr_bridge(
             line = raw_line.rstrip("\r\n")
             if line:
                 buffered_lines.append(line)
+                emit_event(event_sink, "adapter_log", message=line)
 
     thread = threading.Thread(target=_reader, name="opentrap-adapter-stderr", daemon=True)
     thread.start()
@@ -401,12 +402,20 @@ def run_single_trap(
     event_sink: EventSink,
     max_cases: int | None = None,
 ) -> TrapRunResult:
-    emit_event(event_sink, "run_started", trap_id=trap_id, requested_trap_ref=requested_trap_ref)
     run_id = uuid.uuid4().hex
     run_dir = environment.runs_dir / run_id
     run_dir.mkdir(parents=True, exist_ok=False)
     run_manifest_path = run_dir / "run.json"
     trap_slug = trap_id.replace("/", "__")
+    emit_event(
+        event_sink,
+        "run_started",
+        trap_id=trap_id,
+        requested_trap_ref=requested_trap_ref,
+        run_id=run_id,
+        run_dir=str(run_dir),
+        run_manifest_path=str(run_manifest_path),
+    )
 
     run_manifest: dict[str, Any] = {
         "run_id": run_id,
@@ -547,15 +556,35 @@ def run_single_trap(
             descriptor = _start_case_session(run_manifest_path, case_index=case_index)
 
             harness_exit_code = 1
+            harness_stdout = ""
+            harness_stderr = ""
             try:
                 result = subprocess.run(
                     list(harness.command),
                     cwd=harness_cwd,
                     check=False,
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
                 )
                 harness_exit_code = int(result.returncode)
+                harness_stdout = result.stdout or ""
+                harness_stderr = result.stderr or ""
             finally:
                 _end_case_session(run_manifest_path, harness_exit_code=harness_exit_code)
+
+            emit_event(
+                event_sink,
+                "harness_output",
+                case_index=case_index,
+                display_case_index=case_index + 1,
+                total_cases=case_count_to_run,
+                exit_code=harness_exit_code,
+                session_id=descriptor.session_id,
+                stdout=harness_stdout,
+                stderr=harness_stderr,
+            )
 
             if harness_exit_code == 0:
                 emit_event(
