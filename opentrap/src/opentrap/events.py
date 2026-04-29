@@ -21,6 +21,7 @@ RunEventType = Literal[
     "evaluate_completed",
     "run_finalized",
     "run_failed",
+    "adapter_status_update",
 ]
 
 

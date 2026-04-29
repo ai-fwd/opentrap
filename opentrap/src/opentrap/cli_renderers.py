@@ -78,6 +78,12 @@ class PlainRenderer:
             self._status("Adapter ready")
             return
 
+        if event_type == "adapter_status_update":
+            message = payload.get("message")
+            if isinstance(message, str):
+                self._status(f"Adapter: {message}")
+            return
+
         if event_type == "case_started":
             index = _int_or_default(payload.get("display_case_index"), default=0)
             total = _int_or_default(payload.get("total_cases"), default=0)
@@ -213,6 +219,12 @@ class RichRenderer:
 
         if event_type == "adapter_ready":
             self.console.print("[green]Adapter ready[/green]")
+            return
+
+        if event_type == "adapter_status_update":
+            message = payload.get("message")
+            if isinstance(message, str):
+                self.console.print(f"[magenta]Adapter[/magenta]: {message}")
             return
 
         if event_type == "case_started":

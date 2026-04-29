@@ -5,9 +5,11 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+import threading
 import time
 import uuid
 from collections.abc import Callable, Mapping
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -44,6 +46,7 @@ STATUS_HEARTBEAT_INTERVAL_SECONDS = 3.0
 ADAPTER_TERMINATE_TIMEOUT_SECONDS = 3.0
 SESSIONS_FILE_NAME = "sessions.jsonl"
 TRACES_FILE_NAME = "traces.jsonl"
+ADAPTER_STATUS_PREFIX = "[adapter]"
 
 
 @dataclass(frozen=True)
@@ -58,6 +61,12 @@ class RunEnvironment:
 class TrapRunResult:
     run_manifest_path: Path
     succeeded: bool
+
+
+@dataclass
+class _AdapterStderrBridge:
+    thread: threading.Thread
+    buffered_lines: list[str]
 
 
 def _launch_adapter(
@@ -82,7 +91,67 @@ def _launch_adapter(
         "--port",
         str(port),
     ]
-    return subprocess.Popen(command, cwd=environment.repo_root)
+    return subprocess.Popen(
+        command,
+        cwd=environment.repo_root,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+
+
+def _forward_adapter_stderr_line(raw_line: str, *, event_sink: EventSink) -> bool:
+    line = raw_line.rstrip("\r\n")
+    if not line:
+        return False
+    if line == ADAPTER_STATUS_PREFIX:
+        emit_event(event_sink, "adapter_status_update", message="")
+        return True
+    prefix = f"{ADAPTER_STATUS_PREFIX} "
+    if line.startswith(prefix):
+        emit_event(event_sink, "adapter_status_update", message=line[len(prefix) :])
+        return True
+    return False
+
+
+def _start_adapter_stderr_bridge(
+    process: subprocess.Popen[Any],
+    *,
+    event_sink: EventSink,
+) -> _AdapterStderrBridge | None:
+    stderr_stream = process.stderr
+    if stderr_stream is None:
+        return None
+
+    buffered_lines: list[str] = []
+
+    def _reader() -> None:
+        for raw_line in stderr_stream:
+            handled = _forward_adapter_stderr_line(raw_line, event_sink=event_sink)
+            if handled:
+                continue
+            line = raw_line.rstrip("\r\n")
+            if line:
+                buffered_lines.append(line)
+
+    thread = threading.Thread(target=_reader, name="opentrap-adapter-stderr", daemon=True)
+    thread.start()
+    return _AdapterStderrBridge(thread=thread, buffered_lines=buffered_lines)
+
+
+def _stop_adapter_stderr_bridge(
+    bridge: _AdapterStderrBridge | None,
+    *,
+    process: subprocess.Popen[Any] | None,
+) -> list[str]:
+    if bridge is None:
+        return []
+    if process is not None and process.stderr is not None:
+        with suppress(OSError):
+            process.stderr.close()
+    bridge.thread.join(timeout=1.0)
+    return list(bridge.buffered_lines)
 
 
 def _wait_for_adapter_ready(
@@ -420,6 +489,7 @@ def run_single_trap(
     harness_cwd = environment.repo_root / harness.cwd
     adapter_port = ADAPTER_PORT
     adapter_process: subprocess.Popen[Any] | None = None
+    adapter_stderr_bridge: _AdapterStderrBridge | None = None
     succeeded = True
     try:
         emit_event(
@@ -434,6 +504,10 @@ def run_single_trap(
                 environment=environment,
                 product_under_test=product_under_test,
                 port=adapter_port,
+            )
+            adapter_stderr_bridge = _start_adapter_stderr_bridge(
+                adapter_process,
+                event_sink=event_sink,
             )
         except Exception as exc:  # noqa: BLE001
             raise RuntimeError(f"Failed during adapter launch: {exc}") from exc
@@ -509,6 +583,7 @@ def run_single_trap(
     finally:
         clear_active_session_descriptor(_active_session_path(run_manifest_path))
         _terminate_process(adapter_process)
+        _stop_adapter_stderr_bridge(adapter_stderr_bridge, process=adapter_process)
 
     _finalize_run(run_manifest_path, succeeded=succeeded)
     emit_event(

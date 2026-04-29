@@ -681,6 +681,8 @@ def test_trap_run_single_records_manifest_and_artifact(
     assert "Generation summary" in captured.out
     assert "Trap | Cases" in captured.out
     assert "reasoning/chain-trap | 1" in captured.out
+    assert "Adapter: Host starting on" in captured.err
+    assert "Adapter: Shutdown complete" in captured.err
     assert "Starting case 1/1" in captured.err
     assert "Case 1/1 completed" in captured.err
 
