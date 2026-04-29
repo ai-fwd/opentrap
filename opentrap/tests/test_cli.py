@@ -528,12 +528,16 @@ def test_fast_eval_run_selects_latest_finalized_run_for_trap(
     samples_dir.mkdir(parents=True, exist_ok=True)
     runs_dir = tmp_path / "runs"
     runs_dir.mkdir(parents=True, exist_ok=True)
-    _write_run_manifest(
+    selected_manifest_path = _write_run_manifest(
         runs_dir=runs_dir,
         run_id="selected-run",
         trap_id="reasoning/chain-trap",
         created_at_utc="2026-01-01T00:00:00+00:00",
         finalized_at_utc="2026-01-01T00:20:00+00:00",
+    )
+    (selected_manifest_path.parent / "report.json").write_text(
+        json.dumps({"scorer_status": "pending"}) + "\n",
+        encoding="utf-8",
     )
     _write_run_manifest(
         runs_dir=runs_dir,
@@ -566,6 +570,10 @@ def test_fast_eval_run_selects_latest_finalized_run_for_trap(
     assert run_manifest_path.parent.name == "selected-run"
     marker_path = run_manifest_path.parent / "fast_eval_marker.txt"
     assert marker_path.read_text(encoding="utf-8") == "ok"
+    run_manifest = json.loads(run_manifest_path.read_text(encoding="utf-8"))
+    report = json.loads((run_manifest_path.parent / "report.json").read_text(encoding="utf-8"))
+    assert run_manifest["scorer_status"] == "completed"
+    assert report["scorer_status"] == "completed"
 
 
 def test_fast_eval_run_returns_failure_when_trap_evaluation_raises(
@@ -585,10 +593,14 @@ def test_fast_eval_run_returns_failure_when_trap_evaluation_raises(
     samples_dir.mkdir(parents=True, exist_ok=True)
     runs_dir = tmp_path / "runs"
     runs_dir.mkdir(parents=True, exist_ok=True)
-    _write_run_manifest(
+    selected_manifest_path = _write_run_manifest(
         runs_dir=runs_dir,
         run_id="selected-run",
         trap_id="reasoning/chain-trap",
+    )
+    (selected_manifest_path.parent / "report.json").write_text(
+        json.dumps({"scorer_status": "pending"}) + "\n",
+        encoding="utf-8",
     )
 
     _configure_trap_run_paths(
@@ -604,6 +616,10 @@ def test_fast_eval_run_returns_failure_when_trap_evaluation_raises(
     captured = capsys.readouterr()
     assert code == 1
     assert "Fast eval run failed: boom during evaluate" in captured.err
+    run_manifest = json.loads(selected_manifest_path.read_text(encoding="utf-8"))
+    report = json.loads((selected_manifest_path.parent / "report.json").read_text(encoding="utf-8"))
+    assert run_manifest["scorer_status"] == "failed"
+    assert report["scorer_status"] == "failed"
 
 
 @pytest.mark.parametrize(

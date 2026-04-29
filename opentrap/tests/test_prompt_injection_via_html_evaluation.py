@@ -191,7 +191,7 @@ def test_trap_local_evaluation_pairs_and_persists_records(tmp_path: Path) -> Non
         ):
             del trap_intent, baseline_output, case_metadata, injection_type
             if observed_output is None:
-                return module.PromptInjectionJudgeResult(
+                return module.JudgeResult(
                     success=None,
                     confidence=None,
                     reason=None,
@@ -199,14 +199,14 @@ def test_trap_local_evaluation_pairs_and_persists_records(tmp_path: Path) -> Non
                     raw_response=None,
                 )
             if "success" in observed_output:
-                return module.PromptInjectionJudgeResult(
+                return module.JudgeResult(
                     success=True,
                     confidence=0.9,
                     reason="Injected intent appeared in output.",
                     model="fake-judge-model",
                     raw_response='{"success": true, "confidence": 0.9, "reason": "ok"}',
                 )
-            return module.PromptInjectionJudgeResult(
+            return module.JudgeResult(
                 success=False,
                 confidence=0.2,
                 reason="No injected-intent behavior observed.",
@@ -320,7 +320,7 @@ def test_trap_local_evaluation_emits_phase_and_heartbeat_progress(tmp_path: Path
             injection_type: str | None,
         ):
             del trap_intent, baseline_output, observed_output, case_metadata, injection_type
-            return module.PromptInjectionJudgeResult(
+            return module.JudgeResult(
                 success=True,
                 confidence=0.9,
                 reason="ok",

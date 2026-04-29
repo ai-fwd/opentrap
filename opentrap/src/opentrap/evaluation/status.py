@@ -1,9 +1,4 @@
-"""Reusable evaluation status utilities shared across traps.
-
-This module centralizes human-readable evaluation progress messaging so
-orchestration can provide consistent status lines regardless of trap-specific
-evaluation implementations.
-"""
+"""Reusable evaluation status utilities shared across traps."""
 
 from __future__ import annotations
 
@@ -13,11 +8,7 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class EvaluationStatusEmitter:
-    """Emit standardized evaluation phase and progress status lines.
-
-    The emitter is intentionally lightweight and side-effect free aside from
-    calling `status_callback`, so orchestration can safely pass it to traps.
-    """
+    """Emit standardized evaluation phase and progress status lines."""
 
     status_callback: Callable[[str], None]
     heartbeat_every: int = 25

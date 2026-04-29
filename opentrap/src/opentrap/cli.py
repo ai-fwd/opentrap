@@ -7,7 +7,6 @@ orchestration modules so command parsing and UX remain easy to reason about.
 from __future__ import annotations
 
 import argparse
-import datetime
 import shlex
 import sys
 from collections.abc import Mapping
@@ -20,8 +19,7 @@ from opentrap.config_loader import (
     load_trap_config,
     write_trap_config,
 )
-from opentrap.evaluation_status import EvaluationStatusEmitter
-from opentrap.io_utils import load_json
+from opentrap.evaluation import find_latest_finalized_run_manifest, run_trap_evaluation
 from opentrap.run_orchestration import RunEnvironment, run_single_trap
 from opentrap.trap_contract import SharedConfig, TrapFieldSpec
 from opentrap.trap_registry import TrapRegistry, TrapRegistryError
@@ -238,7 +236,7 @@ def cmd_trap(args: argparse.Namespace) -> int:
     )
     if fast_eval_run:
         try:
-            latest_run_manifest_path = _find_latest_finalized_run_manifest(
+            latest_run_manifest_path = find_latest_finalized_run_manifest(
                 runs_dir=environment.runs_dir,
                 trap_id=resolved,
             )
@@ -247,18 +245,12 @@ def cmd_trap(args: argparse.Namespace) -> int:
             return 1
 
         _status(f"Running trap evaluation for latest finalized run: {latest_run_manifest_path}")
-        run_dir = latest_run_manifest_path.parent
-        report_path = run_dir / "report.json"
-        status_emitter = EvaluationStatusEmitter(status_callback=_status, heartbeat_every=25)
         try:
-            selected_trap.evaluate(
-                {
-                    "trap_id": resolved,
-                    "run_manifest_path": str(latest_run_manifest_path),
-                    "run_dir": str(run_dir),
-                    "report_path": str(report_path),
-                    "status_emitter": status_emitter,
-                }
+            run_trap_evaluation(
+                trap_id=resolved,
+                trap=selected_trap,
+                run_manifest_path=latest_run_manifest_path,
+                status_callback=_status,
             )
         except Exception as exc:  # noqa: BLE001
             _status(f"Fast eval run failed: {exc}")
@@ -286,66 +278,6 @@ def cmd_trap(args: argparse.Namespace) -> int:
 
     print(str(run_ready.run_manifest_path))
     return 0 if run_ready.succeeded else 1
-
-
-def _parse_iso_timestamp(value: object) -> datetime.datetime | None:
-    if not isinstance(value, str) or not value:
-        return None
-    try:
-        normalized = value[:-1] + "+00:00" if value.endswith("Z") else value
-        parsed = datetime.datetime.fromisoformat(normalized)
-    except ValueError:
-        return None
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=datetime.UTC)
-    return parsed
-
-
-def _manifest_includes_trap(payload: Mapping[str, object], trap_id: str) -> bool:
-    raw_traps = payload.get("traps")
-    if not isinstance(raw_traps, list):
-        return False
-    for trap_entry in raw_traps:
-        if isinstance(trap_entry, dict) and trap_entry.get("trap_id") == trap_id:
-            return True
-    return False
-
-
-def _find_latest_finalized_run_manifest(*, runs_dir: Path, trap_id: str) -> Path:
-    if not runs_dir.exists() or not runs_dir.is_dir():
-        raise RuntimeError(
-            "No finalized run found for trap "
-            f"'{trap_id}' (runs directory does not exist: {runs_dir})"
-        )
-
-    latest: tuple[datetime.datetime, datetime.datetime, str, Path] | None = None
-    for candidate_dir in sorted(runs_dir.iterdir()):
-        if not candidate_dir.is_dir():
-            continue
-        manifest_path = candidate_dir / "run.json"
-        if not manifest_path.exists():
-            continue
-        try:
-            payload = load_json(manifest_path)
-        except Exception:  # noqa: BLE001
-            continue
-        if payload.get("status") != "finalized":
-            continue
-        if not _manifest_includes_trap(payload, trap_id):
-            continue
-        finalized = _parse_iso_timestamp(payload.get("finalized_at_utc"))
-        created = _parse_iso_timestamp(payload.get("created_at_utc"))
-        if finalized is None:
-            finalized = created
-        if finalized is None or created is None:
-            continue
-        key = (finalized, created, candidate_dir.name, manifest_path)
-        if latest is None or key > latest:
-            latest = key
-
-    if latest is None:
-        raise RuntimeError(f"No finalized run found for trap '{trap_id}' in {runs_dir}")
-    return latest[3]
 
 
 def build_parser() -> argparse.ArgumentParser:
