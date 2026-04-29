@@ -369,12 +369,14 @@ def test_adapter_process_integrates_route_modes_and_named_upstreams(tmp_path: Pa
                     "body": "hello",
                 }
 
-            with urlopen(f"http://127.0.0.1:{adapter_port}/observe", timeout=0.5) as response:  # noqa: S310
+            observe_url = f"http://127.0.0.1:{adapter_port}/observe"
+            with urlopen(observe_url, timeout=0.5) as response:  # noqa: S310
                 assert response.status == 200
                 assert response.headers["x-upstream-mode"] == "observe"
                 assert response.read().decode("utf-8") == "observe-from-upstream\n"
 
-            with urlopen(f"http://127.0.0.1:{adapter_port}/observe-openai", timeout=0.5) as response:  # noqa: S310
+            observe_openai_url = f"http://127.0.0.1:{adapter_port}/observe-openai"
+            with urlopen(observe_openai_url, timeout=0.5) as response:  # noqa: S310
                 assert response.status == 200
                 assert response.headers["x-upstream-mode"] == "observe-openai"
                 payload = json.loads(response.read().decode("utf-8"))

@@ -377,7 +377,9 @@ def test_observe_handler_payload_is_emitted_by_runtime(tmp_path: Path) -> None:
 
     assert response.status_code == 201
     observed_events = [
-        event for event in _read_evidence(manifest_path) if event["event_type"] == "llm_responses_observed"
+        event
+        for event in _read_evidence(manifest_path)
+        if event["event_type"] == "llm_responses_observed"
     ]
     assert len(observed_events) == 1
     assert observed_events[0]["model"] == "gpt-4.1-mini"

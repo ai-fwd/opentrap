@@ -22,17 +22,25 @@ def test_build_trap_registry_discovers_trap_ids_without_instantiation(tmp_path: 
         from __future__ import annotations
         from pathlib import Path
         from typing import Any, Mapping
-        from opentrap.trap_contract import SharedConfig, TrapFieldSpec, TrapSpec
+        from opentrap.trap_contract import SharedConfig, TrapCaseContext, TrapFieldSpec, TrapSpec
 
-        class Trap(TrapSpec[Mapping[str, Any], Mapping[str, Any], Mapping[str, Any], Mapping[str, Any]]):
+        class Trap(TrapSpec):
             trap_id = ""
             fields = {"knob": TrapFieldSpec(type="integer", default=1, min=1)}
 
             def __init__(self) -> None:
                 raise RuntimeError("constructor should not run during discovery")
 
-            def generate(self, _shared: SharedConfig, _trap: Mapping[str, Any], output_base: Path) -> Path:
+            def generate(
+                self,
+                _shared: SharedConfig,
+                _trap: Mapping[str, Any],
+                output_base: Path,
+            ) -> Path:
                 return output_base
+
+            def build_cases(self, _context: TrapCaseContext) -> list[dict[str, Any]]:
+                return []
 
             def bind(self, context: Mapping[str, Any]) -> Mapping[str, Any]:
                 return dict(context)
@@ -47,14 +55,22 @@ def test_build_trap_registry_discovers_trap_ids_without_instantiation(tmp_path: 
         from __future__ import annotations
         from pathlib import Path
         from typing import Any, Mapping
-        from opentrap.trap_contract import SharedConfig, TrapFieldSpec, TrapSpec
+        from opentrap.trap_contract import SharedConfig, TrapCaseContext, TrapFieldSpec, TrapSpec
 
-        class Trap(TrapSpec[Mapping[str, Any], Mapping[str, Any], Mapping[str, Any], Mapping[str, Any]]):
+        class Trap(TrapSpec):
             trap_id = ""
             fields = {"knob": TrapFieldSpec(type="integer", default=1, min=1)}
 
-            def generate(self, _shared: SharedConfig, _trap: Mapping[str, Any], output_base: Path) -> Path:
+            def generate(
+                self,
+                _shared: SharedConfig,
+                _trap: Mapping[str, Any],
+                output_base: Path,
+            ) -> Path:
                 return output_base
+
+            def build_cases(self, _context: TrapCaseContext) -> list[dict[str, Any]]:
+                return []
 
             def bind(self, context: Mapping[str, Any]) -> Mapping[str, Any]:
                 return dict(context)
@@ -76,14 +92,22 @@ def test_build_trap_registry_fails_when_contract_missing(tmp_path: Path) -> None
         from __future__ import annotations
         from pathlib import Path
         from typing import Any, Mapping
-        from opentrap.trap_contract import SharedConfig, TrapFieldSpec, TrapSpec
+        from opentrap.trap_contract import SharedConfig, TrapCaseContext, TrapFieldSpec, TrapSpec
 
-        class Trap(TrapSpec[Mapping[str, Any], Mapping[str, Any], Mapping[str, Any], Mapping[str, Any]]):
+        class Trap(TrapSpec):
             trap_id = ""
             fields = {"knob": TrapFieldSpec(type="integer", default=1, min=1)}
 
-            def generate(self, _shared: SharedConfig, _trap: Mapping[str, Any], output_base: Path) -> Path:
+            def generate(
+                self,
+                _shared: SharedConfig,
+                _trap: Mapping[str, Any],
+                output_base: Path,
+            ) -> Path:
                 return output_base
+
+            def build_cases(self, _context: TrapCaseContext) -> list[dict[str, Any]]:
+                return []
 
             def bind(self, context: Mapping[str, Any]) -> Mapping[str, Any]:
                 return dict(context)
@@ -147,17 +171,25 @@ def test_load_trap_fields_does_not_instantiate_trap(tmp_path: Path) -> None:
         from __future__ import annotations
         from pathlib import Path
         from typing import Any, Mapping
-        from opentrap.trap_contract import SharedConfig, TrapFieldSpec, TrapSpec
+        from opentrap.trap_contract import SharedConfig, TrapCaseContext, TrapFieldSpec, TrapSpec
 
-        class Trap(TrapSpec[Mapping[str, Any], Mapping[str, Any], Mapping[str, Any], Mapping[str, Any]]):
+        class Trap(TrapSpec):
             trap_id = ""
             fields = {"knob": TrapFieldSpec(type="integer", default=1, min=1)}
 
             def __init__(self) -> None:
                 raise RuntimeError("constructor should not run when loading fields")
 
-            def generate(self, _shared: SharedConfig, _trap: Mapping[str, Any], output_base: Path) -> Path:
+            def generate(
+                self,
+                _shared: SharedConfig,
+                _trap: Mapping[str, Any],
+                output_base: Path,
+            ) -> Path:
                 return output_base
+
+            def build_cases(self, _context: TrapCaseContext) -> list[dict[str, Any]]:
+                return []
 
             def bind(self, context: Mapping[str, Any]) -> Mapping[str, Any]:
                 return dict(context)
@@ -180,17 +212,25 @@ def test_create_trap_instantiates_and_assigns_trap_id(tmp_path: Path) -> None:
         from __future__ import annotations
         from pathlib import Path
         from typing import Any, Mapping
-        from opentrap.trap_contract import SharedConfig, TrapFieldSpec, TrapSpec
+        from opentrap.trap_contract import SharedConfig, TrapCaseContext, TrapFieldSpec, TrapSpec
 
-        class Trap(TrapSpec[Mapping[str, Any], Mapping[str, Any], Mapping[str, Any], Mapping[str, Any]]):
+        class Trap(TrapSpec):
             trap_id = ""
             fields = {"knob": TrapFieldSpec(type="integer", default=1, min=1)}
 
             def __init__(self) -> None:
                 self.created = True
 
-            def generate(self, _shared: SharedConfig, _trap: Mapping[str, Any], output_base: Path) -> Path:
+            def generate(
+                self,
+                _shared: SharedConfig,
+                _trap: Mapping[str, Any],
+                output_base: Path,
+            ) -> Path:
                 return output_base
+
+            def build_cases(self, _context: TrapCaseContext) -> list[dict[str, Any]]:
+                return []
 
             def bind(self, context: Mapping[str, Any]) -> Mapping[str, Any]:
                 return dict(context)
@@ -213,17 +253,25 @@ def test_create_trap_surfaces_constructor_failure(tmp_path: Path) -> None:
         from __future__ import annotations
         from pathlib import Path
         from typing import Any, Mapping
-        from opentrap.trap_contract import SharedConfig, TrapFieldSpec, TrapSpec
+        from opentrap.trap_contract import SharedConfig, TrapCaseContext, TrapFieldSpec, TrapSpec
 
-        class Trap(TrapSpec[Mapping[str, Any], Mapping[str, Any], Mapping[str, Any], Mapping[str, Any]]):
+        class Trap(TrapSpec):
             trap_id = ""
             fields = {"knob": TrapFieldSpec(type="integer", default=1, min=1)}
 
             def __init__(self) -> None:
                 raise RuntimeError("ctor boom")
 
-            def generate(self, _shared: SharedConfig, _trap: Mapping[str, Any], output_base: Path) -> Path:
+            def generate(
+                self,
+                _shared: SharedConfig,
+                _trap: Mapping[str, Any],
+                output_base: Path,
+            ) -> Path:
                 return output_base
+
+            def build_cases(self, _context: TrapCaseContext) -> list[dict[str, Any]]:
+                return []
 
             def bind(self, context: Mapping[str, Any]) -> Mapping[str, Any]:
                 return dict(context)

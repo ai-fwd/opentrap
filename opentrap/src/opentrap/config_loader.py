@@ -22,7 +22,7 @@ class LoadedTrapConfig:
     shared: SharedConfig
     trap_configs: dict[str, dict[str, Any]]
     product_under_test: str
-    harness: "HarnessConfig"
+    harness: HarnessConfig
 
 
 @dataclass(frozen=True)
