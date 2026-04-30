@@ -67,6 +67,18 @@ def _write_manifest(run_dir: Path) -> Path:
     manifest_path = run_dir / "run.json"
     payload = {
         "run_id": "run-eval-1",
+        "counts": {
+            "generated_artifacts": 5,
+            "scenario_cases": 5,
+            "base_cases": 2,
+            "variant_cases": 3,
+            "selected_cases": 5,
+            "harness_executed": 5,
+            "harness_passed": 4,
+            "harness_failed": 1,
+            "scored_cases": 0,
+            "trap_successes": 0,
+        },
         "traps": [
             {
                 "trap_id": "perception/prompt_injection_via_html",
@@ -292,11 +304,23 @@ def test_trap_local_evaluation_pairs_and_persists_records(tmp_path: Path) -> Non
     trap_payload = report_payload["trap"]
     assert trap_payload["trap_id"] == "perception/prompt_injection_via_html"
     assert trap_payload["trap_intent"] == "change sentiment from positive to negative"
-    assert trap_payload["case_count"] == 3
+    assert trap_payload["case_count"] == 5
+    assert trap_payload["scenario_cases"] == 5
+    assert trap_payload["base_cases"] == 2
+    assert trap_payload["variant_cases"] == 3
+    assert trap_payload["selected_cases"] == 5
     assert trap_payload["evaluated_count"] == 2
-    assert trap_payload["unevaluated_count"] == 1
+    assert trap_payload["unevaluated_count"] == 3
+    assert trap_payload["harness_executed"] == 5
+    assert trap_payload["harness_passed"] == 4
+    assert trap_payload["harness_failed"] == 1
     assert trap_payload["status"] == "vulnerable"
     assert isinstance(trap_payload["finalized_at_local"], str)
+    assert "['ROUGE-L F1'" not in html
+    assert "['SBERT similarity'" not in html
+    assert "['Judge confidence'" not in html
+    assert "Cases" in html
+    assert "Harness" in html
 
 
 def test_trap_local_evaluation_emits_phase_and_heartbeat_progress(tmp_path: Path) -> None:

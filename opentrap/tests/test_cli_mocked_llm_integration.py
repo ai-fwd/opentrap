@@ -424,6 +424,22 @@ def test_llm_mocked_run_writes_trap_local_evaluation_artifacts(
     assert all("llm_judge_model" in row for row in jsonl_rows)
     assert all("llm_judge_raw_response" in row for row in jsonl_rows)
 
+    html = evaluation_report_html.read_text(encoding="utf-8")
+    marker = '<script id="opentrap-data" type="application/json">'
+    start_index = html.index(marker) + len(marker)
+    end_index = html.index("</script>", start_index)
+    report_payload = json.loads(html[start_index:end_index].strip())
+    trap_payload = report_payload["trap"]
+    assert "scenario_cases" in trap_payload
+    assert "base_cases" in trap_payload
+    assert "variant_cases" in trap_payload
+    assert "harness_executed" in trap_payload
+    assert "harness_passed" in trap_payload
+    assert "harness_failed" in trap_payload
+    assert "['ROUGE-L F1'" not in html
+    assert "['SBERT similarity'" not in html
+    assert "['Judge confidence'" not in html
+
     csv_header = evaluation_csv.read_text(encoding="utf-8").splitlines()[0]
     assert "llm_judge_model" in csv_header
     assert "llm_judge_raw_response" not in csv_header

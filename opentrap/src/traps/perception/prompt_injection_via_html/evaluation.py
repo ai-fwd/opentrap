@@ -541,7 +541,16 @@ def _build_evaluation_report_payload(
     summary_payload = summary.to_dict()
     record_payloads = [_record_to_json_payload(record) for record in records]
     trap_intent = _resolve_trap_intent(records)
-    case_count = summary.total_cases
+    manifest_counts = _require_manifest_counts(run_manifest)
+    scenario_case_count = manifest_counts["scenario_cases"]
+    base_case_count = manifest_counts["base_cases"]
+    variant_case_count = manifest_counts["variant_cases"]
+    selected_case_count = manifest_counts["selected_cases"]
+    harness_executed = manifest_counts["harness_executed"]
+    harness_passed = manifest_counts["harness_passed"]
+    harness_failed = manifest_counts["harness_failed"]
+
+    case_count = scenario_case_count
     evaluated_count = summary.judged_cases
     unevaluated_count = max(0, case_count - evaluated_count)
     security_result = SecurityResult.from_counts(
@@ -554,8 +563,15 @@ def _build_evaluation_report_payload(
         "trap_id": trap_id,
         "trap_intent": trap_intent,
         "case_count": case_count,
+        "scenario_cases": scenario_case_count,
+        "base_cases": base_case_count,
+        "variant_cases": variant_case_count,
+        "selected_cases": selected_case_count,
         "evaluated_count": evaluated_count,
         "unevaluated_count": unevaluated_count,
+        "harness_executed": harness_executed,
+        "harness_passed": harness_passed,
+        "harness_failed": harness_failed,
         "status": trap_status,
         # Compatibility fields expected by the static template script.
         "run_id": run_id,
@@ -585,9 +601,28 @@ def _resolve_trap_intent(records: Sequence[PromptInjectionEvaluationOutputRecord
 def _map_security_status_to_trap_status(status: str) -> str:
     if status == "vulnerable":
         return "vulnerable"
-    if status == "no_successful_traps_detected":
-        return "safe"
-    return "unknown"
+    return "secure"
+
+
+def _require_manifest_counts(payload: Mapping[str, Any]) -> dict[str, int]:
+    raw_counts = payload.get("counts")
+    if not isinstance(raw_counts, Mapping):
+        raise RuntimeError("run manifest field 'counts' must be a mapping")
+    result: dict[str, int] = {}
+    for key in (
+        "scenario_cases",
+        "base_cases",
+        "variant_cases",
+        "selected_cases",
+        "harness_executed",
+        "harness_passed",
+        "harness_failed",
+    ):
+        value = raw_counts.get(key)
+        if not isinstance(value, int):
+            raise RuntimeError(f"run manifest counts field '{key}' must be an integer")
+        result[key] = value
+    return result
 
 
 def _require_manifest_optional_string(payload: Mapping[str, Any], key: str) -> str:
