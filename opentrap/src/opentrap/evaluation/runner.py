@@ -55,13 +55,19 @@ def run_trap_evaluation(
                 captured=captured_output,
             )
         result = _require_trap_eval_result(raw_result)
+        security_result = SecurityResult.from_counts(
+            success_count=result.success_count,
+            evaluated_count=result.evaluated_count,
+            details=result.details,
+        )
         _set_security_result(
             run_manifest_path=run_manifest_path,
-            security_result=SecurityResult.from_counts(
-                success_count=result.success_count,
-                evaluated_count=result.evaluated_count,
-                details=result.details,
-            ),
+            security_result=security_result,
+        )
+        _set_evaluation_counts(
+            run_manifest_path=run_manifest_path,
+            scored_cases=result.evaluated_count,
+            trap_successes=result.success_count,
         )
     except Exception:
         set_scorer_status(run_manifest_path=run_manifest_path, scorer_status="failed")
@@ -69,13 +75,35 @@ def run_trap_evaluation(
             run_manifest_path=run_manifest_path,
             security_result=SecurityResult.unavailable(),
         )
+        _set_evaluation_counts(
+            run_manifest_path=run_manifest_path,
+            scored_cases=0,
+            trap_successes=0,
+        )
         raise
     set_scorer_status(run_manifest_path=run_manifest_path, scorer_status="completed")
+    report_payload = load_json_maybe(report_path) or {}
+    counts_payload = report_payload.get("counts")
+    if not isinstance(counts_payload, Mapping):
+        raise RuntimeError("report.json is missing required counts payload")
+    scored_cases = counts_payload.get("scored_cases")
+    trap_successes = counts_payload.get("trap_successes")
+    if not isinstance(scored_cases, int) or not isinstance(trap_successes, int):
+        raise RuntimeError("report.json counts must include integer scored_cases/trap_successes")
+    security_payload = report_payload.get("security_result")
+    status = (
+        security_payload.get("status")
+        if isinstance(security_payload, Mapping) and isinstance(security_payload.get("status"), str)
+        else "unavailable"
+    )
     emit_event(
         event_sink,
         "evaluate_completed",
         trap_id=trap_id,
         run_manifest_path=str(run_manifest_path),
+        scored_cases=scored_cases,
+        trap_successes=trap_successes,
+        outcome=status,
     )
 
 
@@ -197,6 +225,38 @@ def _set_security_result(*, run_manifest_path: Path, security_result: SecurityRe
     report_path = run_manifest_path.parent / "report.json"
     report = load_json_maybe(report_path) or _build_minimal_report(run_manifest_path)
     report["security_result"] = security_result.to_report_payload()
+    write_json(report_path, report, atomic=True)
+
+
+def _set_evaluation_counts(
+    *,
+    run_manifest_path: Path,
+    scored_cases: int,
+    trap_successes: int,
+) -> None:
+    if scored_cases < 0 or trap_successes < 0:
+        raise RuntimeError("evaluation counts must be >= 0")
+
+    manifest = load_json_maybe(run_manifest_path)
+    if manifest is not None:
+        counts = manifest.get("counts")
+        if not isinstance(counts, dict):
+            raise RuntimeError("run manifest is missing required counts payload")
+        counts = dict(counts)
+        counts["scored_cases"] = scored_cases
+        counts["trap_successes"] = trap_successes
+        manifest["counts"] = counts
+        write_json(run_manifest_path, manifest, atomic=True)
+
+    report_path = run_manifest_path.parent / "report.json"
+    report = load_json_maybe(report_path) or _build_minimal_report(run_manifest_path)
+    report_counts = report.get("counts")
+    if not isinstance(report_counts, dict):
+        raise RuntimeError("report.json is missing required counts payload")
+    report_counts = dict(report_counts)
+    report_counts["scored_cases"] = scored_cases
+    report_counts["trap_successes"] = trap_successes
+    report["counts"] = report_counts
     write_json(report_path, report, atomic=True)
 
 

@@ -44,7 +44,13 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from opentrap.evaluation import EvaluationResult
-from opentrap.trap import SharedConfig, TrapCaseContext, TrapFieldSpec, TrapSpec
+from opentrap.trap import (
+    SharedConfig,
+    TrapCaseContext,
+    TrapFieldSpec,
+    TrapGenerationCounts,
+    TrapSpec,
+)
 
 {module_prelude}
 
@@ -97,6 +103,9 @@ class Trap(TrapSpec[Mapping[str, Any], Mapping[str, Any], Mapping[str, Any], Map
                 "metadata": {{"file_id": "00001", "filename": "00001.txt"}},
             }}
         ]
+
+    def generation_counts(self, _context: TrapCaseContext) -> TrapGenerationCounts:
+        return TrapGenerationCounts(generated_artifacts=1, base_cases=1, variant_cases=0)
 
     def evaluate(self, context: Mapping[str, Any]) -> Mapping[str, Any]:
         {evaluate_body}
@@ -186,8 +195,22 @@ def _write_run_manifest(
     payload: dict[str, object] = {
         "run_id": run_id,
         "status": status,
+        "product_under_test": "default",
+        "harness_command": [sys.executable, "-c", "pass"],
         "created_at_utc": created_at_utc,
         "traps": [{"trap_id": trap_id, "cases": []}],
+        "counts": {
+            "generated_artifacts": 0,
+            "scenario_cases": 0,
+            "base_cases": 0,
+            "variant_cases": 0,
+            "selected_cases": 0,
+            "harness_executed": 0,
+            "harness_passed": 0,
+            "harness_failed": 0,
+            "scored_cases": 0,
+            "trap_successes": 0,
+        },
     }
     if finalized_at_utc is not None:
         payload["finalized_at_utc"] = finalized_at_utc
@@ -553,7 +576,25 @@ def test_fast_eval_run_selects_latest_finalized_run_for_trap(
         finalized_at_utc="2026-01-01T00:20:00+00:00",
     )
     (selected_manifest_path.parent / "report.json").write_text(
-        json.dumps({"scorer_status": "pending"}) + "\n",
+        json.dumps(
+            {
+                "scorer_status": "pending",
+                "counts": {
+                    "generated_artifacts": 0,
+                    "scenario_cases": 0,
+                    "base_cases": 0,
+                    "variant_cases": 0,
+                    "selected_cases": 0,
+                    "harness_executed": 0,
+                    "harness_passed": 0,
+                    "harness_failed": 0,
+                    "scored_cases": 0,
+                    "trap_successes": 0,
+                },
+                "security_result": {"status": "unavailable"},
+            }
+        )
+        + "\n",
         encoding="utf-8",
     )
     _write_run_manifest(
@@ -585,9 +626,10 @@ def test_fast_eval_run_selects_latest_finalized_run_for_trap(
     assert code == 0
     run_manifest_path = _extract_manifest_path(captured.out)
     assert run_manifest_path.parent.name == "selected-run"
-    assert "Cases:     0" in captured.out
+    assert "Target:    default" in captured.out
     assert f"Run:       {run_manifest_path.parent}" in captured.out
-    assert "Summary" in captured.out
+    assert "Cases" in captured.out
+    assert "Trap Evaluation" in captured.out
     marker_path = run_manifest_path.parent / "fast_eval_marker.txt"
     assert marker_path.read_text(encoding="utf-8") == "ok"
     run_manifest = json.loads(run_manifest_path.read_text(encoding="utf-8"))
@@ -619,7 +661,25 @@ def test_fast_eval_run_returns_failure_when_trap_evaluation_raises(
         trap_id="reasoning/chain-trap",
     )
     (selected_manifest_path.parent / "report.json").write_text(
-        json.dumps({"scorer_status": "pending"}) + "\n",
+        json.dumps(
+            {
+                "scorer_status": "pending",
+                "counts": {
+                    "generated_artifacts": 0,
+                    "scenario_cases": 0,
+                    "base_cases": 0,
+                    "variant_cases": 0,
+                    "selected_cases": 0,
+                    "harness_executed": 0,
+                    "harness_passed": 0,
+                    "harness_failed": 0,
+                    "scored_cases": 0,
+                    "trap_successes": 0,
+                },
+                "security_result": {"status": "unavailable"},
+            }
+        )
+        + "\n",
         encoding="utf-8",
     )
 
@@ -692,7 +752,9 @@ def test_trap_run_single_records_manifest_and_artifact(
     assert "✓ Dataset generated" in captured.out
     assert "✓ Adapter ready" in captured.out
     assert "✓ Harness completed" in captured.out
-    assert "Summary" in captured.out
+    assert "Cases" in captured.out
+    assert "Case Execution" in captured.out
+    assert "Trap Evaluation" in captured.out
     assert "Adapter: Host starting on" not in captured.err
     assert "Adapter: Shutdown complete" not in captured.err
 
@@ -726,6 +788,15 @@ def test_trap_run_single_records_manifest_and_artifact(
     assert report_path.exists()
     report = json.loads(report_path.read_text(encoding="utf-8"))
     assert report["scorer_status"] == "completed"
+    assert report["counts"]["scenario_cases"] == 1
+    assert report["counts"]["base_cases"] == 1
+    assert report["counts"]["variant_cases"] == 0
+    assert report["counts"]["selected_cases"] == 1
+    assert report["counts"]["harness_executed"] == 1
+    assert report["counts"]["harness_passed"] == 1
+    assert report["counts"]["harness_failed"] == 0
+    assert report["counts"]["scored_cases"] == 1
+    assert report["counts"]["trap_successes"] == 0
     assert report["security_result"]["status"] == "no_successful_traps_detected"
     assert report["security_result"]["trap_success_count"] == 0
     assert report["security_result"]["evaluated_count"] == 1
@@ -865,6 +936,9 @@ def test_trap_run_returns_failure_when_harness_case_fails(
     assert session_payload["item_id"] == "00001"
     assert "case" not in session_payload
     report = json.loads((run_manifest_path.parent / "report.json").read_text(encoding="utf-8"))
+    assert report["counts"]["harness_executed"] == 1
+    assert report["counts"]["harness_passed"] == 0
+    assert report["counts"]["harness_failed"] == 1
     assert report["security_result"]["status"] == "no_successful_traps_detected"
     assert report["security_result"]["evaluated_count"] == 1
 
@@ -914,8 +988,11 @@ def test_report_aggregates_match_sessions_jsonl_for_failed_run(
     )
 
     assert report["run_id"] == run_manifest["run_id"]
-    assert report["session_count"] == computed_session_count
-    assert report["failed_session_count"] == computed_failed_session_count
+    assert report["counts"]["harness_executed"] == computed_session_count
+    assert report["counts"]["harness_failed"] == computed_failed_session_count
+    assert report["counts"]["harness_passed"] == (
+        computed_session_count - computed_failed_session_count
+    )
 
 
 def test_trap_run_marks_scorer_failed_when_evaluation_raises(
@@ -969,12 +1046,12 @@ def test_trap_run_marks_scorer_failed_when_evaluation_raises(
         (
             "return EvaluationResult(success_count=0, evaluated_count=2, details=None)",
             "no_successful_traps_detected",
-            "no successful traps detected",
+            "secure",
         ),
         (
             "return EvaluationResult(success_count=0, evaluated_count=0, details=None)",
             "unavailable",
-            "unavailable",
+            "secure",
         ),
     ],
     ids=["vulnerable", "no-successes", "unavailable"],
@@ -1015,11 +1092,11 @@ def test_trap_run_writes_security_result_and_prints_summary(
     run_manifest_path = _extract_manifest_path(captured.out)
     report = json.loads((run_manifest_path.parent / "report.json").read_text(encoding="utf-8"))
     assert report["security_result"]["status"] == expected_status
+    assert "Trap Evaluation" in captured.out
     assert any(
-        line.startswith("Trap result") and line.endswith(expected_display)
+        line.startswith("Outcome") and line.endswith(expected_display)
         for line in captured.out.splitlines()
     )
-    assert "Summary" in captured.out
     expected_report_path = str(run_manifest_path.parent / "evaluation.csv")
     assert any(
         line.startswith("Report") and line.endswith(expected_report_path)
@@ -1032,6 +1109,8 @@ def test_trap_run_writes_security_result_and_prints_summary(
         assert report["security_result"]["evaluated_count"] == 2
         assert report["security_result"]["trap_success_rate"] == 0.5
         assert report["security_result"]["details"] == {"judge": "ok"}
+        assert report["counts"]["trap_successes"] == 1
+        assert report["counts"]["scored_cases"] == 2
         assert "Trap successes  1 / 2" in captured.out
         assert "Success rate    50.0%" in captured.out
     elif expected_status == "no_successful_traps_detected":
@@ -1039,11 +1118,15 @@ def test_trap_run_writes_security_result_and_prints_summary(
         assert report["security_result"]["evaluated_count"] == 2
         assert report["security_result"]["trap_success_rate"] == 0.0
         assert report["security_result"]["details"] == {}
+        assert report["counts"]["trap_successes"] == 0
+        assert report["counts"]["scored_cases"] == 2
         assert "Trap successes  0 / 2" in captured.out
         assert "Success rate    0.0%" in captured.out
     else:
         assert report["security_result"]["evaluated_count"] == 0
         assert report["security_result"]["details"] == {}
+        assert report["counts"]["trap_successes"] == 0
+        assert report["counts"]["scored_cases"] == 0
         assert "⚠ Skipped  no cases were evaluated" in captured.out
 
 

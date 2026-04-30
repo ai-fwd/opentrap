@@ -6,6 +6,7 @@ from opentrap.trap.contract import (
     SharedConfig,
     TrapCaseContext,
     TrapFieldSpec,
+    TrapGenerationCounts,
     TrapSpec,
 )
 from opentrap.trap.definition import TrapDefinition
@@ -24,6 +25,7 @@ __all__ = [
     "TrapCaseContext",
     "TrapDefinition",
     "TrapFieldSpec",
+    "TrapGenerationCounts",
     "TrapRegistry",
     "TrapRegistryError",
     "TrapSpec",

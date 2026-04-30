@@ -34,6 +34,16 @@ class TrapCaseContext:
 
 
 @dataclass(frozen=True)
+class TrapGenerationCounts:
+    generated_artifacts: int
+    base_cases: int
+    variant_cases: int
+
+    def total_cases(self) -> int:
+        return self.base_cases + self.variant_cases
+
+
+@dataclass(frozen=True)
 class TrapFieldSpec:
     type: FieldType
     required: bool = False
@@ -74,6 +84,10 @@ class TrapSpec(ABC, Generic[BindContextT, ActionsT, EvalContextT, EvalResultT]):
     @abstractmethod
     def build_cases(self, context: TrapCaseContext) -> list[dict[str, Any]]:
         """Parse generated trap artifacts into ordered execution cases."""
+
+    @abstractmethod
+    def generation_counts(self, context: TrapCaseContext) -> TrapGenerationCounts:
+        """Return generated-artifact and base/variant case counts for CLI/reporting."""
 
     @abstractmethod
     def evaluate(self, context: EvalContextT) -> EvalResultT:

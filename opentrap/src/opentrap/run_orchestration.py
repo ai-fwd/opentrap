@@ -36,7 +36,7 @@ from opentrap.io_utils import (
     write_json,
     write_jsonl,
 )
-from opentrap.trap import SharedConfig, TrapSpec
+from opentrap.trap import SharedConfig, TrapCaseContext, TrapSpec
 
 ADAPTER_HOST = "127.0.0.1"
 ADAPTER_PORT = 7860  # default port so it's easier for PUT changes
@@ -47,6 +47,18 @@ ADAPTER_TERMINATE_TIMEOUT_SECONDS = 3.0
 SESSIONS_FILE_NAME = "sessions.jsonl"
 TRACES_FILE_NAME = "traces.jsonl"
 ADAPTER_STATUS_PREFIX = "[adapter]"
+COUNT_FIELDS = (
+    "generated_artifacts",
+    "scenario_cases",
+    "base_cases",
+    "variant_cases",
+    "selected_cases",
+    "harness_executed",
+    "harness_passed",
+    "harness_failed",
+    "scored_cases",
+    "trap_successes",
+)
 
 
 @dataclass(frozen=True)
@@ -67,6 +79,38 @@ class TrapRunResult:
 class _AdapterStderrBridge:
     thread: threading.Thread
     buffered_lines: list[str]
+
+
+def _initial_counts() -> dict[str, int]:
+    return {
+        "generated_artifacts": 0,
+        "scenario_cases": 0,
+        "base_cases": 0,
+        "variant_cases": 0,
+        "selected_cases": 0,
+        "harness_executed": 0,
+        "harness_passed": 0,
+        "harness_failed": 0,
+        "scored_cases": 0,
+        "trap_successes": 0,
+    }
+
+
+def _update_manifest_counts(manifest_path: Path, *, updates: Mapping[str, int]) -> dict[str, int]:
+    manifest = load_json(manifest_path)
+    raw_counts = manifest.get("counts")
+    if not isinstance(raw_counts, dict):
+        raw_counts = _initial_counts()
+    counts = dict(raw_counts)
+    for key, value in updates.items():
+        if key not in COUNT_FIELDS:
+            raise RuntimeError(f"unknown count key '{key}'")
+        if value < 0:
+            raise RuntimeError(f"count '{key}' must be >= 0")
+        counts[key] = int(value)
+    manifest["counts"] = counts
+    write_json(manifest_path, manifest, atomic=True)
+    return counts
 
 
 def _launch_adapter(
@@ -345,6 +389,15 @@ def _finalize_run(manifest_path: Path, *, succeeded: bool) -> None:
             if session.get("harness_exit_code") not in {None, 0}
         ]
     )
+    passed_session_count = max(0, session_count - failed_session_count)
+
+    raw_counts = manifest.get("counts")
+    if not isinstance(raw_counts, dict):
+        raise RuntimeError("run manifest is missing required 'counts' payload")
+    counts = dict(raw_counts)
+    counts["harness_executed"] = session_count
+    counts["harness_passed"] = passed_session_count
+    counts["harness_failed"] = failed_session_count
 
     manifest["active_case_index"] = None
     manifest["active_session_id"] = None
@@ -352,6 +405,7 @@ def _finalize_run(manifest_path: Path, *, succeeded: bool) -> None:
     manifest["finalized_at_utc"] = ended_at_utc
     manifest["succeeded"] = succeeded
     manifest["scorer_status"] = "pending"
+    manifest["counts"] = counts
 
     report_path = manifest_path.parent / "report.json"
     report_payload = {
@@ -361,9 +415,7 @@ def _finalize_run(manifest_path: Path, *, succeeded: bool) -> None:
         "scorer_status": "pending",
         "trap_count": len(trap_ids),
         "trap_ids": trap_ids,
-        "case_count": manifest.get("case_count", 0),
-        "session_count": session_count,
-        "failed_session_count": failed_session_count,
+        "counts": counts,
         "security_result": {
             "status": "unavailable",
             "trap_success_count": 0,
@@ -412,6 +464,8 @@ def run_single_trap(
         "run_started",
         trap_id=trap_id,
         requested_trap_ref=requested_trap_ref,
+        target=product_under_test,
+        harness_command=" ".join(harness.command),
         run_id=run_id,
         run_dir=str(run_dir),
         run_manifest_path=str(run_manifest_path),
@@ -427,9 +481,12 @@ def run_single_trap(
         "scorer_status": "pending",
         "active_case_index": None,
         "active_session_id": None,
+        "harness_command": list(harness.command),
+        "harness_cwd": harness.cwd,
         "sessions_file": SESSIONS_FILE_NAME,
         "sessions": [],
         "traps": [],
+        "counts": _initial_counts(),
     }
     write_json(run_manifest_path, run_manifest)
 
@@ -471,17 +528,49 @@ def run_single_trap(
         raise RuntimeError("dataset generation completed, but no execution cases were produced")
 
     total_case_count = len(dataset.cases)
+    trap = registry[trap_id]
+    generation_counts = trap.generation_counts(
+        TrapCaseContext(
+            artifact_path=Path(dataset.artifact_path),
+            metadata_path=Path(dataset.metadata_path),
+            data_dir=Path(dataset.data_dir),
+            data_items=tuple(dict(item) for item in dataset.data_items),
+        )
+    )
+    generated_artifact_count = int(generation_counts.generated_artifacts)
+    base_case_count = int(generation_counts.base_cases)
+    variant_case_count = int(generation_counts.variant_cases)
+    if generated_artifact_count != len(dataset.data_items):
+        raise RuntimeError(
+            "trap generation counts mismatch: generated_artifacts does not match data_items"
+        )
+    if total_case_count != base_case_count + variant_case_count:
+        raise RuntimeError(
+            "trap generation counts mismatch: scenario_cases must equal base_cases + variant_cases"
+        )
+
     case_count_to_run = total_case_count
     if max_cases is not None:
         if max_cases < 1:
             raise RuntimeError("max_cases must be >= 1")
         case_count_to_run = min(total_case_count, max_cases)
+    counts = {
+        "generated_artifacts": generated_artifact_count,
+        "scenario_cases": total_case_count,
+        "base_cases": base_case_count,
+        "variant_cases": variant_case_count,
+        "selected_cases": case_count_to_run,
+        "harness_executed": 0,
+        "harness_passed": 0,
+        "harness_failed": 0,
+        "scored_cases": 0,
+        "trap_successes": 0,
+    }
     emit_event(
         event_sink,
         "generate_completed",
         trap_id=trap_id,
-        case_count=total_case_count,
-        executing_case_count=case_count_to_run,
+        counts=counts,
     )
 
     trap_entry = {
@@ -491,7 +580,7 @@ def run_single_trap(
     }
     run_manifest["traps"] = [trap_entry]
     run_manifest["trap_count"] = 1
-    run_manifest["case_count"] = total_case_count
+    run_manifest["counts"] = counts
     run_manifest["status"] = "armed"
     write_json(run_manifest_path, run_manifest, atomic=True)
 
@@ -500,6 +589,9 @@ def run_single_trap(
     adapter_process: subprocess.Popen[Any] | None = None
     adapter_stderr_bridge: _AdapterStderrBridge | None = None
     succeeded = True
+    harness_executed = 0
+    harness_passed = 0
+    harness_failed = 0
     try:
         emit_event(
             event_sink,
@@ -552,7 +644,7 @@ def run_single_trap(
                 "case_started",
                 case_index=case_index,
                 display_case_index=case_index + 1,
-                total_cases=case_count_to_run,
+                selected_cases=case_count_to_run,
             )
             descriptor = _start_case_session(run_manifest_path, case_index=case_index)
 
@@ -580,36 +672,53 @@ def run_single_trap(
                 "harness_output",
                 case_index=case_index,
                 display_case_index=case_index + 1,
-                total_cases=case_count_to_run,
+                selected_cases=case_count_to_run,
                 exit_code=harness_exit_code,
                 session_id=descriptor.session_id,
                 stdout=harness_stdout,
                 stderr=harness_stderr,
             )
 
+            harness_executed += 1
             if harness_exit_code == 0:
+                harness_passed += 1
                 emit_event(
                     event_sink,
                     "case_finished",
                     case_index=case_index,
                     display_case_index=case_index + 1,
-                    total_cases=case_count_to_run,
+                    selected_cases=case_count_to_run,
+                    harness_executed=harness_executed,
+                    harness_passed=harness_passed,
+                    harness_failed=harness_failed,
                     exit_code=harness_exit_code,
                     session_id=descriptor.session_id,
                     succeeded=True,
                 )
             else:
                 succeeded = False
+                harness_failed += 1
                 emit_event(
                     event_sink,
                     "case_finished",
                     case_index=case_index,
                     display_case_index=case_index + 1,
-                    total_cases=case_count_to_run,
+                    selected_cases=case_count_to_run,
+                    harness_executed=harness_executed,
+                    harness_passed=harness_passed,
+                    harness_failed=harness_failed,
                     exit_code=harness_exit_code,
                     session_id=descriptor.session_id,
                     succeeded=False,
                 )
+            _update_manifest_counts(
+                run_manifest_path,
+                updates={
+                    "harness_executed": harness_executed,
+                    "harness_passed": harness_passed,
+                    "harness_failed": harness_failed,
+                },
+            )
     finally:
         clear_active_session_descriptor(_active_session_path(run_manifest_path))
         _terminate_process(adapter_process)
@@ -621,6 +730,7 @@ def run_single_trap(
         "run_finalized",
         run_manifest_path=str(run_manifest_path),
         succeeded=succeeded,
+        counts=load_json(run_manifest_path)["counts"],
     )
     trap_for_evaluation = registry.get(trap_id)
     if trap_for_evaluation is not None:

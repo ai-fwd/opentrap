@@ -27,28 +27,36 @@ class SecuritySummary:
     """Normalized report fields used by CLI final summary renderers."""
 
     run_id: str
-    case_count: int
-    session_count: int
-    failed_session_count: int
+    generated_artifacts: int
+    scenario_cases: int
+    base_cases: int
+    variant_cases: int
+    selected_cases: int
+    harness_executed: int
+    harness_passed: int
+    harness_failed: int
+    scored_cases: int
+    trap_successes: int
     security_status: str
     display_status: str
-    trap_success_count: int
-    evaluated_count: int
     rate_percent: str
-
-    @property
-    def passed_session_count(self) -> int:
-        return max(0, self.session_count - self.failed_session_count)
+    report_path: str
 
 
 @dataclass
 class _RunDisplayState:
     trap_id: str = "-"
+    target: str = "-"
+    harness_command: str = "-"
     run_dir: str = "-"
     run_manifest_path: str = ""
     mode: str = "run"
-    case_count: int | None = None
-    executing_case_count: int | None = None
+    generated_artifacts: int = 0
+    scenario_cases: int = 0
+    base_cases: int = 0
+    variant_cases: int = 0
+    selected_cases: int = 0
+    harness_executed: int = 0
     dataset_from_cache: bool = False
     generation_status: str = "pending"
     generation_message: str = "Dataset pending"
@@ -58,6 +66,11 @@ class _RunDisplayState:
     harness_message: str = "Harness pending"
     harness_passed: int = 0
     harness_failed: int = 0
+    scored_cases: int = 0
+    trap_successes: int = 0
+    trap_outcome: str = "pending"
+    trap_success_rate: str = "0.0%"
+    report_path: str = "-"
     evaluation_status: str = "pending"
     evaluation_message: str = "Evaluation pending"
 
@@ -101,10 +114,12 @@ class PlainRenderer:
             return
 
         if event_type == "generate_completed":
-            case_count = _int_or_default(payload.get("case_count"), default=0)
-            executing = _int_or_default(payload.get("executing_case_count"), default=case_count)
-            self._state.case_count = case_count
-            self._state.executing_case_count = executing
+            counts = _require_counts_payload(payload)
+            self._state.generated_artifacts = counts["generated_artifacts"]
+            self._state.scenario_cases = counts["scenario_cases"]
+            self._state.base_cases = counts["base_cases"]
+            self._state.variant_cases = counts["variant_cases"]
+            self._state.selected_cases = counts["selected_cases"]
             self._state.generation_status = "completed"
             source = "(from cache)" if self._state.dataset_from_cache else ""
             self._state.generation_message = f"Dataset generated {source}".strip()
@@ -142,8 +157,8 @@ class PlainRenderer:
         if event_type == "case_started":
             self._state.harness_status = "running"
             index = _int_or_default(payload.get("display_case_index"), default=0)
-            total = _int_or_default(payload.get("total_cases"), default=0)
-            self._state.harness_message = f"Running case {index}/{total}"
+            total = _int_or_default(payload.get("selected_cases"), default=0)
+            self._state.harness_message = f"Progress: {max(0, index - 1)} / {total}"
             return
 
         if event_type == "harness_output":
@@ -152,17 +167,25 @@ class PlainRenderer:
             return
 
         if event_type == "case_finished":
-            succeeded = bool(payload.get("succeeded"))
-            if succeeded:
-                self._state.harness_passed += 1
-            else:
-                self._state.harness_failed += 1
-            total = _int_or_default(payload.get("total_cases"), default=0)
-            completed = self._state.harness_passed + self._state.harness_failed
-            self._state.harness_message = f"Harness cases {completed}/{total}"
+            self._state.harness_executed = _int_or_default(
+                payload.get("harness_executed"),
+                default=0,
+            )
+            self._state.harness_passed = _int_or_default(payload.get("harness_passed"), default=0)
+            self._state.harness_failed = _int_or_default(payload.get("harness_failed"), default=0)
+            selected = _int_or_default(
+                payload.get("selected_cases"),
+                default=self._state.selected_cases,
+            )
+            self._state.selected_cases = selected
+            self._state.harness_message = f"Progress: {self._state.harness_executed} / {selected}"
             return
 
         if event_type == "run_finalized":
+            counts = _require_counts_payload(payload)
+            self._state.harness_executed = counts["harness_executed"]
+            self._state.harness_passed = counts["harness_passed"]
+            self._state.harness_failed = counts["harness_failed"]
             if self._state.harness_failed:
                 self._state.harness_status = "failed"
                 self._progress("✗ Harness completed with failures")
@@ -197,7 +220,12 @@ class PlainRenderer:
             if run_manifest_path is None:
                 return
             summary = load_security_summary(run_manifest_path)
-            if summary.security_status == "unavailable" and summary.evaluated_count == 0:
+            self._state.scored_cases = summary.scored_cases
+            self._state.trap_successes = summary.trap_successes
+            self._state.trap_outcome = summary.display_status
+            self._state.trap_success_rate = summary.rate_percent
+            self._state.report_path = summary.report_path
+            if summary.security_status == "unavailable" and summary.scored_cases == 0:
                 self._state.evaluation_status = "skipped"
                 self._state.evaluation_message = "Evaluation skipped"
                 self._progress("⚠ Evaluation skipped: no cases were evaluated")
@@ -218,12 +246,18 @@ class PlainRenderer:
         """Render final textual report summary for one trap run."""
         summary = load_security_summary(run_manifest_path)
         print()
-        if summary.security_status == "unavailable" and summary.evaluated_count == 0:
+        if summary.security_status == "unavailable" and summary.scored_cases == 0:
             print("Evaluation")
             print("⚠ Skipped  no cases were evaluated")
             print()
-        print("Summary")
-        _print_plain_rows(_summary_rows(summary, run_manifest_path))
+        print("Cases")
+        _print_plain_rows(_cases_rows(summary))
+        print()
+        print("Case Execution")
+        _print_plain_rows(_execution_rows(summary))
+        print()
+        print("Trap Evaluation")
+        _print_plain_rows(_evaluation_rows(summary))
         if self.verbose:
             print()
             print("Artifacts")
@@ -233,6 +267,12 @@ class PlainRenderer:
         trap_id = payload.get("trap_id")
         if isinstance(trap_id, str) and trap_id:
             self._state.trap_id = trap_id
+        target = payload.get("target")
+        if isinstance(target, str) and target:
+            self._state.target = target
+        harness_command = payload.get("harness_command")
+        if isinstance(harness_command, str) and harness_command:
+            self._state.harness_command = harness_command
         run_dir = payload.get("run_dir")
         if isinstance(run_dir, str) and run_dir:
             self._state.run_dir = _display_path(Path(run_dir))
@@ -244,14 +284,23 @@ class PlainRenderer:
             self._state.mode = mode
         if self._state.mode == "fast_eval":
             self._mark_execution_stages_skipped()
-        case_count = payload.get("case_count")
-        if isinstance(case_count, int):
-            self._state.case_count = case_count
+        counts_payload = payload.get("counts")
+        if isinstance(counts_payload, Mapping):
+            counts = _require_counts_payload(payload)
+            self._state.generated_artifacts = counts["generated_artifacts"]
+            self._state.scenario_cases = counts["scenario_cases"]
+            self._state.base_cases = counts["base_cases"]
+            self._state.variant_cases = counts["variant_cases"]
+            self._state.selected_cases = counts["selected_cases"]
+            self._state.harness_executed = counts["harness_executed"]
+            self._state.harness_passed = counts["harness_passed"]
+            self._state.harness_failed = counts["harness_failed"]
+            self._state.scored_cases = counts["scored_cases"]
+            self._state.trap_successes = counts["trap_successes"]
         if not self._run_header_printed:
             print("OpenTrap Run")
             print(f"Trap:      {self._state.trap_id}")
-            if self._state.case_count is not None:
-                print(f"Cases:     {self._state.case_count}")
+            print(f"Target:    {self._state.target}")
             if self._state.run_dir != "-":
                 print(f"Run:       {self._state.run_dir}")
             print()
@@ -274,7 +323,7 @@ class PlainRenderer:
 
     def _print_harness_output(self, payload: Mapping[str, object]) -> None:
         index = _int_or_default(payload.get("display_case_index"), default=0)
-        total = _int_or_default(payload.get("total_cases"), default=0)
+        total = _int_or_default(payload.get("selected_cases"), default=0)
         exit_code = _int_or_default(payload.get("exit_code"), default=1)
         stdout = payload.get("stdout")
         stderr = payload.get("stderr")
@@ -367,10 +416,12 @@ class RichRenderer:
             return
 
         if event_type == "generate_completed":
-            case_count = _int_or_default(payload.get("case_count"), default=0)
-            executing = _int_or_default(payload.get("executing_case_count"), default=case_count)
-            self._state.case_count = case_count
-            self._state.executing_case_count = executing
+            counts = _require_counts_payload(payload)
+            self._state.generated_artifacts = counts["generated_artifacts"]
+            self._state.scenario_cases = counts["scenario_cases"]
+            self._state.base_cases = counts["base_cases"]
+            self._state.variant_cases = counts["variant_cases"]
+            self._state.selected_cases = counts["selected_cases"]
             source = "(from cache)" if self._state.dataset_from_cache else ""
             self._state.generation_status = "completed"
             self._state.generation_message = f"Dataset generated {source}".strip()
@@ -408,8 +459,8 @@ class RichRenderer:
         if event_type == "case_started":
             self._state.harness_status = "running"
             index = _int_or_default(payload.get("display_case_index"), default=0)
-            total = _int_or_default(payload.get("total_cases"), default=0)
-            self._state.harness_message = f"Running case {index}/{total}"
+            total = _int_or_default(payload.get("selected_cases"), default=0)
+            self._state.harness_message = f"Progress: {max(0, index - 1)} / {total}"
             self._refresh()
             return
 
@@ -419,17 +470,28 @@ class RichRenderer:
             return
 
         if event_type == "case_finished":
-            if bool(payload.get("succeeded")):
-                self._state.harness_passed += 1
-            else:
-                self._state.harness_failed += 1
-            total = _int_or_default(payload.get("total_cases"), default=0)
-            completed = self._state.harness_passed + self._state.harness_failed
-            self._state.harness_message = f"Harness cases {completed}/{total}"
+            self._state.harness_executed = _int_or_default(
+                payload.get("harness_executed"),
+                default=0,
+            )
+            self._state.harness_passed = _int_or_default(payload.get("harness_passed"), default=0)
+            self._state.harness_failed = _int_or_default(payload.get("harness_failed"), default=0)
+            selected = _int_or_default(
+                payload.get("selected_cases"),
+                default=self._state.selected_cases,
+            )
+            self._state.selected_cases = selected
+            self._state.harness_message = (
+                f"Progress: {self._state.harness_executed} / {self._state.selected_cases}"
+            )
             self._refresh()
             return
 
         if event_type == "run_finalized":
+            counts = _require_counts_payload(payload)
+            self._state.harness_executed = counts["harness_executed"]
+            self._state.harness_passed = counts["harness_passed"]
+            self._state.harness_failed = counts["harness_failed"]
             if self._state.harness_failed:
                 self._state.harness_status = "failed"
                 self._state.harness_message = "Harness completed with failures"
@@ -475,7 +537,12 @@ class RichRenderer:
             if run_manifest_path is None:
                 return
             summary = load_security_summary(run_manifest_path)
-            if summary.security_status == "unavailable" and summary.evaluated_count == 0:
+            self._state.scored_cases = summary.scored_cases
+            self._state.trap_successes = summary.trap_successes
+            self._state.trap_outcome = summary.display_status
+            self._state.trap_success_rate = summary.rate_percent
+            self._state.report_path = summary.report_path
+            if summary.security_status == "unavailable" and summary.scored_cases == 0:
                 self._state.evaluation_status = "skipped"
                 self._state.evaluation_message = "Evaluation skipped"
             else:
@@ -483,7 +550,6 @@ class RichRenderer:
                 self._state.evaluation_message = "Evaluation completed"
             self._refresh()
             self._stop_live()
-            self.print_final_summary(run_manifest_path)
             return
 
         if event_type == "run_failed":
@@ -505,16 +571,43 @@ class RichRenderer:
     def print_final_summary(self, run_manifest_path: Path) -> None:
         """Render final rich panel summary for one trap run."""
         summary = load_security_summary(run_manifest_path)
-        table = _build_rich_rows(_summary_rows(summary, run_manifest_path))
+        self.stdout.print(
+            Panel(_build_rich_rows(_cases_rows(summary)), title="Cases", border_style="yellow")
+        )
+        self.stdout.print(
+            Panel(
+                _build_rich_rows(_execution_rows(summary)),
+                title="Case Execution",
+                border_style="cyan",
+            )
+        )
+        eval_rows = _evaluation_rows(summary)
+        self.stdout.print(
+            Panel(
+                _build_rich_rows(eval_rows),
+                title="Trap Evaluation",
+                border_style="magenta",
+            )
+        )
         if self.verbose:
-            for label, value in _artifact_rows(run_manifest_path):
-                table.add_row(label, value)
-        self.stdout.print(Panel(table, title="Summary", border_style="blue"))
+            self.stdout.print(
+                Panel(
+                    _build_rich_rows(_artifact_rows(run_manifest_path)),
+                    title="Artifacts",
+                    border_style="blue",
+                )
+            )
 
     def _on_run_started(self, payload: Mapping[str, object]) -> None:
         trap_id = payload.get("trap_id")
         if isinstance(trap_id, str) and trap_id:
             self._state.trap_id = trap_id
+        target = payload.get("target")
+        if isinstance(target, str) and target:
+            self._state.target = target
+        harness_command = payload.get("harness_command")
+        if isinstance(harness_command, str) and harness_command:
+            self._state.harness_command = harness_command
         run_dir = payload.get("run_dir")
         if isinstance(run_dir, str) and run_dir:
             self._state.run_dir = _display_path(Path(run_dir))
@@ -526,9 +619,19 @@ class RichRenderer:
             self._state.mode = mode
         if self._state.mode == "fast_eval":
             self._mark_execution_stages_skipped()
-        case_count = payload.get("case_count")
-        if isinstance(case_count, int):
-            self._state.case_count = case_count
+        counts_payload = payload.get("counts")
+        if isinstance(counts_payload, Mapping):
+            counts = _require_counts_payload(payload)
+            self._state.generated_artifacts = counts["generated_artifacts"]
+            self._state.scenario_cases = counts["scenario_cases"]
+            self._state.base_cases = counts["base_cases"]
+            self._state.variant_cases = counts["variant_cases"]
+            self._state.selected_cases = counts["selected_cases"]
+            self._state.harness_executed = counts["harness_executed"]
+            self._state.harness_passed = counts["harness_passed"]
+            self._state.harness_failed = counts["harness_failed"]
+            self._state.scored_cases = counts["scored_cases"]
+            self._state.trap_successes = counts["trap_successes"]
         if self._live is None:
             self._start_live()
         else:
@@ -560,10 +663,11 @@ class RichRenderer:
         header.add_column()
         header.add_row("[bold cyan]OpenTrap[/bold cyan] run")
 
-        config_rows = [("Trap", escape(self._state.trap_id))]
-        if self._state.case_count is not None:
-            config_rows.append(("Cases", str(self._state.case_count)))
-        config_rows.append(("Run", escape(self._state.run_dir)))
+        config_rows = [
+            ("Trap", escape(self._state.trap_id)),
+            ("Target", escape(self._state.target)),
+            ("Run", escape(self._state.run_dir)),
+        ]
         config = _build_rich_rows(config_rows)
 
         steps = Table.grid(padding=(0, 2))
@@ -573,21 +677,62 @@ class RichRenderer:
             *self._step_cells(self._state.generation_status, self._state.generation_message)
         )
         steps.add_row(*self._step_cells(self._state.adapter_status, self._state.adapter_message))
-        harness_detail = self._state.harness_message
-        if self._state.harness_status in {"running", "completed", "failed"}:
-            harness_detail = (
-                f"{self._state.harness_message} "
-                f"({self._state.harness_passed} passed, {self._state.harness_failed} failed)"
-            )
-        steps.add_row(*self._step_cells(self._state.harness_status, harness_detail))
+        steps.add_row(*self._step_cells(self._state.harness_status, self._state.harness_message))
         steps.add_row(
             *self._step_cells(self._state.evaluation_status, self._state.evaluation_message)
+        )
+
+        counts_panel = Panel(
+            _build_rich_rows(
+                [
+                    ("Scenario cases", str(self._state.scenario_cases)),
+                    ("  Base", str(self._state.base_cases)),
+                    ("  Variants", str(self._state.variant_cases)),
+                    ("Selected", str(self._state.selected_cases)),
+                ]
+            ),
+            title="Cases",
+            border_style="yellow",
+        )
+        execution_panel = Panel(
+            _build_rich_rows(
+                [
+                    ("Harness", escape(self._state.harness_command)),
+                    (
+                        "Progress",
+                        f"{self._state.harness_executed} / {self._state.selected_cases}",
+                    ),
+                    ("Harness Passed", str(self._state.harness_passed)),
+                    ("Harness Failed", str(self._state.harness_failed)),
+                ]
+            ),
+            title="Case Execution",
+            border_style="cyan",
+        )
+        evaluation_panel = Panel(
+            _build_rich_rows(
+                [
+                    ("Scored cases", str(self._state.scored_cases)),
+                    (
+                        "Trap successes",
+                        f"{self._state.trap_successes} / {self._state.scored_cases}",
+                    ),
+                    ("Success rate", self._state.trap_success_rate),
+                    ("Outcome", escape(self._state.trap_outcome)),
+                    ("Report", escape(self._state.report_path)),
+                ]
+            ),
+            title="Trap Evaluation",
+            border_style="magenta",
         )
 
         renderables: list[object] = [
             header,
             Panel(config, title="Run Configuration", border_style="blue"),
             Panel(steps, title="Progress", border_style="green"),
+            counts_panel,
+            execution_panel,
+            evaluation_panel,
         ]
         if self.verbose:
             renderables.append(self._render_verbose_output())
@@ -620,7 +765,7 @@ class RichRenderer:
 
     def _print_harness_output(self, payload: Mapping[str, object]) -> None:
         index = _int_or_default(payload.get("display_case_index"), default=0)
-        total = _int_or_default(payload.get("total_cases"), default=0)
+        total = _int_or_default(payload.get("selected_cases"), default=0)
         exit_code = _int_or_default(payload.get("exit_code"), default=1)
         stdout = payload.get("stdout")
         stderr = payload.get("stderr")
@@ -696,32 +841,29 @@ def load_security_summary(run_manifest_path: Path) -> SecuritySummary:
     """Load normalized security summary fields from a run report."""
     report_path = run_manifest_path.parent / "report.json"
     report = load_json_maybe(report_path) or {}
+    counts = report.get("counts")
+    if not isinstance(counts, Mapping):
+        raise RuntimeError("report.json is missing required counts payload")
     security_result = report.get("security_result")
     if not isinstance(security_result, Mapping):
-        security_result = {
-            "status": "unavailable",
-            "trap_success_count": 0,
-            "trap_failure_count": 0,
-            "evaluated_count": 0,
-            "trap_success_rate": None,
-            "details": {},
-        }
+        raise RuntimeError("report.json is missing required security_result payload")
 
     status_value = security_result.get("status")
     security_status = status_value if isinstance(status_value, str) else "unavailable"
-    display_status = (
-        "no successful traps detected"
-        if security_status == "no_successful_traps_detected"
-        else security_status
+    display_status = "vulnerable" if security_status == "vulnerable" else "secure"
+    generated_artifacts = _required_int(counts, "generated_artifacts")
+    scenario_cases = _required_int(counts, "scenario_cases")
+    base_cases = _required_int(counts, "base_cases")
+    variant_cases = _required_int(counts, "variant_cases")
+    selected_cases = _required_int(counts, "selected_cases")
+    harness_executed = _required_int(counts, "harness_executed")
+    harness_passed = _required_int(counts, "harness_passed")
+    harness_failed = _required_int(counts, "harness_failed")
+    scored_cases = _required_int(counts, "scored_cases")
+    trap_successes = _required_int(counts, "trap_successes")
+    rate_percent = _format_percent(
+        (trap_successes / scored_cases) if scored_cases > 0 else 0.0
     )
-
-    case_count = _int_or_default(report.get("case_count"), default=0)
-    session_count = _int_or_default(report.get("session_count"), default=case_count)
-    failed_session_count = _int_or_default(report.get("failed_session_count"), default=0)
-    trap_success_count = _int_or_default(security_result.get("trap_success_count"), default=0)
-    evaluated_count = _int_or_default(security_result.get("evaluated_count"), default=0)
-    trap_success_rate = security_result.get("trap_success_rate")
-    rate_percent = _format_percent(trap_success_rate)
 
     run_id = report.get("run_id")
     if not isinstance(run_id, str) or not run_id:
@@ -729,14 +871,20 @@ def load_security_summary(run_manifest_path: Path) -> SecuritySummary:
 
     return SecuritySummary(
         run_id=run_id,
-        case_count=case_count,
-        session_count=session_count,
-        failed_session_count=failed_session_count,
+        generated_artifacts=generated_artifacts,
+        scenario_cases=scenario_cases,
+        base_cases=base_cases,
+        variant_cases=variant_cases,
+        selected_cases=selected_cases,
+        harness_executed=harness_executed,
+        harness_passed=harness_passed,
+        harness_failed=harness_failed,
+        scored_cases=scored_cases,
+        trap_successes=trap_successes,
         security_status=security_status,
         display_status=display_status,
-        trap_success_count=trap_success_count,
-        evaluated_count=evaluated_count,
         rate_percent=rate_percent,
+        report_path=str(_preferred_report_artifact_path(run_manifest_path)),
     )
 
 
@@ -764,26 +912,34 @@ def _adapter_endpoint(payload: Mapping[str, object]) -> str | None:
     return None
 
 
-def _summary_rows(summary: SecuritySummary, run_manifest_path: Path) -> list[tuple[str, str]]:
-    rows = [("Trap result", summary.display_status)]
-    if summary.security_status == "unavailable" and summary.evaluated_count == 0:
-        rows.append(("Reason", "no cases were evaluated"))
+def _cases_rows(summary: SecuritySummary) -> list[tuple[str, str]]:
+    return [
+        ("Scenario cases", str(summary.scenario_cases)),
+        ("  Base", str(summary.base_cases)),
+        ("  Variants", str(summary.variant_cases)),
+        ("Selected", str(summary.selected_cases)),
+    ]
+
+
+def _execution_rows(summary: SecuritySummary) -> list[tuple[str, str]]:
+    return [
+        ("Progress", f"{summary.harness_executed} / {summary.selected_cases}"),
+        ("Harness Passed", str(summary.harness_passed)),
+        ("Harness Failed", str(summary.harness_failed)),
+    ]
+
+
+def _evaluation_rows(summary: SecuritySummary) -> list[tuple[str, str]]:
+    rows = [("Scored cases", str(summary.scored_cases))]
+    if summary.security_status == "unavailable" and summary.scored_cases == 0:
+        rows.append(("Trap successes", "0 / 0"))
+        rows.append(("Success rate", "0.0%"))
+        rows.append(("Outcome", "secure"))
     else:
-        rows.extend(
-            [
-                ("Trap successes", f"{summary.trap_success_count} / {summary.evaluated_count}"),
-                ("Success rate", summary.rate_percent),
-            ]
-        )
-    rows.extend(
-        [
-            (
-                "Harness",
-                f"{summary.passed_session_count} passed, {summary.failed_session_count} failed",
-            ),
-            ("Report", _display_path(_preferred_report_artifact_path(run_manifest_path))),
-        ]
-    )
+        rows.append(("Trap successes", f"{summary.trap_successes} / {summary.scored_cases}"))
+        rows.append(("Success rate", summary.rate_percent))
+        rows.append(("Outcome", summary.display_status))
+    rows.append(("Report", summary.report_path))
     return rows
 
 
@@ -827,3 +983,31 @@ def _format_percent(value: object) -> str:
     if isinstance(value, int | float):
         return f"{float(value) * 100.0:.1f}%"
     return "0.0%"
+
+
+def _required_int(payload: Mapping[str, object], key: str) -> int:
+    value = payload.get(key)
+    if isinstance(value, int):
+        return value
+    raise RuntimeError(f"missing required integer field: {key}")
+
+
+def _require_counts_payload(payload: Mapping[str, object]) -> dict[str, int]:
+    raw_counts = payload.get("counts")
+    if not isinstance(raw_counts, Mapping):
+        raise RuntimeError("event payload is missing required counts object")
+    counts: dict[str, int] = {}
+    for key in (
+        "generated_artifacts",
+        "scenario_cases",
+        "base_cases",
+        "variant_cases",
+        "selected_cases",
+        "harness_executed",
+        "harness_passed",
+        "harness_failed",
+        "scored_cases",
+        "trap_successes",
+    ):
+        counts[key] = _required_int(raw_counts, key)
+    return counts

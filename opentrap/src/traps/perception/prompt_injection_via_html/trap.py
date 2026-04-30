@@ -14,7 +14,13 @@ from llm_config import load_llm_config_from_env
 from llm_html_generator import LLMHTMLGenerator
 
 from opentrap.evaluation import EvaluationContext, EvaluationResult
-from opentrap.trap import SharedConfig, TrapCaseContext, TrapFieldSpec, TrapSpec
+from opentrap.trap import (
+    SharedConfig,
+    TrapCaseContext,
+    TrapFieldSpec,
+    TrapGenerationCounts,
+    TrapSpec,
+)
 
 
 @dataclass(frozen=True)
@@ -133,6 +139,33 @@ class Trap(
                 }
             )
         return cases
+
+    def generation_counts(self, context: TrapCaseContext) -> TrapGenerationCounts:
+        base_cases = 0
+        variant_cases = 0
+        generated_artifacts = 0
+
+        for raw_line in context.metadata_path.read_text(encoding="utf-8").splitlines():
+            if not raw_line.strip():
+                continue
+            record = json.loads(raw_line)
+            if not isinstance(record, dict):
+                continue
+            file_id = record.get("file_id")
+            filename = record.get("filename")
+            if not isinstance(file_id, str) or not isinstance(filename, str):
+                continue
+            generated_artifacts += 1
+            if record.get("is_poisoned") is True:
+                variant_cases += 1
+            elif record.get("is_poisoned") is False:
+                base_cases += 1
+
+        return TrapGenerationCounts(
+            generated_artifacts=generated_artifacts,
+            base_cases=base_cases,
+            variant_cases=variant_cases,
+        )
 
     def evaluate(self, context: EvaluationContext) -> EvaluationResult:
         eval_context = EvaluationContext.from_value(context, default_trap_id=self.trap_id)

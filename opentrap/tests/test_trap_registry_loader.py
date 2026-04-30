@@ -19,7 +19,13 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Mapping
 
-from opentrap.trap import SharedConfig, TrapFieldSpec, TrapSpec
+from opentrap.trap import (
+    SharedConfig,
+    TrapCaseContext,
+    TrapFieldSpec,
+    TrapGenerationCounts,
+    TrapSpec,
+)
 
 
 class Trap(TrapSpec[Mapping[str, Any], Mapping[str, Any], Mapping[str, Any], Mapping[str, Any]]):
@@ -34,6 +40,12 @@ class Trap(TrapSpec[Mapping[str, Any], Mapping[str, Any], Mapping[str, Any], Map
     ) -> Path:
         del shared_config, trap_config
         return output_base
+
+    def build_cases(self, _context: TrapCaseContext) -> list[dict[str, Any]]:
+        return []
+
+    def generation_counts(self, _context: TrapCaseContext) -> TrapGenerationCounts:
+        return TrapGenerationCounts(generated_artifacts=0, base_cases=0, variant_cases=0)
 
     def bind(self, context: Mapping[str, Any]) -> Mapping[str, Any]:
         return dict(context)

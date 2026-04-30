@@ -22,7 +22,13 @@ def test_build_trap_registry_discovers_trap_ids_without_instantiation(tmp_path: 
         from __future__ import annotations
         from pathlib import Path
         from typing import Any, Mapping
-        from opentrap.trap import SharedConfig, TrapCaseContext, TrapFieldSpec, TrapSpec
+        from opentrap.trap import (
+            SharedConfig,
+            TrapCaseContext,
+            TrapFieldSpec,
+            TrapGenerationCounts,
+            TrapSpec,
+        )
 
         class Trap(TrapSpec):
             trap_id = ""
@@ -42,6 +48,9 @@ def test_build_trap_registry_discovers_trap_ids_without_instantiation(tmp_path: 
             def build_cases(self, _context: TrapCaseContext) -> list[dict[str, Any]]:
                 return []
 
+            def generation_counts(self, _context: TrapCaseContext) -> TrapGenerationCounts:
+                return TrapGenerationCounts(generated_artifacts=0, base_cases=0, variant_cases=0)
+
             def bind(self, context: Mapping[str, Any]) -> Mapping[str, Any]:
                 return dict(context)
 
@@ -55,7 +64,13 @@ def test_build_trap_registry_discovers_trap_ids_without_instantiation(tmp_path: 
         from __future__ import annotations
         from pathlib import Path
         from typing import Any, Mapping
-        from opentrap.trap import SharedConfig, TrapCaseContext, TrapFieldSpec, TrapSpec
+        from opentrap.trap import (
+            SharedConfig,
+            TrapCaseContext,
+            TrapFieldSpec,
+            TrapGenerationCounts,
+            TrapSpec,
+        )
 
         class Trap(TrapSpec):
             trap_id = ""
@@ -71,6 +86,9 @@ def test_build_trap_registry_discovers_trap_ids_without_instantiation(tmp_path: 
 
             def build_cases(self, _context: TrapCaseContext) -> list[dict[str, Any]]:
                 return []
+
+            def generation_counts(self, _context: TrapCaseContext) -> TrapGenerationCounts:
+                return TrapGenerationCounts(generated_artifacts=0, base_cases=0, variant_cases=0)
 
             def bind(self, context: Mapping[str, Any]) -> Mapping[str, Any]:
                 return dict(context)
@@ -92,7 +110,13 @@ def test_build_trap_registry_fails_when_contract_missing(tmp_path: Path) -> None
         from __future__ import annotations
         from pathlib import Path
         from typing import Any, Mapping
-        from opentrap.trap import SharedConfig, TrapCaseContext, TrapFieldSpec, TrapSpec
+        from opentrap.trap import (
+            SharedConfig,
+            TrapCaseContext,
+            TrapFieldSpec,
+            TrapGenerationCounts,
+            TrapSpec,
+        )
 
         class Trap(TrapSpec):
             trap_id = ""
@@ -108,6 +132,9 @@ def test_build_trap_registry_fails_when_contract_missing(tmp_path: Path) -> None
 
             def build_cases(self, _context: TrapCaseContext) -> list[dict[str, Any]]:
                 return []
+
+            def generation_counts(self, _context: TrapCaseContext) -> TrapGenerationCounts:
+                return TrapGenerationCounts(generated_artifacts=0, base_cases=0, variant_cases=0)
 
             def bind(self, context: Mapping[str, Any]) -> Mapping[str, Any]:
                 return dict(context)
@@ -171,7 +198,13 @@ def test_load_trap_fields_does_not_instantiate_trap(tmp_path: Path) -> None:
         from __future__ import annotations
         from pathlib import Path
         from typing import Any, Mapping
-        from opentrap.trap import SharedConfig, TrapCaseContext, TrapFieldSpec, TrapSpec
+        from opentrap.trap import (
+            SharedConfig,
+            TrapCaseContext,
+            TrapFieldSpec,
+            TrapGenerationCounts,
+            TrapSpec,
+        )
 
         class Trap(TrapSpec):
             trap_id = ""
@@ -190,6 +223,9 @@ def test_load_trap_fields_does_not_instantiate_trap(tmp_path: Path) -> None:
 
             def build_cases(self, _context: TrapCaseContext) -> list[dict[str, Any]]:
                 return []
+
+            def generation_counts(self, _context: TrapCaseContext) -> TrapGenerationCounts:
+                return TrapGenerationCounts(generated_artifacts=0, base_cases=0, variant_cases=0)
 
             def bind(self, context: Mapping[str, Any]) -> Mapping[str, Any]:
                 return dict(context)
@@ -212,7 +248,13 @@ def test_create_trap_instantiates_and_assigns_trap_id(tmp_path: Path) -> None:
         from __future__ import annotations
         from pathlib import Path
         from typing import Any, Mapping
-        from opentrap.trap import SharedConfig, TrapCaseContext, TrapFieldSpec, TrapSpec
+        from opentrap.trap import (
+            SharedConfig,
+            TrapCaseContext,
+            TrapFieldSpec,
+            TrapGenerationCounts,
+            TrapSpec,
+        )
 
         class Trap(TrapSpec):
             trap_id = ""
@@ -231,6 +273,9 @@ def test_create_trap_instantiates_and_assigns_trap_id(tmp_path: Path) -> None:
 
             def build_cases(self, _context: TrapCaseContext) -> list[dict[str, Any]]:
                 return []
+
+            def generation_counts(self, _context: TrapCaseContext) -> TrapGenerationCounts:
+                return TrapGenerationCounts(generated_artifacts=0, base_cases=0, variant_cases=0)
 
             def bind(self, context: Mapping[str, Any]) -> Mapping[str, Any]:
                 return dict(context)
@@ -253,7 +298,13 @@ def test_create_trap_surfaces_constructor_failure(tmp_path: Path) -> None:
         from __future__ import annotations
         from pathlib import Path
         from typing import Any, Mapping
-        from opentrap.trap import SharedConfig, TrapCaseContext, TrapFieldSpec, TrapSpec
+        from opentrap.trap import (
+            SharedConfig,
+            TrapCaseContext,
+            TrapFieldSpec,
+            TrapGenerationCounts,
+            TrapSpec,
+        )
 
         class Trap(TrapSpec):
             trap_id = ""
@@ -272,6 +323,9 @@ def test_create_trap_surfaces_constructor_failure(tmp_path: Path) -> None:
 
             def build_cases(self, _context: TrapCaseContext) -> list[dict[str, Any]]:
                 return []
+
+            def generation_counts(self, _context: TrapCaseContext) -> TrapGenerationCounts:
+                return TrapGenerationCounts(generated_artifacts=0, base_cases=0, variant_cases=0)
 
             def bind(self, context: Mapping[str, Any]) -> Mapping[str, Any]:
                 return dict(context)
