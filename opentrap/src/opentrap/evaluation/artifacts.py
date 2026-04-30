@@ -17,6 +17,7 @@ class EvaluationArtifacts:
     evaluation_jsonl_path: Path
     evaluation_csv_path: Path
     evaluation_summary_path: Path
+    evaluation_report_html_path: Path | None
     summary: Any
 
 
@@ -74,10 +75,12 @@ def write_evaluation_artifacts(
     csv_fieldnames: Sequence[str],
     record_to_payload: Callable[[Any], Mapping[str, Any]] | None = None,
     csv_exclude_fields: set[str] | None = None,
+    evaluation_report_html: str | None = None,
 ) -> EvaluationArtifacts:
     evaluation_jsonl_path = run_dir / "evaluation.jsonl"
     evaluation_csv_path = run_dir / "evaluation.csv"
     evaluation_summary_path = run_dir / "evaluation_summary.json"
+    evaluation_report_html_path = None
 
     write_jsonl_records(evaluation_jsonl_path, records, record_to_payload=record_to_payload)
     write_csv_records(
@@ -91,11 +94,15 @@ def write_evaluation_artifacts(
         json.dumps(to_json_payload(summary), indent=2) + "\n",
         encoding="utf-8",
     )
+    if isinstance(evaluation_report_html, str):
+        evaluation_report_html_path = run_dir / "evaluation_report.html"
+        evaluation_report_html_path.write_text(evaluation_report_html, encoding="utf-8")
 
     return EvaluationArtifacts(
         evaluation_jsonl_path=evaluation_jsonl_path,
         evaluation_csv_path=evaluation_csv_path,
         evaluation_summary_path=evaluation_summary_path,
+        evaluation_report_html_path=evaluation_report_html_path,
         summary=summary,
     )
 

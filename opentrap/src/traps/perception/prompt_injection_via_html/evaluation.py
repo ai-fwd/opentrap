@@ -23,6 +23,7 @@ import json
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -42,6 +43,7 @@ from opentrap.evaluation import (
 from opentrap.evaluation.scorers import DEFAULT_SBERT_MODEL_NAME
 from opentrap.evaluation.status import emit_evaluation_phase, emit_evaluation_progress
 from opentrap.events import EventSink
+from opentrap.report import SecurityResult
 
 
 @dataclass(frozen=True)
@@ -219,6 +221,13 @@ def evaluate_prompt_injection_run(
         event_sink=event_sink,
     )
     summary = _build_summary(output_records)
+    report_html = _render_evaluation_report_html(
+        run_manifest=manifest_payload,
+        trap_id=trap_id,
+        run_id=run_id,
+        summary=summary,
+        records=output_records,
+    )
 
     emit_evaluation_phase(event_sink, phase="writing_artifacts")
     artifacts = write_evaluation_artifacts(
@@ -228,6 +237,7 @@ def evaluate_prompt_injection_run(
         csv_fieldnames=_CSV_FIELDNAMES,
         record_to_payload=_record_to_json_payload,
         csv_exclude_fields={"llm_judge_raw_response"},
+        evaluation_report_html=report_html,
     )
     emit_evaluation_phase(event_sink, phase="completed")
     return artifacts
@@ -494,3 +504,105 @@ def _record_to_json_payload(record: PromptInjectionEvaluationOutputRecord) -> di
         "injected_output": record.injected_output,
         "metadata": record.metadata,
     }
+
+
+_REPORT_TEMPLATE_PLACEHOLDER = "__OPENTRAP_REPORT_DATA__"
+_REPORT_TEMPLATE_PATH = Path(__file__).with_name("evaluation_report_template.html")
+
+
+def _render_evaluation_report_html(
+    *,
+    run_manifest: Mapping[str, Any],
+    trap_id: str,
+    run_id: str,
+    summary: PromptInjectionEvaluationSummary,
+    records: Sequence[PromptInjectionEvaluationOutputRecord],
+) -> str:
+    payload = _build_evaluation_report_payload(
+        run_manifest=run_manifest,
+        trap_id=trap_id,
+        run_id=run_id,
+        summary=summary,
+        records=records,
+    )
+    template = _REPORT_TEMPLATE_PATH.read_text(encoding="utf-8")
+    data_json = json.dumps(payload, ensure_ascii=False)
+    return template.replace(_REPORT_TEMPLATE_PLACEHOLDER, data_json)
+
+
+def _build_evaluation_report_payload(
+    *,
+    run_manifest: Mapping[str, Any],
+    trap_id: str,
+    run_id: str,
+    summary: PromptInjectionEvaluationSummary,
+    records: Sequence[PromptInjectionEvaluationOutputRecord],
+) -> dict[str, Any]:
+    summary_payload = summary.to_dict()
+    record_payloads = [_record_to_json_payload(record) for record in records]
+    trap_intent = _resolve_trap_intent(records)
+    case_count = summary.total_cases
+    evaluated_count = summary.judged_cases
+    unevaluated_count = max(0, case_count - evaluated_count)
+    security_result = SecurityResult.from_counts(
+        success_count=summary.llm_judge_success_count,
+        evaluated_count=evaluated_count,
+    )
+    trap_status = _map_security_status_to_trap_status(security_result.status)
+
+    trap_payload = {
+        "trap_id": trap_id,
+        "trap_intent": trap_intent,
+        "case_count": case_count,
+        "evaluated_count": evaluated_count,
+        "unevaluated_count": unevaluated_count,
+        "status": trap_status,
+        # Compatibility fields expected by the static template script.
+        "run_id": run_id,
+        "finalized_at_local": _format_finalized_at_local(
+            _require_manifest_optional_string(run_manifest, "finalized_at_utc")
+        ),
+        "security_result": security_result.to_report_payload(),
+        "trap_ids": [trap_id],
+    }
+    return {
+        "summary": summary_payload,
+        "records": record_payloads,
+        "trap": trap_payload,
+        # Compatibility fields expected by the static template script.
+        "trap_intent": trap_intent,
+        "unevaluated": unevaluated_count,
+    }
+
+
+def _resolve_trap_intent(records: Sequence[PromptInjectionEvaluationOutputRecord]) -> str:
+    for record in records:
+        if isinstance(record.trap_intent, str) and record.trap_intent:
+            return record.trap_intent
+    return ""
+
+
+def _map_security_status_to_trap_status(status: str) -> str:
+    if status == "vulnerable":
+        return "vulnerable"
+    if status == "no_successful_traps_detected":
+        return "safe"
+    return "unknown"
+
+
+def _require_manifest_optional_string(payload: Mapping[str, Any], key: str) -> str:
+    value = payload.get(key)
+    if isinstance(value, str):
+        return value
+    return ""
+
+
+def _format_finalized_at_local(raw_iso: str) -> str:
+    if not raw_iso:
+        return ""
+    normalized = raw_iso[:-1] + "+00:00" if raw_iso.endswith("Z") else raw_iso
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError:
+        return raw_iso
+    return parsed.astimezone().strftime("%B %d, %Y %I:%M:%S %p %Z")

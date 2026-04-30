@@ -127,3 +127,21 @@ def test_write_evaluation_artifacts_preserves_json_only_fields(tmp_path: Path) -
     assert jsonl_payload["raw"] == "provider response"
     assert csv_header == "name,metadata"
     assert summary_payload == summary
+    assert artifacts.evaluation_report_html_path is None
+
+
+def test_write_evaluation_artifacts_writes_optional_html_report(tmp_path: Path) -> None:
+    artifacts = write_evaluation_artifacts(
+        run_dir=tmp_path,
+        records=[],
+        summary={"total_cases": 0},
+        csv_fieldnames=["name"],
+        evaluation_report_html="<html><body>report</body></html>",
+    )
+
+    assert artifacts.evaluation_report_html_path == tmp_path / "evaluation_report.html"
+    assert artifacts.evaluation_report_html_path.exists()
+    assert (
+        artifacts.evaluation_report_html_path.read_text(encoding="utf-8")
+        == "<html><body>report</body></html>"
+    )

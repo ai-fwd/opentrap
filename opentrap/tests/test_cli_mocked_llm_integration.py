@@ -382,10 +382,16 @@ def test_llm_mocked_run_writes_trap_local_evaluation_artifacts(
     evaluation_jsonl = run_dir / "evaluation.jsonl"
     evaluation_csv = run_dir / "evaluation.csv"
     evaluation_summary = run_dir / "evaluation_summary.json"
+    evaluation_report_html = run_dir / "evaluation_report.html"
 
     assert evaluation_jsonl.exists()
     assert evaluation_csv.exists()
     assert evaluation_summary.exists()
+    assert evaluation_report_html.exists()
+    assert any(
+        line.startswith("Report") and line.endswith(str(evaluation_report_html))
+        for line in captured.out.splitlines()
+    )
 
     summary_payload = json.loads(evaluation_summary.read_text(encoding="utf-8"))
     assert summary_payload["total_cases"] == 8

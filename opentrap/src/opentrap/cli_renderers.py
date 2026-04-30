@@ -781,10 +781,17 @@ def _summary_rows(summary: SecuritySummary, run_manifest_path: Path) -> list[tup
                 "Harness",
                 f"{summary.passed_session_count} passed, {summary.failed_session_count} failed",
             ),
-            ("Report", _display_path(run_manifest_path.parent / "evaluation.csv")),
+            ("Report", _display_path(_preferred_report_artifact_path(run_manifest_path))),
         ]
     )
     return rows
+
+
+def _preferred_report_artifact_path(run_manifest_path: Path) -> Path:
+    html_report_path = run_manifest_path.parent / "evaluation_report.html"
+    if html_report_path.exists():
+        return html_report_path
+    return run_manifest_path.parent / "evaluation.csv"
 
 
 def _artifact_rows(run_manifest_path: Path) -> list[tuple[str, str]]:

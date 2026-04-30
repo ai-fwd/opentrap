@@ -225,6 +225,8 @@ def test_trap_local_evaluation_pairs_and_persists_records(tmp_path: Path) -> Non
     assert artifacts.evaluation_jsonl_path.exists()
     assert artifacts.evaluation_csv_path.exists()
     assert artifacts.evaluation_summary_path.exists()
+    assert artifacts.evaluation_report_html_path is not None
+    assert artifacts.evaluation_report_html_path.exists()
 
     rows = [
         json.loads(line)
@@ -277,6 +279,24 @@ def test_trap_local_evaluation_pairs_and_persists_records(tmp_path: Path) -> Non
     assert grouped_success["hidden_div"]["llm_judge_success_rate"] == 1.0
     assert grouped_success["meta_tag+comment_injection"]["llm_judge_success_rate"] == 0.0
     assert grouped_success["base64_encoded"]["llm_judge_success_rate"] is None
+
+    html = artifacts.evaluation_report_html_path.read_text(encoding="utf-8")
+    marker = '<script id="opentrap-data" type="application/json">'
+    start_index = html.index(marker) + len(marker)
+    end_index = html.index("</script>", start_index)
+    report_payload = json.loads(html[start_index:end_index].strip())
+
+    assert report_payload["summary"] == summary
+    assert report_payload["records"] == rows
+
+    trap_payload = report_payload["trap"]
+    assert trap_payload["trap_id"] == "perception/prompt_injection_via_html"
+    assert trap_payload["trap_intent"] == "change sentiment from positive to negative"
+    assert trap_payload["case_count"] == 3
+    assert trap_payload["evaluated_count"] == 2
+    assert trap_payload["unevaluated_count"] == 1
+    assert trap_payload["status"] == "vulnerable"
+    assert isinstance(trap_payload["finalized_at_local"], str)
 
 
 def test_trap_local_evaluation_emits_phase_and_heartbeat_progress(tmp_path: Path) -> None:
