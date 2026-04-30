@@ -11,7 +11,7 @@ from typing import Annotated
 import click
 import typer
 
-from opentrap.cli_renderers import build_renderer
+from opentrap.cli_rendering import build_renderer
 from opentrap.config_loader import (
     ConfigError,
     HarnessConfig,
