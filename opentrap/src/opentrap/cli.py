@@ -19,9 +19,7 @@ from opentrap.config_loader import (
     load_trap_config,
     write_trap_config,
 )
-from opentrap.evaluation import find_latest_finalized_run_manifest, run_trap_evaluation
 from opentrap.events import emit_event
-from opentrap.io_utils import load_json_maybe
 from opentrap.run_orchestration import RunEnvironment, run_single_trap
 from opentrap.trap import SharedConfig, TrapFieldSpec
 from opentrap.trap.loader import load_registry_from_candidates
@@ -174,57 +172,9 @@ def cmd_init() -> int:
     return 0
 
 
-def _run_started_payload_from_manifest(
-    *,
-    trap_id: str,
-    requested_trap_ref: str,
-    run_manifest_path: Path,
-    mode: str,
-) -> dict[str, object]:
-    manifest = load_json_maybe(run_manifest_path) or {}
-    run_id = manifest.get("run_id")
-    if not isinstance(run_id, str) or not run_id:
-        run_id = run_manifest_path.parent.name
-
-    counts = manifest.get("counts")
-    if not isinstance(counts, Mapping):
-        raise RuntimeError("run manifest is missing required counts payload")
-    for key in ("scenario_cases", "selected_cases"):
-        if not isinstance(counts.get(key), int):
-            raise RuntimeError(f"run manifest counts must include integer {key}")
-
-    target = manifest.get("product_under_test")
-    if not isinstance(target, str) or not target:
-        raise RuntimeError("run manifest is missing product_under_test")
-
-    harness_command = manifest.get("harness_command")
-    if not isinstance(harness_command, list) or not harness_command:
-        raise RuntimeError("run manifest is missing harness_command")
-    harness_tokens = [token for token in harness_command if isinstance(token, str) and token]
-    if not harness_tokens:
-        raise RuntimeError("run manifest harness_command must contain strings")
-
-    payload: dict[str, object] = {
-        "trap_id": trap_id,
-        "requested_trap_ref": requested_trap_ref,
-        "target": target,
-        "harness_command": " ".join(harness_tokens),
-        "counts": dict(counts),
-        "run_id": run_id,
-        "run_dir": str(run_manifest_path.parent),
-        "run_manifest_path": str(run_manifest_path),
-        "mode": mode,
-    }
-    return payload
-
-
-def cmd_run(trap_ref: str, *, fast_dev_run: bool, fast_eval_run: bool, verbose: bool) -> int:
-    """Execute one trap run, with optional fast dev/eval modes."""
+def cmd_run(trap_ref: str, *, verbose: bool) -> int:
+    """Execute one trap run."""
     event_sink = build_renderer(verbose=verbose)
-
-    if fast_dev_run and fast_eval_run:
-        print("--fast-dev-run and --fast-eval-run cannot be used together", file=sys.stderr)
-        return 2
 
     registry = _load_registry()
     if registry is None:
@@ -276,45 +226,6 @@ def cmd_run(trap_ref: str, *, fast_dev_run: bool, fast_eval_run: bool, verbose: 
         adapter_generated_root=DEFAULT_ADAPTER_GENERATED_ROOT,
     )
 
-    if fast_eval_run:
-        try:
-            latest_run_manifest_path = find_latest_finalized_run_manifest(
-                runs_dir=environment.runs_dir,
-                trap_id=resolved,
-            )
-            started_payload = _run_started_payload_from_manifest(
-                trap_id=resolved,
-                requested_trap_ref=trap_ref,
-                run_manifest_path=latest_run_manifest_path,
-                mode="fast_eval",
-            )
-        except Exception as exc:  # noqa: BLE001
-            emit_event(event_sink, "run_failed", stage="fast_eval_select", error=str(exc))
-            return 1
-        emit_event(
-            event_sink,
-            "run_started",
-            **started_payload,
-        )
-
-        try:
-            run_trap_evaluation(
-                trap_id=resolved,
-                trap=selected_trap,
-                run_manifest_path=latest_run_manifest_path,
-                event_sink=event_sink,
-            )
-        except Exception as exc:  # noqa: BLE001
-            emit_event(
-                event_sink,
-                "run_failed",
-                stage="fast_eval",
-                error=f"Fast eval run failed: {exc}",
-            )
-            return 1
-
-        return 0
-
     try:
         run_ready = run_single_trap(
             trap_id=resolved,
@@ -326,7 +237,6 @@ def cmd_run(trap_ref: str, *, fast_dev_run: bool, fast_eval_run: bool, verbose: 
             product_under_test=loaded.product_under_test,
             harness=loaded.harness,
             event_sink=event_sink,
-            max_cases=1 if fast_dev_run else None,
         )
     except Exception as exc:  # noqa: BLE001
         emit_event(event_sink, "run_failed", stage="run", error=str(exc))
@@ -352,15 +262,11 @@ def init_command() -> int:
 @app.command("run")
 def run_command(
     trap: Annotated[str, typer.Argument(help="Trap reference in target/name format.")],
-    fast_dev_run: Annotated[bool, typer.Option("--fast-dev-run")] = False,
-    fast_eval_run: Annotated[bool, typer.Option("--fast-eval-run")] = False,
     verbose: Annotated[bool, typer.Option("--verbose")] = False,
 ) -> int:
-    """Run one trap with optional fast execution/evaluation modes."""
+    """Run one trap."""
     return cmd_run(
         trap,
-        fast_dev_run=fast_dev_run,
-        fast_eval_run=fast_eval_run,
         verbose=verbose,
     )
 

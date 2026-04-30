@@ -50,7 +50,6 @@ class _RunDisplayState:
     harness_command: str = "-"
     run_dir: str = "-"
     run_manifest_path: str = ""
-    mode: str = "run"
     generated_artifacts: int = 0
     scenario_cases: int = 0
     base_cases: int = 0
@@ -279,11 +278,6 @@ class PlainRenderer:
         run_manifest_path = payload.get("run_manifest_path")
         if isinstance(run_manifest_path, str) and run_manifest_path:
             self._state.run_manifest_path = run_manifest_path
-        mode = payload.get("mode")
-        if isinstance(mode, str) and mode:
-            self._state.mode = mode
-        if self._state.mode == "fast_eval":
-            self._mark_execution_stages_skipped()
         counts_payload = payload.get("counts")
         if isinstance(counts_payload, Mapping):
             counts = _require_counts_payload(payload)
@@ -305,14 +299,6 @@ class PlainRenderer:
                 print(f"Run:       {self._state.run_dir}")
             print()
             self._run_header_printed = True
-
-    def _mark_execution_stages_skipped(self) -> None:
-        self._state.generation_status = "skipped"
-        self._state.generation_message = "Dataset skipped"
-        self._state.adapter_status = "skipped"
-        self._state.adapter_message = "Adapter skipped"
-        self._state.harness_status = "skipped"
-        self._state.harness_message = "Harness skipped"
 
     def _progress(self, message: str) -> None:
         print(message)
@@ -614,11 +600,6 @@ class RichRenderer:
         run_manifest_path = payload.get("run_manifest_path")
         if isinstance(run_manifest_path, str) and run_manifest_path:
             self._state.run_manifest_path = run_manifest_path
-        mode = payload.get("mode")
-        if isinstance(mode, str) and mode:
-            self._state.mode = mode
-        if self._state.mode == "fast_eval":
-            self._mark_execution_stages_skipped()
         counts_payload = payload.get("counts")
         if isinstance(counts_payload, Mapping):
             counts = _require_counts_payload(payload)
@@ -737,14 +718,6 @@ class RichRenderer:
         if self.verbose:
             renderables.append(self._render_verbose_output())
         return Group(*renderables)
-
-    def _mark_execution_stages_skipped(self) -> None:
-        self._state.generation_status = "skipped"
-        self._state.generation_message = "Dataset skipped"
-        self._state.adapter_status = "skipped"
-        self._state.adapter_message = "Adapter skipped"
-        self._state.harness_status = "skipped"
-        self._state.harness_message = "Harness skipped"
 
     def _step_cells(self, status: str, message: str) -> tuple[object, str]:
         escaped = escape(message)
