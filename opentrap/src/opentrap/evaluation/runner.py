@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 import datetime
+import io
+import logging
+import sys
 from collections.abc import Mapping
+from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from pathlib import Path
 from typing import Any
 
@@ -29,16 +33,27 @@ def run_trap_evaluation(
     )
     set_scorer_status(run_manifest_path=run_manifest_path, scorer_status="running")
     report_path = run_manifest_path.parent / "report.json"
+    captured_output = _CapturedEvaluationOutput()
+    event_sink_for_evaluation = _build_uncaptured_event_sink(event_sink)
     try:
-        raw_result = trap.evaluate(
-            {
-                "trap_id": trap_id,
-                "run_manifest_path": str(run_manifest_path),
-                "run_dir": str(run_manifest_path.parent),
-                "report_path": str(report_path),
-                "event_sink": event_sink,
-            }
-        )
+        try:
+            with _capture_evaluation_output(captured_output):
+                raw_result = trap.evaluate(
+                    {
+                        "trap_id": trap_id,
+                        "run_manifest_path": str(run_manifest_path),
+                        "run_dir": str(run_manifest_path.parent),
+                        "report_path": str(report_path),
+                        "event_sink": event_sink_for_evaluation,
+                    }
+                )
+        finally:
+            _emit_captured_evaluation_output(
+                event_sink=event_sink,
+                trap_id=trap_id,
+                run_manifest_path=run_manifest_path,
+                captured=captured_output,
+            )
         result = _require_trap_eval_result(raw_result)
         _set_security_result(
             run_manifest_path=run_manifest_path,
@@ -62,6 +77,97 @@ def run_trap_evaluation(
         trap_id=trap_id,
         run_manifest_path=str(run_manifest_path),
     )
+
+
+class _CapturedEvaluationOutput:
+    def __init__(self) -> None:
+        self.stdout = io.StringIO()
+        self.stderr = io.StringIO()
+
+
+def _build_uncaptured_event_sink(event_sink: EventSink) -> EventSink:
+    stdout = sys.stdout
+    stderr = sys.stderr
+
+    def _sink(event: Any) -> None:
+        with redirect_stdout(stdout), redirect_stderr(stderr):
+            event_sink(event)
+
+    return _sink
+
+
+@contextmanager
+def _capture_evaluation_output(captured: _CapturedEvaluationOutput) -> Any:
+    with (
+        _redirect_logging_streams(captured.stderr),
+        redirect_stdout(captured.stdout),
+        redirect_stderr(captured.stderr),
+    ):
+        yield captured
+
+
+def _emit_captured_evaluation_output(
+    *,
+    event_sink: EventSink,
+    trap_id: str,
+    run_manifest_path: Path,
+    captured: _CapturedEvaluationOutput,
+) -> None:
+    stdout = captured.stdout.getvalue()
+    stderr = captured.stderr.getvalue()
+    if stdout or stderr:
+        emit_event(
+            event_sink,
+            "evaluation_output",
+            trap_id=trap_id,
+            run_manifest_path=str(run_manifest_path),
+            stdout=stdout,
+            stderr=stderr,
+        )
+
+
+@contextmanager
+def _redirect_logging_streams(
+    stream: io.StringIO,
+) -> Any:
+    replacements: list[tuple[logging.StreamHandler[Any], Any]] = []
+    for handler in _iter_stdout_stderr_logging_handlers():
+        replacements.append((handler, handler.stream))
+        handler.setStream(stream)
+    try:
+        yield
+    finally:
+        for handler, original_stream in reversed(replacements):
+            handler.setStream(original_stream)
+
+
+def _iter_stdout_stderr_logging_handlers() -> list[logging.StreamHandler[Any]]:
+    handlers: list[logging.StreamHandler[Any]] = []
+    seen: set[int] = set()
+    for logger in _iter_known_loggers():
+        for handler in logger.handlers:
+            if id(handler) in seen:
+                continue
+            if _is_stdout_stderr_stream_handler(handler):
+                seen.add(id(handler))
+                handlers.append(handler)
+    return handlers
+
+
+def _iter_known_loggers() -> list[logging.Logger]:
+    loggers = [logging.getLogger()]
+    for candidate in logging.root.manager.loggerDict.values():
+        if isinstance(candidate, logging.Logger):
+            loggers.append(candidate)
+    return loggers
+
+
+def _is_stdout_stderr_stream_handler(handler: logging.Handler) -> bool:
+    if isinstance(handler, logging.FileHandler):
+        return False
+    if not isinstance(handler, logging.StreamHandler):
+        return False
+    return handler.stream in {sys.stdout, sys.stderr, sys.__stdout__, sys.__stderr__}
 
 
 def set_scorer_status(*, run_manifest_path: Path, scorer_status: str) -> None:

@@ -20,6 +20,7 @@ RunEventType = Literal[
     "evaluate_started",
     "evaluate_phase",
     "evaluate_progress",
+    "evaluation_output",
     "evaluate_completed",
     "run_finalized",
     "run_failed",

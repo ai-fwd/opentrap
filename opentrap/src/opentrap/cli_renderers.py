@@ -13,11 +13,13 @@ from rich.markup import escape
 from rich.panel import Panel
 from rich.spinner import Spinner
 from rich.table import Table
+from rich.text import Text
 
 from opentrap.events import EventSink, RunEvent
 from opentrap.io_utils import load_json_maybe
 
 STATUS_PREFIX = "[opentrap]"
+VERBOSE_BUFFER_LIMIT = 300
 
 
 @dataclass(frozen=True)
@@ -181,6 +183,11 @@ class PlainRenderer:
                 self._print_evaluation_progress(payload)
             return
 
+        if event_type == "evaluation_output":
+            if self.verbose:
+                self._print_evaluation_output(payload)
+            return
+
         if event_type == "evaluate_completed":
             run_manifest_path = _path_from_payload(payload, "run_manifest_path")
             if run_manifest_path is None:
@@ -298,6 +305,18 @@ class PlainRenderer:
                 file=sys.stderr,
             )
 
+    def _print_evaluation_output(self, payload: Mapping[str, object]) -> None:
+        stdout = payload.get("stdout")
+        stderr = payload.get("stderr")
+        stdout_text = stdout if isinstance(stdout, str) else ""
+        stderr_text = stderr if isinstance(stderr, str) else ""
+        if stdout_text.strip():
+            print("Evaluation stdout:", file=sys.stderr)
+            print(stdout_text.rstrip(), file=sys.stderr)
+        if stderr_text.strip():
+            print("Evaluation stderr:", file=sys.stderr)
+            print(stderr_text.rstrip(), file=sys.stderr)
+
 
 class RichRenderer:
     """Rich renderer for interactive terminals."""
@@ -308,6 +327,7 @@ class RichRenderer:
         self.stdout = Console()
         self._state = _RunDisplayState()
         self._live: Live | None = None
+        self._verbose_lines: list[str] = []
 
     def __call__(self, event: RunEvent) -> None:
         event_type = event.type
@@ -374,7 +394,7 @@ class RichRenderer:
         if event_type == "adapter_log":
             message = payload.get("message")
             if isinstance(message, str) and self.verbose:
-                self.console.print(f"[dim]Adapter log:[/dim] {escape(message)}")
+                self._append_verbose(f"Adapter log: {message}")
             return
 
         if event_type == "case_started":
@@ -433,6 +453,12 @@ class RichRenderer:
                 self._state.evaluation_message = f"Evaluation {processed}/{total}"
                 if self.verbose:
                     self._print_evaluation_progress(payload)
+            self._refresh()
+            return
+
+        if event_type == "evaluation_output":
+            if self.verbose:
+                self._append_evaluation_output(payload)
             self._refresh()
             return
 
@@ -534,7 +560,7 @@ class RichRenderer:
 
     def _refresh(self) -> None:
         if self._live is not None:
-            self._live.update(self._render())
+            self._live.update(self._render(), refresh=True)
 
     def _render(self) -> Group:
         header = Table.grid()
@@ -567,11 +593,14 @@ class RichRenderer:
             *self._step_cells(self._state.evaluation_status, self._state.evaluation_message)
         )
 
-        return Group(
+        renderables: list[object] = [
             header,
             Panel(config, title="Run Configuration", border_style="blue"),
             Panel(steps, title="Progress", border_style="green"),
-        )
+        ]
+        if self.verbose:
+            renderables.append(self._render_verbose_output())
+        return Group(*renderables)
 
     def _step_cells(self, status: str, message: str) -> tuple[object, str]:
         escaped = escape(message)
@@ -587,7 +616,8 @@ class RichRenderer:
 
     def _verbose_status(self, message: str) -> None:
         if self.verbose:
-            self.console.print(f"[dim]{escape(STATUS_PREFIX)}[/dim] {escape(message)}")
+            self._append_verbose(f"{STATUS_PREFIX} {message}")
+            self._refresh()
 
     def _print_harness_output(self, payload: Mapping[str, object]) -> None:
         index = _int_or_default(payload.get("display_case_index"), default=0)
@@ -600,13 +630,14 @@ class RichRenderer:
         if not stdout_text.strip() and not stderr_text.strip():
             return
 
-        self.console.print(f"[bold]Harness output case {index}/{total} (exit {exit_code})[/bold]")
+        self._append_verbose(f"Harness case {index}/{total} output (exit {exit_code})")
         if stdout_text.strip():
-            self.console.print("[dim]stdout:[/dim]")
-            self.console.print(stdout_text.rstrip())
+            self._append_verbose("Harness stdout:")
+            self._append_verbose_block(stdout_text)
         if stderr_text.strip():
-            self.console.print("[dim]stderr:[/dim]")
-            self.console.print(stderr_text.rstrip())
+            self._append_verbose("Harness stderr:")
+            self._append_verbose_block(stderr_text)
+        self._refresh()
 
     def _print_evaluation_phase(self, payload: Mapping[str, object]) -> None:
         phase = payload.get("phase")
@@ -614,16 +645,45 @@ class RichRenderer:
         if isinstance(phase, str) and phase:
             token = f"evaluation.{phase}"
             rendered = f"{token}: {detail}" if isinstance(detail, str) and detail else token
-            self.console.print(f"[dim]{escape(rendered)}[/dim]")
+            self._append_verbose(f"Evaluation: {rendered}")
 
     def _print_evaluation_progress(self, payload: Mapping[str, object]) -> None:
         processed = _int_or_default(payload.get("processed"), default=0)
         total = _int_or_default(payload.get("total"), default=0)
         if total > 0:
             percent = (processed / total) * 100.0
-            self.console.print(
-                f"[dim]evaluation.progress: {processed}/{total} ({percent:.1f}%)[/dim]"
-            )
+            self._append_verbose(f"Evaluation: progress {processed}/{total} ({percent:.1f}%)")
+
+    def _append_evaluation_output(self, payload: Mapping[str, object]) -> None:
+        stdout = payload.get("stdout")
+        stderr = payload.get("stderr")
+        stdout_text = stdout if isinstance(stdout, str) else ""
+        stderr_text = stderr if isinstance(stderr, str) else ""
+        if stdout_text.strip():
+            self._append_verbose("Evaluation stdout:")
+            self._append_verbose_block(stdout_text)
+        if stderr_text.strip():
+            self._append_verbose("Evaluation stderr:")
+            self._append_verbose_block(stderr_text)
+
+    def _append_verbose(self, line: str) -> None:
+        self._verbose_lines.append(line)
+        if len(self._verbose_lines) > VERBOSE_BUFFER_LIMIT:
+            self._verbose_lines = self._verbose_lines[-VERBOSE_BUFFER_LIMIT:]
+
+    def _append_verbose_block(self, text: str) -> None:
+        lines = text.rstrip().splitlines()
+        if not lines:
+            return
+        for line in lines:
+            self._append_verbose(line)
+
+    def _render_verbose_output(self) -> Panel:
+        if self._verbose_lines:
+            body = Text("\n".join(self._verbose_lines))
+        else:
+            body = Text("No verbose output yet", style="dim")
+        return Panel(body, title="Verbose Output", border_style="magenta")
 
 
 def build_renderer(*, verbose: bool = False) -> EventSink:
