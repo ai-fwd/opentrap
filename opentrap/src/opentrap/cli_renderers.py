@@ -113,14 +113,18 @@ class PlainRenderer:
 
         if event_type == "adapter_launching":
             self._state.adapter_status = "running"
-            self._state.adapter_message = "Launching adapter"
-            self._progress("... Launching adapter")
+            endpoint = _adapter_endpoint(payload)
+            suffix = f" ({endpoint})" if endpoint else ""
+            self._state.adapter_message = f"Launching adapter{suffix}"
+            self._progress(f"... {self._state.adapter_message}")
             return
 
         if event_type == "adapter_ready":
             self._state.adapter_status = "completed"
-            self._state.adapter_message = "Adapter ready"
-            self._progress("✓ Adapter ready")
+            endpoint = _adapter_endpoint(payload)
+            suffix = f" ({endpoint})" if endpoint else ""
+            self._state.adapter_message = f"Adapter ready{suffix}"
+            self._progress(f"✓ {self._state.adapter_message}")
             return
 
         if event_type == "adapter_status_update":
@@ -219,21 +223,11 @@ class PlainRenderer:
             print("⚠ Skipped  no cases were evaluated")
             print()
         print("Summary")
-        print(
-            "Harness        "
-            f"{summary.passed_session_count} passed, {summary.failed_session_count} failed"
-        )
-        print(f"Trap result    {summary.display_status}")
-        if summary.security_status != "unavailable" or summary.evaluated_count > 0:
-            print(f"Trap successes {summary.trap_success_count} / {summary.evaluated_count}")
-            print(f"Success rate   {summary.rate_percent}")
-        print(f"Report         {_display_path(run_manifest_path.parent / 'evaluation.csv')}")
+        _print_plain_rows(_summary_rows(summary, run_manifest_path))
         if self.verbose:
             print()
             print("Artifacts")
-            print(f"Run manifest   {_display_path(run_manifest_path)}")
-            print(f"Sessions       {_display_path(run_manifest_path.parent / 'sessions.jsonl')}")
-            print(f"Traces         {_display_path(run_manifest_path.parent / 'traces.jsonl')}")
+            _print_plain_rows(_artifact_rows(run_manifest_path))
 
     def _on_run_started(self, payload: Mapping[str, object]) -> None:
         trap_id = payload.get("trap_id")
@@ -248,6 +242,8 @@ class PlainRenderer:
         mode = payload.get("mode")
         if isinstance(mode, str) and mode:
             self._state.mode = mode
+        if self._state.mode == "fast_eval":
+            self._mark_execution_stages_skipped()
         case_count = payload.get("case_count")
         if isinstance(case_count, int):
             self._state.case_count = case_count
@@ -260,6 +256,14 @@ class PlainRenderer:
                 print(f"Run:       {self._state.run_dir}")
             print()
             self._run_header_printed = True
+
+    def _mark_execution_stages_skipped(self) -> None:
+        self._state.generation_status = "skipped"
+        self._state.generation_message = "Dataset skipped"
+        self._state.adapter_status = "skipped"
+        self._state.adapter_message = "Adapter skipped"
+        self._state.harness_status = "skipped"
+        self._state.harness_message = "Harness skipped"
 
     def _progress(self, message: str) -> None:
         print(message)
@@ -375,13 +379,17 @@ class RichRenderer:
 
         if event_type == "adapter_launching":
             self._state.adapter_status = "running"
-            self._state.adapter_message = "Launching adapter"
+            endpoint = _adapter_endpoint(payload)
+            suffix = f" ({endpoint})" if endpoint else ""
+            self._state.adapter_message = f"Launching adapter{suffix}"
             self._refresh()
             return
 
         if event_type == "adapter_ready":
             self._state.adapter_status = "completed"
-            self._state.adapter_message = "Adapter ready"
+            endpoint = _adapter_endpoint(payload)
+            suffix = f" ({endpoint})" if endpoint else ""
+            self._state.adapter_message = f"Adapter ready{suffix}"
             self._refresh()
             return
 
@@ -497,27 +505,10 @@ class RichRenderer:
     def print_final_summary(self, run_manifest_path: Path) -> None:
         """Render final rich panel summary for one trap run."""
         summary = load_security_summary(run_manifest_path)
-        table = Table.grid(padding=(0, 3))
-        table.add_column(style="bold cyan")
-        table.add_column()
-        table.add_row(
-            "Harness",
-            f"{summary.passed_session_count} passed, {summary.failed_session_count} failed",
-        )
-        table.add_row("Trap result", summary.display_status)
-        if summary.security_status == "unavailable" and summary.evaluated_count == 0:
-            table.add_row("Reason", "no cases were evaluated")
-        else:
-            table.add_row(
-                "Trap successes",
-                f"{summary.trap_success_count} / {summary.evaluated_count}",
-            )
-            table.add_row("Success rate", summary.rate_percent)
-        table.add_row("Report", _display_path(run_manifest_path.parent / "evaluation.csv"))
+        table = _build_rich_rows(_summary_rows(summary, run_manifest_path))
         if self.verbose:
-            table.add_row("Run manifest", _display_path(run_manifest_path))
-            table.add_row("Sessions", _display_path(run_manifest_path.parent / "sessions.jsonl"))
-            table.add_row("Traces", _display_path(run_manifest_path.parent / "traces.jsonl"))
+            for label, value in _artifact_rows(run_manifest_path):
+                table.add_row(label, value)
         self.stdout.print(Panel(table, title="Summary", border_style="blue"))
 
     def _on_run_started(self, payload: Mapping[str, object]) -> None:
@@ -533,6 +524,8 @@ class RichRenderer:
         mode = payload.get("mode")
         if isinstance(mode, str) and mode:
             self._state.mode = mode
+        if self._state.mode == "fast_eval":
+            self._mark_execution_stages_skipped()
         case_count = payload.get("case_count")
         if isinstance(case_count, int):
             self._state.case_count = case_count
@@ -567,13 +560,11 @@ class RichRenderer:
         header.add_column()
         header.add_row("[bold cyan]OpenTrap[/bold cyan] run")
 
-        config = Table.grid(padding=(0, 3))
-        config.add_column(style="bold")
-        config.add_column()
-        config.add_row("Trap", escape(self._state.trap_id))
+        config_rows = [("Trap", escape(self._state.trap_id))]
         if self._state.case_count is not None:
-            config.add_row("Cases", str(self._state.case_count))
-        config.add_row("Run", escape(self._state.run_dir))
+            config_rows.append(("Cases", str(self._state.case_count)))
+        config_rows.append(("Run", escape(self._state.run_dir)))
+        config = _build_rich_rows(config_rows)
 
         steps = Table.grid(padding=(0, 2))
         steps.add_column(width=3)
@@ -602,6 +593,14 @@ class RichRenderer:
             renderables.append(self._render_verbose_output())
         return Group(*renderables)
 
+    def _mark_execution_stages_skipped(self) -> None:
+        self._state.generation_status = "skipped"
+        self._state.generation_message = "Dataset skipped"
+        self._state.adapter_status = "skipped"
+        self._state.adapter_message = "Adapter skipped"
+        self._state.harness_status = "skipped"
+        self._state.harness_message = "Harness skipped"
+
     def _step_cells(self, status: str, message: str) -> tuple[object, str]:
         escaped = escape(message)
         if status == "running":
@@ -611,7 +610,7 @@ class RichRenderer:
         if status == "failed":
             return "[red]✗[/red]", f"[red]{escaped}[/red]"
         if status == "skipped":
-            return "[yellow]⚠[/yellow]", f"[yellow]{escaped}[/yellow]"
+            return "[blue]🛈[/blue]", f"[blue]{escaped}[/blue]"
         return "[dim]-[/dim]", f"[dim]{escaped}[/dim]"
 
     def _verbose_status(self, message: str) -> None:
@@ -753,6 +752,62 @@ def _display_path(path: Path) -> str:
         return str(path.relative_to(Path.cwd()))
     except ValueError:
         return str(path)
+
+
+def _adapter_endpoint(payload: Mapping[str, object]) -> str | None:
+    host = payload.get("host")
+    port = payload.get("port")
+    if isinstance(host, str) and host and isinstance(port, int):
+        return f"{host}:{port}"
+    if isinstance(port, int):
+        return str(port)
+    return None
+
+
+def _summary_rows(summary: SecuritySummary, run_manifest_path: Path) -> list[tuple[str, str]]:
+    rows = [("Trap result", summary.display_status)]
+    if summary.security_status == "unavailable" and summary.evaluated_count == 0:
+        rows.append(("Reason", "no cases were evaluated"))
+    else:
+        rows.extend(
+            [
+                ("Trap successes", f"{summary.trap_success_count} / {summary.evaluated_count}"),
+                ("Success rate", summary.rate_percent),
+            ]
+        )
+    rows.extend(
+        [
+            (
+                "Harness",
+                f"{summary.passed_session_count} passed, {summary.failed_session_count} failed",
+            ),
+            ("Report", _display_path(run_manifest_path.parent / "evaluation.csv")),
+        ]
+    )
+    return rows
+
+
+def _artifact_rows(run_manifest_path: Path) -> list[tuple[str, str]]:
+    return [
+        ("Run manifest", _display_path(run_manifest_path)),
+        ("Sessions", _display_path(run_manifest_path.parent / "sessions.jsonl")),
+        ("Traces", _display_path(run_manifest_path.parent / "traces.jsonl")),
+    ]
+
+
+def _build_rich_rows(rows: list[tuple[str, str]]) -> Table:
+    table = Table.grid(padding=(0, 3))
+    table.add_column(style="bold cyan")
+    table.add_column()
+    for label, value in rows:
+        table.add_row(label, value)
+    return table
+
+
+def _print_plain_rows(rows: list[tuple[str, str]]) -> None:
+    label_width = max((len(label) for label, _value in rows), default=0)
+    for label, value in rows:
+        print(f"{label:<{label_width}}  {value}")
 
 
 def _int_or_default(value: object, *, default: int) -> int:

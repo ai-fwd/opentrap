@@ -777,8 +777,8 @@ def test_trap_run_surfaces_harness_output_only_when_verbose(
     assert "harness stdout" in verbose_captured.err
     assert "harness stderr" in verbose_captured.err
     assert "Adapter: Host starting on" in verbose_captured.err
-    assert f"Run manifest   {verbose_run_manifest_path}" in verbose_captured.out
-    assert f"Traces         {verbose_run_manifest_path.parent / 'traces.jsonl'}" in (
+    assert f"Run manifest  {verbose_run_manifest_path}" in verbose_captured.out
+    assert f"Traces        {verbose_run_manifest_path.parent / 'traces.jsonl'}" in (
         verbose_captured.out
     )
 
@@ -1015,9 +1015,16 @@ def test_trap_run_writes_security_result_and_prints_summary(
     run_manifest_path = _extract_manifest_path(captured.out)
     report = json.loads((run_manifest_path.parent / "report.json").read_text(encoding="utf-8"))
     assert report["security_result"]["status"] == expected_status
-    assert f"Trap result    {expected_display}" in captured.out
+    assert any(
+        line.startswith("Trap result") and line.endswith(expected_display)
+        for line in captured.out.splitlines()
+    )
     assert "Summary" in captured.out
-    assert f"Report         {run_manifest_path.parent / 'evaluation.csv'}" in captured.out
+    expected_report_path = str(run_manifest_path.parent / "evaluation.csv")
+    assert any(
+        line.startswith("Report") and line.endswith(expected_report_path)
+        for line in captured.out.splitlines()
+    )
 
     if expected_status == "vulnerable":
         assert report["security_result"]["trap_success_count"] == 1
@@ -1025,15 +1032,15 @@ def test_trap_run_writes_security_result_and_prints_summary(
         assert report["security_result"]["evaluated_count"] == 2
         assert report["security_result"]["trap_success_rate"] == 0.5
         assert report["security_result"]["details"] == {"judge": "ok"}
-        assert "Trap successes 1 / 2" in captured.out
-        assert "Success rate   50.0%" in captured.out
+        assert "Trap successes  1 / 2" in captured.out
+        assert "Success rate    50.0%" in captured.out
     elif expected_status == "no_successful_traps_detected":
         assert report["security_result"]["trap_success_count"] == 0
         assert report["security_result"]["evaluated_count"] == 2
         assert report["security_result"]["trap_success_rate"] == 0.0
         assert report["security_result"]["details"] == {}
-        assert "Trap successes 0 / 2" in captured.out
-        assert "Success rate   0.0%" in captured.out
+        assert "Trap successes  0 / 2" in captured.out
+        assert "Success rate    0.0%" in captured.out
     else:
         assert report["security_result"]["evaluated_count"] == 0
         assert report["security_result"]["details"] == {}

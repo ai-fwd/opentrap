@@ -505,6 +505,7 @@ def run_single_trap(
             event_sink,
             "adapter_launching",
             product_under_test=product_under_test,
+            host=ADAPTER_HOST,
             port=adapter_port,
         )
         try:
@@ -543,7 +544,7 @@ def run_single_trap(
         ready_manifest["adapter_port"] = adapter_port
         ready_manifest["ready_at_utc"] = utc_now_iso()
         write_json(run_manifest_path, ready_manifest, atomic=True)
-        emit_event(event_sink, "adapter_ready", port=adapter_port)
+        emit_event(event_sink, "adapter_ready", host=ADAPTER_HOST, port=adapter_port)
 
         for case_index in range(case_count_to_run):
             emit_event(

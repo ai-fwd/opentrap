@@ -375,9 +375,9 @@ def test_llm_mocked_run_writes_trap_local_evaluation_artifacts(
     assert code == 0
     run_manifest_path = _extract_manifest_path(captured.out)
     run_dir = run_manifest_path.parent
-    assert f"Run manifest   {run_manifest_path}" in captured.out
-    assert f"Sessions       {run_dir / 'sessions.jsonl'}" in captured.out
-    assert f"Traces         {run_dir / 'traces.jsonl'}" in captured.out
+    assert f"Run manifest  {run_manifest_path}" in captured.out
+    assert f"Sessions      {run_dir / 'sessions.jsonl'}" in captured.out
+    assert f"Traces        {run_dir / 'traces.jsonl'}" in captured.out
 
     evaluation_jsonl = run_dir / "evaluation.jsonl"
     evaluation_csv = run_dir / "evaluation.csv"
