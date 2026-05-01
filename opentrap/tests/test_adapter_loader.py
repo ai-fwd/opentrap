@@ -234,7 +234,6 @@ def test_runtime_module_reexports_expected_public_symbols() -> None:
         "RequestContext",
         "RouteSpec",
         "UpstreamSpec",
-        "DataItems",
     )
     for name in expected_names:
         assert hasattr(runtime_module, name)

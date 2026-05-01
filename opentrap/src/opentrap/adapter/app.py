@@ -12,7 +12,6 @@ from fastapi.responses import JSONResponse
 
 from opentrap.execution_context import bind_execution_context, load_active_session_descriptor
 
-from .context import RuntimeProtocol
 from .http_runtime import (
     build_upstream_map,
     dispatch_route,
@@ -28,10 +27,8 @@ def create_app(
     manifest_path: Path,
     routes: list[RouteSpec],
     upstreams: list[UpstreamSpec],
-    runtime: RuntimeProtocol | None = None,
     forward_client: httpx.AsyncClient | None = None,
 ) -> FastAPI:
-    del runtime
     metadata = load_manifest_metadata(manifest_path)
     upstream_map = build_upstream_map(upstreams)
     validate_route_specs(routes, upstream_map)

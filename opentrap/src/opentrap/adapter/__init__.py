@@ -1,14 +1,12 @@
 """OpenTrap adapter runtime package."""
 
 from opentrap.adapter.runtime import (
-    DataItems,
     DataItemView,
     LoadedGeneratedAdapter,
     ManifestTrapView,
     ManifestView,
     RequestContext,
     RouteSpec,
-    RuntimeProtocol,
     UpstreamRegistry,
     UpstreamSpec,
     build_parser,
@@ -18,14 +16,12 @@ from opentrap.adapter.runtime import (
 )
 
 __all__ = [
-    "DataItems",
     "DataItemView",
     "LoadedGeneratedAdapter",
     "ManifestTrapView",
     "ManifestView",
     "RequestContext",
     "RouteSpec",
-    "RuntimeProtocol",
     "UpstreamSpec",
     "UpstreamRegistry",
     "build_parser",
