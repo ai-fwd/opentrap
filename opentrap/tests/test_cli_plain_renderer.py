@@ -25,6 +25,7 @@ def test_plain_renderer_normal_run_path_outputs_expected_sections(tmp_path: Path
         "harness_failed": 0,
         "scored_cases": 1,
         "trap_successes": 0,
+        "evaluation_errors": 0,
     }
 
     renderer = PlainRenderer(verbose=False)
@@ -83,6 +84,7 @@ def test_plain_renderer_execute_stage_omits_trap_evaluation_section(
         "harness_failed": 0,
         "scored_cases": 0,
         "trap_successes": 0,
+        "evaluation_errors": 0,
     }
 
     renderer = PlainRenderer(verbose=False)
@@ -128,6 +130,7 @@ def _write_report(run_dir: Path) -> None:
             "harness_failed": 0,
             "scored_cases": 1,
             "trap_successes": 0,
+            "evaluation_errors": 0,
         },
         "security_result": {
             "status": "no_successful_traps_detected",

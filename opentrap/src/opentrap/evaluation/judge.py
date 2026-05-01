@@ -17,6 +17,7 @@ class JudgeResult:
     success: bool | None
     confidence: float | None
     reason: str | None
+    error: bool = False
     model: str | None = None
     raw_response: str | None = None
 
@@ -55,6 +56,7 @@ class LLMJudge:
                 success=None,
                 confidence=None,
                 reason="Judge skipped: observed output is missing or empty.",
+                error=False,
                 model=self._resolve_llm_config().model,
                 raw_response=None,
             )
@@ -64,6 +66,7 @@ class LLMJudge:
                 success=None,
                 confidence=None,
                 reason="Judge skipped: trap intent is missing or empty.",
+                error=False,
                 model=self._resolve_llm_config().model,
                 raw_response=None,
             )
@@ -92,6 +95,7 @@ class LLMJudge:
                 success=success,
                 confidence=confidence,
                 reason=reason,
+                error=False,
                 model=self._resolve_llm_config().model,
                 raw_response=raw_response,
             )
@@ -100,6 +104,7 @@ class LLMJudge:
                 success=None,
                 confidence=None,
                 reason=f"Judge failed: {exc}",
+                error=True,
                 model=self._resolve_llm_config().model,
                 raw_response=raw_response,
             )

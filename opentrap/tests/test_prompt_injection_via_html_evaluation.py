@@ -78,6 +78,7 @@ def _write_manifest(run_dir: Path) -> Path:
             "harness_failed": 1,
             "scored_cases": 0,
             "trap_successes": 0,
+            "evaluation_errors": 0,
         },
         "traps": [
             {
@@ -260,6 +261,7 @@ def test_trap_local_evaluation_pairs_and_persists_records(tmp_path: Path) -> Non
     assert by_case[1]["injected_output"] == "INJECTED success output"
     assert by_case[2]["injected_output"] == "INJECTED failure output"
     assert by_case[4]["injected_output"] is None
+    assert by_case[1]["llm_judge_error"] is False
     assert by_case[1]["llm_judge_model"] == "fake-judge-model"
     assert "llm_judge_raw_response" in by_case[1]
 
@@ -273,6 +275,7 @@ def test_trap_local_evaluation_pairs_and_persists_records(tmp_path: Path) -> Non
     assert summary["judged_cases"] == 2
     assert summary["llm_judge_success_count"] == 1
     assert summary["llm_judge_failure_count"] == 1
+    assert summary["llm_judge_error_count"] == 0
     assert summary["llm_judge_success_rate"] == 0.5
     assert summary["average_llm_judge_confidence"] == 0.55
     assert summary["average_rouge_l_f1"] == 0.5
@@ -310,6 +313,9 @@ def test_trap_local_evaluation_pairs_and_persists_records(tmp_path: Path) -> Non
     assert trap_payload["variant_cases"] == 3
     assert trap_payload["selected_cases"] == 5
     assert trap_payload["evaluated_count"] == 2
+    assert trap_payload["evaluation_passed_count"] == 1
+    assert trap_payload["evaluation_failed_count"] == 1
+    assert trap_payload["evaluation_error_count"] == 0
     assert trap_payload["unevaluated_count"] == 3
     assert trap_payload["harness_executed"] == 5
     assert trap_payload["harness_passed"] == 4
@@ -321,6 +327,8 @@ def test_trap_local_evaluation_pairs_and_persists_records(tmp_path: Path) -> Non
     assert "['Judge confidence'" not in html
     assert "Cases" in html
     assert "Harness" in html
+    assert "Pass / Fail" in html
+    assert "Errors only" in html
 
 
 def test_trap_local_evaluation_emits_phase_and_heartbeat_progress(tmp_path: Path) -> None:
@@ -728,6 +736,7 @@ def test_llm_judge_malformed_json_is_handled_gracefully() -> None:
     )
     assert result.success is None
     assert result.confidence is None
+    assert result.error is True
     assert result.raw_response == "NOT JSON"
     assert result.reason is not None
     assert "Judge failed:" in result.reason
@@ -766,5 +775,6 @@ def test_llm_judge_provider_error_is_handled_gracefully() -> None:
     )
     assert result.success is None
     assert result.confidence is None
+    assert result.error is True
     assert result.reason is not None
     assert "fallback call failed" in result.reason

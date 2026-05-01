@@ -863,8 +863,15 @@ def test_trap_run_writes_security_result_and_prints_summary(
         assert report["security_result"]["details"] == {"judge": "ok"}
         assert report["counts"]["trap_successes"] == 1
         assert report["counts"]["scored_cases"] == 2
-        assert "Trap successes  1 / 2" in captured.out
-        assert "Success rate    50.0%" in captured.out
+        assert report["counts"]["evaluation_errors"] == 0
+        assert any(
+            line.startswith("Trap successes") and line.endswith("1 / 2")
+            for line in captured.out.splitlines()
+        )
+        assert any(
+            line.startswith("Success rate") and line.endswith("50.0%")
+            for line in captured.out.splitlines()
+        )
     elif expected_status == "no_successful_traps_detected":
         assert report["security_result"]["trap_success_count"] == 0
         assert report["security_result"]["evaluated_count"] == 2
@@ -872,13 +879,21 @@ def test_trap_run_writes_security_result_and_prints_summary(
         assert report["security_result"]["details"] == {}
         assert report["counts"]["trap_successes"] == 0
         assert report["counts"]["scored_cases"] == 2
-        assert "Trap successes  0 / 2" in captured.out
-        assert "Success rate    0.0%" in captured.out
+        assert report["counts"]["evaluation_errors"] == 0
+        assert any(
+            line.startswith("Trap successes") and line.endswith("0 / 2")
+            for line in captured.out.splitlines()
+        )
+        assert any(
+            line.startswith("Success rate") and line.endswith("0.0%")
+            for line in captured.out.splitlines()
+        )
     else:
         assert report["security_result"]["evaluated_count"] == 0
         assert report["security_result"]["details"] == {}
         assert report["counts"]["trap_successes"] == 0
         assert report["counts"]["scored_cases"] == 0
+        assert report["counts"]["evaluation_errors"] == 0
         assert "⚠ Skipped  no cases were evaluated" in captured.out
 
 

@@ -17,6 +17,7 @@ from urllib.error import URLError
 from urllib.request import urlopen
 
 from opentrap.config_loader import HarnessConfig
+from opentrap.counts import COUNT_FIELDS
 from opentrap.dataset_cache import DatasetSnapshot, resolve_cached_dataset
 from opentrap.evaluation import run_trap_evaluation
 from opentrap.events import EventSink, emit_event
@@ -47,18 +48,6 @@ ADAPTER_TERMINATE_TIMEOUT_SECONDS = 3.0
 SESSIONS_FILE_NAME = "sessions.jsonl"
 TRACES_FILE_NAME = "traces.jsonl"
 ADAPTER_STATUS_PREFIX = "[adapter]"
-COUNT_FIELDS = (
-    "generated_artifacts",
-    "scenario_cases",
-    "base_cases",
-    "variant_cases",
-    "selected_cases",
-    "harness_executed",
-    "harness_passed",
-    "harness_failed",
-    "scored_cases",
-    "trap_successes",
-)
 
 
 @dataclass(frozen=True)
@@ -93,18 +82,7 @@ class _AdapterStderrBridge:
 
 
 def _initial_counts() -> dict[str, int]:
-    return {
-        "generated_artifacts": 0,
-        "scenario_cases": 0,
-        "base_cases": 0,
-        "variant_cases": 0,
-        "selected_cases": 0,
-        "harness_executed": 0,
-        "harness_passed": 0,
-        "harness_failed": 0,
-        "scored_cases": 0,
-        "trap_successes": 0,
-    }
+    return dict.fromkeys(COUNT_FIELDS, 0)
 
 
 def _update_manifest_counts(manifest_path: Path, *, updates: Mapping[str, int]) -> dict[str, int]:
@@ -532,18 +510,12 @@ def prepare_trap_dataset(
             raise RuntimeError("max_cases must be >= 1")
         selected_case_count = min(total_case_count, max_cases)
 
-    counts = {
-        "generated_artifacts": generated_artifact_count,
-        "scenario_cases": total_case_count,
-        "base_cases": base_case_count,
-        "variant_cases": variant_case_count,
-        "selected_cases": selected_case_count,
-        "harness_executed": 0,
-        "harness_passed": 0,
-        "harness_failed": 0,
-        "scored_cases": 0,
-        "trap_successes": 0,
-    }
+    counts = _initial_counts()
+    counts["generated_artifacts"] = generated_artifact_count
+    counts["scenario_cases"] = total_case_count
+    counts["base_cases"] = base_case_count
+    counts["variant_cases"] = variant_case_count
+    counts["selected_cases"] = selected_case_count
     emit_event(
         event_sink,
         "generate_completed",

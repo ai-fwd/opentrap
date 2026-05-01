@@ -29,6 +29,7 @@ def test_build_run_view_model_contains_phase_rows_and_counts() -> None:
         harness_failed=0,
         scored_cases=1,
         trap_successes=0,
+        evaluation_errors=0,
         trap_success_rate="0.0%",
         trap_outcome="secure",
         report_path="runs/abc/evaluation.csv",
@@ -97,6 +98,7 @@ def test_evaluation_rows_for_unavailable_zero_scored() -> None:
         harness_failed=0,
         scored_cases=0,
         trap_successes=0,
+        evaluation_errors=0,
         security_status="unavailable",
         display_status="secure",
         rate_percent="0.0%",
@@ -107,6 +109,7 @@ def test_evaluation_rows_for_unavailable_zero_scored() -> None:
 
     assert rows == [
         ("Scored cases", "0"),
+        ("Evaluation errors", "0"),
         ("Trap successes", "0 / 0"),
         ("Success rate", "0.0%"),
         ("Outcome", "secure"),

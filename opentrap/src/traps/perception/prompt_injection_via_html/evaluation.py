@@ -74,6 +74,7 @@ class PromptInjectionEvaluationOutputRecord:
     rouge_l_f1: float | None
     sbert_cosine_similarity: float | None
     llm_judge_success: bool | None
+    llm_judge_error: bool
     llm_judge_confidence: float | None
     llm_judge_reason: str | None
     llm_judge_model: str | None
@@ -91,6 +92,7 @@ class PromptInjectionEvaluationSummary:
     judged_cases: int
     llm_judge_success_count: int
     llm_judge_failure_count: int
+    llm_judge_error_count: int
     llm_judge_success_rate: float | None
     average_llm_judge_confidence: float | None
     average_rouge_l_f1: float | None
@@ -380,6 +382,7 @@ def _score_input_records(
                 rouge_l_f1=rouge_l_f1,
                 sbert_cosine_similarity=sbert_cosine_similarity,
                 llm_judge_success=judge_result.success,
+                llm_judge_error=judge_result.error,
                 llm_judge_confidence=judge_result.confidence,
                 llm_judge_reason=judge_result.reason,
                 llm_judge_model=judge_result.model,
@@ -407,14 +410,24 @@ def _build_summary(
     records: Sequence[PromptInjectionEvaluationOutputRecord],
 ) -> PromptInjectionEvaluationSummary:
     total_cases = len(records)
-    judged_cases = len([record for record in records if record.llm_judge_success is not None])
+    judged_cases = len(
+        [record for record in records if not record.llm_judge_error and record.llm_judge_success is not None]
+    )
     success_count = len([record for record in records if record.llm_judge_success is True])
-    failure_count = len([record for record in records if record.llm_judge_success is False])
+    failure_count = len(
+        [
+            record
+            for record in records
+            if not record.llm_judge_error and record.llm_judge_success is False
+        ]
+    )
+    error_count = len([record for record in records if record.llm_judge_error])
     success_rate = (success_count / judged_cases) if judged_cases > 0 else None
     confidence_values = [
         float(record.llm_judge_confidence)
         for record in records
-        if record.llm_judge_success is not None
+        if not record.llm_judge_error
+        and record.llm_judge_success is not None
         and isinstance(record.llm_judge_confidence, int | float)
     ]
 
@@ -439,8 +452,16 @@ def _build_summary(
             for record in grouped
             if record.sbert_cosine_similarity is not None
         ]
-        grouped_judged = [record for record in grouped if record.llm_judge_success is not None]
-        grouped_success = [record for record in grouped if record.llm_judge_success is True]
+        grouped_judged = [
+            record
+            for record in grouped
+            if not record.llm_judge_error and record.llm_judge_success is not None
+        ]
+        grouped_success = [
+            record
+            for record in grouped
+            if not record.llm_judge_error and record.llm_judge_success is True
+        ]
 
         grouped_averages[injection_type] = {
             "average_rouge_l_f1": _average(grouped_rouge),
@@ -459,6 +480,7 @@ def _build_summary(
         judged_cases=judged_cases,
         llm_judge_success_count=success_count,
         llm_judge_failure_count=failure_count,
+        llm_judge_error_count=error_count,
         llm_judge_success_rate=success_rate,
         average_llm_judge_confidence=_average(confidence_values),
         average_rouge_l_f1=_average(rouge_values),
@@ -482,6 +504,7 @@ _CSV_FIELDNAMES = [
     "rouge_l_f1",
     "sbert_cosine_similarity",
     "llm_judge_success",
+    "llm_judge_error",
     "llm_judge_confidence",
     "llm_judge_reason",
     "llm_judge_model",
@@ -503,6 +526,7 @@ def _record_to_json_payload(record: PromptInjectionEvaluationOutputRecord) -> di
         "rouge_l_f1": record.rouge_l_f1,
         "sbert_cosine_similarity": record.sbert_cosine_similarity,
         "llm_judge_success": record.llm_judge_success,
+        "llm_judge_error": record.llm_judge_error,
         "llm_judge_confidence": record.llm_judge_confidence,
         "llm_judge_reason": record.llm_judge_reason,
         "llm_judge_model": record.llm_judge_model,
@@ -558,10 +582,13 @@ def _build_evaluation_report_payload(
     harness_failed = manifest_counts["harness_failed"]
 
     case_count = scenario_case_count
-    evaluated_count = summary.judged_cases
-    unevaluated_count = max(0, case_count - evaluated_count)
+    passed_count = summary.llm_judge_success_count
+    failed_count = summary.llm_judge_failure_count
+    error_count = summary.llm_judge_error_count
+    evaluated_count = passed_count + failed_count
+    unevaluated_count = max(0, case_count - evaluated_count - error_count)
     security_result = SecurityResult.from_counts(
-        success_count=summary.llm_judge_success_count,
+        success_count=passed_count,
         evaluated_count=evaluated_count,
     )
     trap_status = _map_security_status_to_trap_status(security_result.status)
@@ -575,6 +602,9 @@ def _build_evaluation_report_payload(
         "variant_cases": variant_case_count,
         "selected_cases": selected_case_count,
         "evaluated_count": evaluated_count,
+        "evaluation_passed_count": passed_count,
+        "evaluation_failed_count": failed_count,
+        "evaluation_error_count": error_count,
         "unevaluated_count": unevaluated_count,
         "harness_executed": harness_executed,
         "harness_passed": harness_passed,
@@ -595,6 +625,7 @@ def _build_evaluation_report_payload(
         # Compatibility fields expected by the static template script.
         "trap_intent": trap_intent,
         "unevaluated": unevaluated_count,
+        "evaluation_error_count": error_count,
     }
 
 

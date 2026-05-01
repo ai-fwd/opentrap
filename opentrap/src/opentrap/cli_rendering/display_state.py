@@ -6,6 +6,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
+from opentrap.counts import COUNT_FIELDS
 from opentrap.io_utils import load_json_maybe
 
 
@@ -24,6 +25,7 @@ class SecuritySummary:
     harness_failed: int
     scored_cases: int
     trap_successes: int
+    evaluation_errors: int
     security_status: str
     display_status: str
     rate_percent: str
@@ -56,6 +58,7 @@ class RunDisplayState:
     harness_failed: int = 0
     scored_cases: int = 0
     trap_successes: int = 0
+    evaluation_errors: int = 0
     trap_outcome: str = "pending"
     trap_success_rate: str = "0.0%"
     report_path: str = "-"
@@ -77,17 +80,12 @@ def load_security_summary(run_manifest_path: Path) -> SecuritySummary:
     status_value = security_result.get("status")
     security_status = status_value if isinstance(status_value, str) else "unavailable"
     display_status = "vulnerable" if security_status == "vulnerable" else "secure"
-    generated_artifacts = required_int(counts, "generated_artifacts")
-    scenario_cases = required_int(counts, "scenario_cases")
-    base_cases = required_int(counts, "base_cases")
-    variant_cases = required_int(counts, "variant_cases")
-    selected_cases = required_int(counts, "selected_cases")
-    harness_executed = required_int(counts, "harness_executed")
-    harness_passed = required_int(counts, "harness_passed")
-    harness_failed = required_int(counts, "harness_failed")
-    scored_cases = required_int(counts, "scored_cases")
-    trap_successes = required_int(counts, "trap_successes")
-    rate_percent = format_percent((trap_successes / scored_cases) if scored_cases > 0 else 0.0)
+    parsed_counts = _require_counts_mapping(counts)
+    rate_percent = format_percent(
+        (parsed_counts["trap_successes"] / parsed_counts["scored_cases"])
+        if parsed_counts["scored_cases"] > 0
+        else 0.0
+    )
 
     run_id = report.get("run_id")
     if not isinstance(run_id, str) or not run_id:
@@ -95,16 +93,17 @@ def load_security_summary(run_manifest_path: Path) -> SecuritySummary:
 
     return SecuritySummary(
         run_id=run_id,
-        generated_artifacts=generated_artifacts,
-        scenario_cases=scenario_cases,
-        base_cases=base_cases,
-        variant_cases=variant_cases,
-        selected_cases=selected_cases,
-        harness_executed=harness_executed,
-        harness_passed=harness_passed,
-        harness_failed=harness_failed,
-        scored_cases=scored_cases,
-        trap_successes=trap_successes,
+        generated_artifacts=parsed_counts["generated_artifacts"],
+        scenario_cases=parsed_counts["scenario_cases"],
+        base_cases=parsed_counts["base_cases"],
+        variant_cases=parsed_counts["variant_cases"],
+        selected_cases=parsed_counts["selected_cases"],
+        harness_executed=parsed_counts["harness_executed"],
+        harness_passed=parsed_counts["harness_passed"],
+        harness_failed=parsed_counts["harness_failed"],
+        scored_cases=parsed_counts["scored_cases"],
+        trap_successes=parsed_counts["trap_successes"],
+        evaluation_errors=parsed_counts["evaluation_errors"],
         security_status=security_status,
         display_status=display_status,
         rate_percent=rate_percent,
@@ -166,18 +165,11 @@ def require_counts_payload(payload: Mapping[str, object]) -> dict[str, int]:
     raw_counts = payload.get("counts")
     if not isinstance(raw_counts, Mapping):
         raise RuntimeError("event payload is missing required counts object")
+    return _require_counts_mapping(raw_counts)
+
+
+def _require_counts_mapping(raw_counts: Mapping[str, object]) -> dict[str, int]:
     counts: dict[str, int] = {}
-    for key in (
-        "generated_artifacts",
-        "scenario_cases",
-        "base_cases",
-        "variant_cases",
-        "selected_cases",
-        "harness_executed",
-        "harness_passed",
-        "harness_failed",
-        "scored_cases",
-        "trap_successes",
-    ):
+    for key in COUNT_FIELDS:
         counts[key] = required_int(raw_counts, key)
     return counts

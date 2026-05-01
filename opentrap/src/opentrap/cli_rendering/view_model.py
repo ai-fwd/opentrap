@@ -89,6 +89,7 @@ def build_run_view_model(state: RunDisplayState) -> RunViewModel:
         ],
         evaluation_rows=[
             ("Scored cases", str(state.scored_cases)),
+            ("Evaluation errors", str(state.evaluation_errors)),
             ("Trap successes", f"{state.trap_successes} / {state.scored_cases}"),
             ("Success rate", state.trap_success_rate),
             ("Outcome", state.trap_outcome),
@@ -126,7 +127,10 @@ def execution_rows(summary: SecuritySummary) -> list[tuple[str, str]]:
 
 
 def evaluation_rows(summary: SecuritySummary) -> list[tuple[str, str]]:
-    rows = [("Scored cases", str(summary.scored_cases))]
+    rows = [
+        ("Scored cases", str(summary.scored_cases)),
+        ("Evaluation errors", str(summary.evaluation_errors)),
+    ]
     if summary.security_status == "unavailable" and summary.scored_cases == 0:
         rows.append(("Trap successes", "0 / 0"))
         rows.append(("Success rate", "0.0%"))

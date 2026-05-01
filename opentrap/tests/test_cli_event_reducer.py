@@ -22,6 +22,7 @@ def test_reduce_event_run_started_hydrates_state(tmp_path: Path) -> None:
         "harness_failed": 0,
         "scored_cases": 0,
         "trap_successes": 0,
+        "evaluation_errors": 0,
     }
     event = RunEvent(
         type="run_started",
@@ -74,6 +75,7 @@ def test_reduce_event_generate_adapter_case_and_finalize_transitions() -> None:
         "harness_failed": 0,
         "scored_cases": 0,
         "trap_successes": 0,
+        "evaluation_errors": 0,
     }
     reduce_event(state, RunEvent(type="generate_completed", payload={"counts": counts}))
     assert state.generation_status == "completed"
@@ -114,6 +116,7 @@ def test_reduce_event_stage_specific_stop_live_behavior() -> None:
         "harness_failed": 0,
         "scored_cases": 0,
         "trap_successes": 0,
+        "evaluation_errors": 0,
     }
     generate_state = RunDisplayState(stage="generate")
     generate_result = reduce_event(
@@ -180,6 +183,7 @@ def test_reduce_event_evaluate_completed_updates_summary_and_status(tmp_path: Pa
     )
     assert state.evaluation_status == "completed"
     assert state.evaluation_message == "Evaluation completed"
+    assert state.evaluation_errors == 0
     assert state.trap_success_rate == "50.0%"
     assert state.trap_outcome == "vulnerable"
     assert result.progress_message == "✓ Evaluation completed"
@@ -191,6 +195,7 @@ def _write_report(
     scored_cases: int,
     trap_successes: int,
     security_status: str,
+    evaluation_errors: int = 0,
 ) -> None:
     payload = {
         "run_id": "run-1",
@@ -205,6 +210,7 @@ def _write_report(
             "harness_failed": 0,
             "scored_cases": scored_cases,
             "trap_successes": trap_successes,
+            "evaluation_errors": evaluation_errors,
         },
         "security_result": {
             "status": security_status,

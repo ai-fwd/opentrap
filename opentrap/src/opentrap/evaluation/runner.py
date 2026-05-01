@@ -72,6 +72,7 @@ def run_trap_evaluation(
             run_manifest_path=run_manifest_path,
             scored_cases=result.evaluated_count,
             trap_successes=result.success_count,
+            evaluation_errors=result.evaluation_errors,
         )
     except Exception:
         set_scorer_status(run_manifest_path=run_manifest_path, scorer_status="failed")
@@ -83,6 +84,7 @@ def run_trap_evaluation(
             run_manifest_path=run_manifest_path,
             scored_cases=0,
             trap_successes=0,
+            evaluation_errors=0,
         )
         raise
     set_scorer_status(run_manifest_path=run_manifest_path, scorer_status="completed")
@@ -92,8 +94,15 @@ def run_trap_evaluation(
         raise RuntimeError("report.json is missing required counts payload")
     scored_cases = counts_payload.get("scored_cases")
     trap_successes = counts_payload.get("trap_successes")
-    if not isinstance(scored_cases, int) or not isinstance(trap_successes, int):
-        raise RuntimeError("report.json counts must include integer scored_cases/trap_successes")
+    evaluation_errors = counts_payload.get("evaluation_errors")
+    if (
+        not isinstance(scored_cases, int)
+        or not isinstance(trap_successes, int)
+        or not isinstance(evaluation_errors, int)
+    ):
+        raise RuntimeError(
+            "report.json counts must include integer scored_cases/trap_successes/evaluation_errors"
+        )
     security_payload = report_payload.get("security_result")
     status = (
         security_payload.get("status")
@@ -219,7 +228,7 @@ def _require_trap_eval_result(value: Any) -> EvaluationResult:
     if not isinstance(value, EvaluationResult):
         raise RuntimeError(
             "trap.evaluate(...) must return EvaluationResult "
-            "(success_count, evaluated_count, details)"
+            "(success_count, evaluated_count, evaluation_errors, details)"
         )
     value.validate()
     return value
@@ -237,8 +246,9 @@ def _set_evaluation_counts(
     run_manifest_path: Path,
     scored_cases: int,
     trap_successes: int,
+    evaluation_errors: int,
 ) -> None:
-    if scored_cases < 0 or trap_successes < 0:
+    if scored_cases < 0 or trap_successes < 0 or evaluation_errors < 0:
         raise RuntimeError("evaluation counts must be >= 0")
 
     manifest = load_json_maybe(run_manifest_path)
@@ -249,6 +259,7 @@ def _set_evaluation_counts(
         counts = dict(counts)
         counts["scored_cases"] = scored_cases
         counts["trap_successes"] = trap_successes
+        counts["evaluation_errors"] = evaluation_errors
         manifest["counts"] = counts
         write_json(run_manifest_path, manifest, atomic=True)
 
@@ -260,9 +271,9 @@ def _set_evaluation_counts(
     report_counts = dict(report_counts)
     report_counts["scored_cases"] = scored_cases
     report_counts["trap_successes"] = trap_successes
+    report_counts["evaluation_errors"] = evaluation_errors
     report["counts"] = report_counts
     write_json(report_path, report, atomic=True)
-
 
 def _build_minimal_report(run_manifest_path: Path) -> dict[str, Any]:
     manifest = load_json_maybe(run_manifest_path) or {}

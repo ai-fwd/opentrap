@@ -13,6 +13,7 @@ class EvaluationResult:
 
     success_count: int
     evaluated_count: int
+    evaluation_errors: int = 0
     details: Mapping[str, Any] | None = None
 
     def validate(self) -> None:
@@ -24,5 +25,7 @@ class EvaluationResult:
             raise RuntimeError(
                 "EvaluationResult.success_count must be <= EvaluationResult.evaluated_count"
             )
+        if self.evaluation_errors < 0:
+            raise RuntimeError("EvaluationResult.evaluation_errors must be >= 0")
         if self.details is not None and not isinstance(self.details, Mapping):
             raise RuntimeError("EvaluationResult.details must be a mapping when provided")

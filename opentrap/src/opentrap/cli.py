@@ -12,6 +12,7 @@ import click
 import typer
 
 from opentrap.cli_rendering import build_renderer
+from opentrap.counts import COUNT_FIELDS
 from opentrap.config_loader import (
     ConfigError,
     HarnessConfig,
@@ -180,18 +181,7 @@ def cmd_init() -> int:
 
 
 def _empty_counts() -> dict[str, int]:
-    return {
-        "generated_artifacts": 0,
-        "scenario_cases": 0,
-        "base_cases": 0,
-        "variant_cases": 0,
-        "selected_cases": 0,
-        "harness_executed": 0,
-        "harness_passed": 0,
-        "harness_failed": 0,
-        "scored_cases": 0,
-        "trap_successes": 0,
-    }
+    return dict.fromkeys(COUNT_FIELDS, 0)
 
 
 def _counts_from_manifest(manifest: Mapping[str, object]) -> dict[str, int]:

@@ -185,6 +185,7 @@ def reduce_event(state: RunDisplayState, event: RunEvent) -> ReduceResult:
         summary = load_security_summary(run_manifest_path)
         state.scored_cases = summary.scored_cases
         state.trap_successes = summary.trap_successes
+        state.evaluation_errors = summary.evaluation_errors
         state.trap_outcome = summary.display_status
         state.trap_success_rate = summary.rate_percent
         state.report_path = summary.report_path
@@ -277,3 +278,4 @@ def _on_run_started(state: RunDisplayState, payload: Mapping[str, object]) -> No
         state.harness_failed = counts["harness_failed"]
         state.scored_cases = counts["scored_cases"]
         state.trap_successes = counts["trap_successes"]
+        state.evaluation_errors = counts["evaluation_errors"]

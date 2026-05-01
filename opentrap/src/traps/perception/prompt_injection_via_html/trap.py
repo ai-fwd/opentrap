@@ -178,5 +178,5 @@ class Trap(
         return EvaluationResult(
             success_count=artifacts.summary.llm_judge_success_count,
             evaluated_count=artifacts.summary.judged_cases,
-            details=None,
+            evaluation_errors=artifacts.summary.llm_judge_error_count,
         )
