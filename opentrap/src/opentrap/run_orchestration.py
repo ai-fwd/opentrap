@@ -17,7 +17,7 @@ from urllib.error import URLError
 from urllib.request import urlopen
 
 from opentrap.config_loader import HarnessConfig
-from opentrap.dataset_cache import resolve_cached_dataset
+from opentrap.dataset_cache import DatasetSnapshot, resolve_cached_dataset
 from opentrap.evaluation import run_trap_evaluation
 from opentrap.events import EventSink, emit_event
 from opentrap.execution_context import (
@@ -73,6 +73,17 @@ class RunEnvironment:
 class TrapRunResult:
     run_manifest_path: Path
     succeeded: bool
+
+
+@dataclass(frozen=True)
+class PreparedTrapDataset:
+    trap_id: str
+    trap_slug: str
+    trap_entry: dict[str, Any]
+    counts: dict[str, int]
+    selected_case_count: int
+    total_case_count: int
+    dataset: DatasetSnapshot
 
 
 @dataclass
@@ -441,55 +452,19 @@ def _terminate_process(process: subprocess.Popen[Any] | None) -> None:
         process.wait(timeout=ADAPTER_TERMINATE_TIMEOUT_SECONDS)
 
 
-def run_single_trap(
+def prepare_trap_dataset(
     *,
     trap_id: str,
-    requested_trap_ref: str,
     shared: SharedConfig,
     trap_config: Mapping[str, Any],
     registry: Mapping[str, TrapSpec],
-    environment: RunEnvironment,
-    product_under_test: str,
-    harness: HarnessConfig,
+    dataset_dir: Path,
     event_sink: EventSink,
     max_cases: int | None = None,
-) -> TrapRunResult:
-    run_id = uuid.uuid4().hex
-    run_dir = environment.runs_dir / run_id
-    run_dir.mkdir(parents=True, exist_ok=False)
-    run_manifest_path = run_dir / "run.json"
+    require_cache: bool = False,
+    force: bool = False,
+) -> PreparedTrapDataset:
     trap_slug = trap_id.replace("/", "__")
-    emit_event(
-        event_sink,
-        "run_started",
-        trap_id=trap_id,
-        requested_trap_ref=requested_trap_ref,
-        target=product_under_test,
-        harness_command=" ".join(harness.command),
-        run_id=run_id,
-        run_dir=str(run_dir),
-        run_manifest_path=str(run_manifest_path),
-    )
-
-    run_manifest: dict[str, Any] = {
-        "run_id": run_id,
-        "repo_root": str(environment.repo_root.resolve()),
-        "product_under_test": product_under_test,
-        "created_at_utc": utc_now_iso(),
-        "requested": requested_trap_ref,
-        "status": "creating",
-        "scorer_status": "pending",
-        "active_case_index": None,
-        "active_session_id": None,
-        "harness_command": list(harness.command),
-        "harness_cwd": harness.cwd,
-        "sessions_file": SESSIONS_FILE_NAME,
-        "sessions": [],
-        "traps": [],
-        "counts": _initial_counts(),
-    }
-    write_json(run_manifest_path, run_manifest)
-
     emit_event(event_sink, "generate_started", trap_id=trap_id)
     try:
         dataset = resolve_cached_dataset(
@@ -498,7 +473,7 @@ def run_single_trap(
             shared=shared,
             trap_config=trap_config,
             registry=registry,
-            dataset_dir=environment.dataset_dir,
+            dataset_dir=dataset_dir,
             heartbeat_interval_seconds=STATUS_HEARTBEAT_INTERVAL_SECONDS,
             on_cache_hit=lambda fingerprint: emit_event(
                 event_sink,
@@ -520,6 +495,8 @@ def run_single_trap(
                 state="generating",
                 elapsed_seconds=int(elapsed),
             ),
+            require_cache=require_cache,
+            force=force,
         )
     except Exception as exc:  # noqa: BLE001
         raise RuntimeError(f"Failed during dataset generation: {exc}") from exc
@@ -549,17 +526,18 @@ def run_single_trap(
             "trap generation counts mismatch: scenario_cases must equal base_cases + variant_cases"
         )
 
-    case_count_to_run = total_case_count
+    selected_case_count = total_case_count
     if max_cases is not None:
         if max_cases < 1:
             raise RuntimeError("max_cases must be >= 1")
-        case_count_to_run = min(total_case_count, max_cases)
+        selected_case_count = min(total_case_count, max_cases)
+
     counts = {
         "generated_artifacts": generated_artifact_count,
         "scenario_cases": total_case_count,
         "base_cases": base_case_count,
         "variant_cases": variant_case_count,
-        "selected_cases": case_count_to_run,
+        "selected_cases": selected_case_count,
         "harness_executed": 0,
         "harness_passed": 0,
         "harness_failed": 0,
@@ -578,11 +556,78 @@ def run_single_trap(
         "trap_slug": trap_slug,
         **dataset.as_manifest_fields(),
     }
-    run_manifest["traps"] = [trap_entry]
-    run_manifest["trap_count"] = 1
-    run_manifest["counts"] = counts
-    run_manifest["status"] = "armed"
-    write_json(run_manifest_path, run_manifest, atomic=True)
+    selected_cases = [dict(case) for case in dataset.cases[:selected_case_count]]
+    trap_entry["cases"] = selected_cases
+    trap_entry["case_count"] = len(selected_cases)
+
+    return PreparedTrapDataset(
+        trap_id=trap_id,
+        trap_slug=trap_slug,
+        trap_entry=trap_entry,
+        counts=counts,
+        selected_case_count=selected_case_count,
+        total_case_count=total_case_count,
+        dataset=dataset,
+    )
+
+
+def execute_prepared_trap(
+    *,
+    prepared: PreparedTrapDataset,
+    requested_trap_ref: str,
+    environment: RunEnvironment,
+    product_under_test: str,
+    harness: HarnessConfig,
+    event_sink: EventSink,
+    stage: str,
+    max_cases: int | None,
+    run_id: str | None = None,
+    run_dir: Path | None = None,
+    run_manifest_path: Path | None = None,
+    emit_run_started_event: bool = True,
+) -> TrapRunResult:
+    resolved_run_id = run_id or uuid.uuid4().hex
+    resolved_run_dir = run_dir or (environment.runs_dir / resolved_run_id)
+    resolved_manifest_path = run_manifest_path or (resolved_run_dir / "run.json")
+
+    if run_dir is None:
+        resolved_run_dir.mkdir(parents=True, exist_ok=False)
+
+    if emit_run_started_event:
+        emit_event(
+            event_sink,
+            "run_started",
+            trap_id=prepared.trap_id,
+            requested_trap_ref=requested_trap_ref,
+            target=product_under_test,
+            harness_command=" ".join(harness.command),
+            run_id=resolved_run_id,
+            run_dir=str(resolved_run_dir),
+            run_manifest_path=str(resolved_manifest_path),
+            stage=stage,
+            max_cases=max_cases,
+            counts=prepared.counts,
+        )
+
+    run_manifest: dict[str, Any] = {
+        "run_id": resolved_run_id,
+        "repo_root": str(environment.repo_root.resolve()),
+        "product_under_test": product_under_test,
+        "created_at_utc": utc_now_iso(),
+        "requested": requested_trap_ref,
+        "status": "armed",
+        "scorer_status": "pending",
+        "active_case_index": None,
+        "active_session_id": None,
+        "harness_command": list(harness.command),
+        "harness_cwd": harness.cwd,
+        "sessions_file": SESSIONS_FILE_NAME,
+        "sessions": [],
+        "traps": [prepared.trap_entry],
+        "trap_count": 1,
+        "counts": prepared.counts,
+    }
+    write_json(resolved_manifest_path, run_manifest, atomic=True)
 
     harness_cwd = environment.repo_root / harness.cwd
     adapter_port = ADAPTER_PORT
@@ -602,7 +647,7 @@ def run_single_trap(
         )
         try:
             adapter_process = _launch_adapter(
-                run_manifest_path,
+                resolved_manifest_path,
                 environment=environment,
                 product_under_test=product_under_test,
                 port=adapter_port,
@@ -622,7 +667,7 @@ def run_single_trap(
                 on_wait_heartbeat=lambda elapsed: emit_event(
                     event_sink,
                     "generate_progress",
-                    trap_id=trap_id,
+                    trap_id=prepared.trap_id,
                     state="adapter_wait",
                     elapsed_seconds=int(elapsed),
                 ),
@@ -630,23 +675,23 @@ def run_single_trap(
         except Exception as exc:  # noqa: BLE001
             raise RuntimeError(f"Failed during adapter startup: {exc}") from exc
 
-        ready_manifest = load_json_maybe(run_manifest_path) or run_manifest
+        ready_manifest = load_json_maybe(resolved_manifest_path) or run_manifest
         ready_manifest["status"] = "ready"
         ready_manifest["adapter_pid"] = adapter_process.pid
         ready_manifest["adapter_port"] = adapter_port
         ready_manifest["ready_at_utc"] = utc_now_iso()
-        write_json(run_manifest_path, ready_manifest, atomic=True)
+        write_json(resolved_manifest_path, ready_manifest, atomic=True)
         emit_event(event_sink, "adapter_ready", host=ADAPTER_HOST, port=adapter_port)
 
-        for case_index in range(case_count_to_run):
+        for case_index in range(prepared.selected_case_count):
             emit_event(
                 event_sink,
                 "case_started",
                 case_index=case_index,
                 display_case_index=case_index + 1,
-                selected_cases=case_count_to_run,
+                selected_cases=prepared.selected_case_count,
             )
-            descriptor = _start_case_session(run_manifest_path, case_index=case_index)
+            descriptor = _start_case_session(resolved_manifest_path, case_index=case_index)
 
             harness_exit_code = 1
             harness_stdout = ""
@@ -665,14 +710,14 @@ def run_single_trap(
                 harness_stdout = result.stdout or ""
                 harness_stderr = result.stderr or ""
             finally:
-                _end_case_session(run_manifest_path, harness_exit_code=harness_exit_code)
+                _end_case_session(resolved_manifest_path, harness_exit_code=harness_exit_code)
 
             emit_event(
                 event_sink,
                 "harness_output",
                 case_index=case_index,
                 display_case_index=case_index + 1,
-                selected_cases=case_count_to_run,
+                selected_cases=prepared.selected_case_count,
                 exit_code=harness_exit_code,
                 session_id=descriptor.session_id,
                 stdout=harness_stdout,
@@ -687,7 +732,7 @@ def run_single_trap(
                     "case_finished",
                     case_index=case_index,
                     display_case_index=case_index + 1,
-                    selected_cases=case_count_to_run,
+                    selected_cases=prepared.selected_case_count,
                     harness_executed=harness_executed,
                     harness_passed=harness_passed,
                     harness_failed=harness_failed,
@@ -703,7 +748,7 @@ def run_single_trap(
                     "case_finished",
                     case_index=case_index,
                     display_case_index=case_index + 1,
-                    selected_cases=case_count_to_run,
+                    selected_cases=prepared.selected_case_count,
                     harness_executed=harness_executed,
                     harness_passed=harness_passed,
                     harness_failed=harness_failed,
@@ -712,7 +757,7 @@ def run_single_trap(
                     succeeded=False,
                 )
             _update_manifest_counts(
-                run_manifest_path,
+                resolved_manifest_path,
                 updates={
                     "harness_executed": harness_executed,
                     "harness_passed": harness_passed,
@@ -720,17 +765,74 @@ def run_single_trap(
                 },
             )
     finally:
-        clear_active_session_descriptor(_active_session_path(run_manifest_path))
+        clear_active_session_descriptor(_active_session_path(resolved_manifest_path))
         _terminate_process(adapter_process)
         _stop_adapter_stderr_bridge(adapter_stderr_bridge, process=adapter_process)
 
-    _finalize_run(run_manifest_path, succeeded=succeeded)
+    _finalize_run(resolved_manifest_path, succeeded=succeeded)
     emit_event(
         event_sink,
         "run_finalized",
-        run_manifest_path=str(run_manifest_path),
+        run_manifest_path=str(resolved_manifest_path),
         succeeded=succeeded,
-        counts=load_json(run_manifest_path)["counts"],
+        counts=load_json(resolved_manifest_path)["counts"],
+    )
+    return TrapRunResult(run_manifest_path=resolved_manifest_path, succeeded=succeeded)
+
+
+def run_single_trap(
+    *,
+    trap_id: str,
+    requested_trap_ref: str,
+    shared: SharedConfig,
+    trap_config: Mapping[str, Any],
+    registry: Mapping[str, TrapSpec],
+    environment: RunEnvironment,
+    product_under_test: str,
+    harness: HarnessConfig,
+    event_sink: EventSink,
+    max_cases: int | None = None,
+) -> TrapRunResult:
+    run_id = uuid.uuid4().hex
+    run_dir = environment.runs_dir / run_id
+    run_dir.mkdir(parents=True, exist_ok=False)
+    run_manifest_path = run_dir / "run.json"
+    emit_event(
+        event_sink,
+        "run_started",
+        trap_id=trap_id,
+        requested_trap_ref=requested_trap_ref,
+        target=product_under_test,
+        harness_command=" ".join(harness.command),
+        run_id=run_id,
+        run_dir=str(run_dir),
+        run_manifest_path=str(run_manifest_path),
+        stage="run",
+        max_cases=max_cases,
+        counts=_initial_counts(),
+    )
+    prepared = prepare_trap_dataset(
+        trap_id=trap_id,
+        shared=shared,
+        trap_config=trap_config,
+        registry=registry,
+        dataset_dir=environment.dataset_dir,
+        event_sink=event_sink,
+        max_cases=max_cases,
+    )
+    run_ready = execute_prepared_trap(
+        prepared=prepared,
+        requested_trap_ref=requested_trap_ref,
+        environment=environment,
+        product_under_test=product_under_test,
+        harness=harness,
+        event_sink=event_sink,
+        stage="run",
+        max_cases=max_cases,
+        run_id=run_id,
+        run_dir=run_dir,
+        run_manifest_path=run_manifest_path,
+        emit_run_started_event=False,
     )
     trap_for_evaluation = registry.get(trap_id)
     if trap_for_evaluation is not None:
@@ -738,8 +840,9 @@ def run_single_trap(
             run_trap_evaluation(
                 trap_id=trap_id,
                 trap=trap_for_evaluation,
-                run_manifest_path=run_manifest_path,
+                run_manifest_path=run_ready.run_manifest_path,
                 event_sink=event_sink,
+                max_cases=max_cases,
             )
         except Exception as exc:  # noqa: BLE001
             emit_event(
@@ -748,4 +851,82 @@ def run_single_trap(
                 stage="evaluate",
                 error=f"Trap evaluation failed: {exc}",
             )
-    return TrapRunResult(run_manifest_path=run_manifest_path, succeeded=succeeded)
+    return run_ready
+
+
+def run_generate_trap(
+    *,
+    trap_id: str,
+    shared: SharedConfig,
+    trap_config: Mapping[str, Any],
+    registry: Mapping[str, TrapSpec],
+    dataset_dir: Path,
+    event_sink: EventSink,
+    force: bool = False,
+) -> PreparedTrapDataset:
+    return prepare_trap_dataset(
+        trap_id=trap_id,
+        shared=shared,
+        trap_config=trap_config,
+        registry=registry,
+        dataset_dir=dataset_dir,
+        event_sink=event_sink,
+        force=force,
+    )
+
+
+def run_execute_trap(
+    *,
+    trap_id: str,
+    requested_trap_ref: str,
+    shared: SharedConfig,
+    trap_config: Mapping[str, Any],
+    registry: Mapping[str, TrapSpec],
+    environment: RunEnvironment,
+    product_under_test: str,
+    harness: HarnessConfig,
+    event_sink: EventSink,
+    max_cases: int | None = None,
+) -> TrapRunResult:
+    run_id = uuid.uuid4().hex
+    run_dir = environment.runs_dir / run_id
+    run_dir.mkdir(parents=True, exist_ok=False)
+    run_manifest_path = run_dir / "run.json"
+    emit_event(
+        event_sink,
+        "run_started",
+        trap_id=trap_id,
+        requested_trap_ref=requested_trap_ref,
+        target=product_under_test,
+        harness_command=" ".join(harness.command),
+        run_id=run_id,
+        run_dir=str(run_dir),
+        run_manifest_path=str(run_manifest_path),
+        stage="execute",
+        max_cases=max_cases,
+        counts=_initial_counts(),
+    )
+    prepared = prepare_trap_dataset(
+        trap_id=trap_id,
+        shared=shared,
+        trap_config=trap_config,
+        registry=registry,
+        dataset_dir=environment.dataset_dir,
+        event_sink=event_sink,
+        max_cases=max_cases,
+        require_cache=True,
+    )
+    return execute_prepared_trap(
+        prepared=prepared,
+        requested_trap_ref=requested_trap_ref,
+        environment=environment,
+        product_under_test=product_under_test,
+        harness=harness,
+        event_sink=event_sink,
+        stage="execute",
+        max_cases=max_cases,
+        run_id=run_id,
+        run_dir=run_dir,
+        run_manifest_path=run_manifest_path,
+        emit_run_started_event=False,
+    )

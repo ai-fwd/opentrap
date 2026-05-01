@@ -287,6 +287,8 @@ def resolve_cached_dataset(
     on_cache_hit: Callable[[str], None] | None = None,
     on_cache_miss: Callable[[], None] | None = None,
     on_generation_heartbeat: Callable[[float], None] | None = None,
+    require_cache: bool = False,
+    force: bool = False,
 ) -> DatasetSnapshot:
     """Resolve dataset snapshot by reusing cache or generating and publishing once.
 
@@ -296,6 +298,9 @@ def resolve_cached_dataset(
     Raises:
         RuntimeError: Cache is unavailable after generation/publish attempts.
     """
+    if require_cache and force:
+        raise RuntimeError("require_cache and force cannot both be enabled")
+
     fingerprint, fingerprint_payload = _build_dataset_fingerprint(trap_id, shared, trap_config)
     cache_dir = _dataset_cache_dir(dataset_dir, trap_id, fingerprint)
     trap = registry[trap_id]
@@ -308,6 +313,9 @@ def resolve_cached_dataset(
             data_items=tuple(dict(item) for item in snapshot.data_items),
         )
         return _normalize_cases(trap.build_cases(context))
+
+    if force and cache_dir.exists():
+        shutil.rmtree(cache_dir, ignore_errors=True)
 
     cached_snapshot = _read_cached_dataset_snapshot(cache_dir)
     if cached_snapshot is not None:
@@ -324,6 +332,8 @@ def resolve_cached_dataset(
             data_items=cached_snapshot.data_items,
             cases=cases,
         )
+    if require_cache:
+        raise RuntimeError(f"cached dataset is unavailable at {cache_dir}")
     if cache_dir.exists():
         shutil.rmtree(cache_dir, ignore_errors=True)
 

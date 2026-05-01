@@ -32,11 +32,13 @@ class SecuritySummary:
 
 @dataclass
 class RunDisplayState:
+    stage: str = "run"
     trap_id: str = "-"
     target: str = "-"
     harness_command: str = "-"
     run_dir: str = "-"
     run_manifest_path: str = ""
+    max_cases: int | None = None
     generated_artifacts: int = 0
     scenario_cases: int = 0
     base_cases: int = 0

@@ -63,6 +63,57 @@ def test_plain_renderer_normal_run_path_outputs_expected_sections(tmp_path: Path
     assert "Trap Evaluation" in captured.out
 
 
+def test_plain_renderer_execute_stage_omits_trap_evaluation_section(
+    tmp_path: Path, capsys
+) -> None:
+    run_dir = tmp_path / "runs" / "abc"
+    run_dir.mkdir(parents=True)
+    run_manifest_path = run_dir / "run.json"
+    run_manifest_path.write_text("{}", encoding="utf-8")
+    _write_report(run_dir)
+
+    counts = {
+        "generated_artifacts": 1,
+        "scenario_cases": 1,
+        "base_cases": 1,
+        "variant_cases": 0,
+        "selected_cases": 1,
+        "harness_executed": 1,
+        "harness_passed": 1,
+        "harness_failed": 0,
+        "scored_cases": 0,
+        "trap_successes": 0,
+    }
+
+    renderer = PlainRenderer(verbose=False)
+    renderer(
+        RunEvent(
+            type="run_started",
+            payload={
+                "trap_id": "reasoning/chain-trap",
+                "target": "acme-client",
+                "harness_command": "bun test",
+                "run_dir": str(run_dir),
+                "run_manifest_path": str(run_manifest_path),
+                "stage": "execute",
+            },
+        )
+    )
+    renderer(RunEvent(type="generate_completed", payload={"counts": counts}))
+    renderer(RunEvent(type="adapter_ready", payload={"host": "127.0.0.1", "port": 7860}))
+    renderer(
+        RunEvent(
+            type="run_finalized",
+            payload={"counts": counts, "run_manifest_path": str(run_manifest_path)},
+        )
+    )
+
+    captured = capsys.readouterr()
+    assert "OpenTrap Execute" in captured.out
+    assert "Case Execution" in captured.out
+    assert "Trap Evaluation" not in captured.out
+
+
 def _write_report(run_dir: Path) -> None:
     payload = {
         "run_id": "run-1",

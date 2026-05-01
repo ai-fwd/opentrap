@@ -19,6 +19,7 @@ class EvaluationContext:
     report_path: Path
     trap_id: str
     event_sink: EventSink | None = None
+    max_cases: int | None = None
 
     @classmethod
     def from_value(
@@ -41,6 +42,16 @@ class EvaluationContext:
             if isinstance(trap_id_value, str) and trap_id_value
             else default_trap_id
         )
+        max_cases_raw = value.get("max_cases")
+        max_cases: int | None
+        if max_cases_raw is None:
+            max_cases = None
+        elif isinstance(max_cases_raw, int):
+            if max_cases_raw < 1:
+                raise RuntimeError("trap evaluation context field 'max_cases' must be >= 1")
+            max_cases = max_cases_raw
+        else:
+            raise RuntimeError("trap evaluation context field 'max_cases' must be an integer")
 
         return cls(
             run_manifest_path=run_manifest_path,
@@ -48,6 +59,7 @@ class EvaluationContext:
             report_path=report_path,
             trap_id=trap_id,
             event_sink=value.get("event_sink"),
+            max_cases=max_cases,
         )
 
     @staticmethod

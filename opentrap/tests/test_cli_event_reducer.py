@@ -102,6 +102,34 @@ def test_reduce_event_generate_adapter_case_and_finalize_transitions() -> None:
     assert result.progress_message == "✓ Harness completed"
 
 
+def test_reduce_event_stage_specific_stop_live_behavior() -> None:
+    counts = {
+        "generated_artifacts": 1,
+        "scenario_cases": 2,
+        "base_cases": 1,
+        "variant_cases": 1,
+        "selected_cases": 2,
+        "harness_executed": 1,
+        "harness_passed": 1,
+        "harness_failed": 0,
+        "scored_cases": 0,
+        "trap_successes": 0,
+    }
+    generate_state = RunDisplayState(stage="generate")
+    generate_result = reduce_event(
+        generate_state,
+        RunEvent(type="generate_completed", payload={"counts": counts}),
+    )
+    assert generate_result.stop_live is True
+
+    execute_state = RunDisplayState(stage="execute")
+    execute_result = reduce_event(
+        execute_state,
+        RunEvent(type="run_finalized", payload={"counts": counts}),
+    )
+    assert execute_result.stop_live is True
+
+
 def test_reduce_event_run_failed_marks_stage_statuses() -> None:
     state = RunDisplayState(adapter_status="running", harness_status="pending")
 

@@ -997,3 +997,132 @@ def test_trap_run_reuses_dataset_when_config_is_unchanged(
     assert trap_1["dataset_cache_dir"] == trap_2["dataset_cache_dir"]
     assert trap_1["artifact_path"] == trap_2["artifact_path"]
     assert Path(trap_1["artifact_path"]) == Path(trap_1["dataset_cache_dir"])
+
+
+def test_generate_command_reports_cache_miss_then_hit_and_force_miss(
+    capsys,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _write_stub_contract(tmp_path / "traps", "reasoning/chain-trap")
+    generated_root = tmp_path / "adapter" / "generated"
+    _write_generated_adapter(generated_root)
+    config_path = tmp_path / ".opentrap" / "opentrap.yaml"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(yaml.safe_dump(_base_payload(), sort_keys=False), encoding="utf-8")
+    samples_dir = tmp_path / ".opentrap" / "samples"
+    samples_dir.mkdir(parents=True, exist_ok=True)
+    _configure_trap_run_paths(
+        monkeypatch=monkeypatch,
+        tmp_path=tmp_path,
+        config_path=config_path,
+        samples_dir=samples_dir,
+        generated_root=generated_root,
+    )
+
+    code1 = main(["generate", "reasoning/chain-trap"])
+    out1 = capsys.readouterr().out
+    assert code1 == 0
+    assert "OpenTrap Generate" in out1
+    assert "Source:       cache miss" in out1
+    assert not (tmp_path / "runs").exists()
+
+    code2 = main(["generate", "reasoning/chain-trap"])
+    out2 = capsys.readouterr().out
+    assert code2 == 0
+    assert "Source:       cache hit" in out2
+
+    code3 = main(["generate", "reasoning/chain-trap", "--force"])
+    out3 = capsys.readouterr().out
+    assert code3 == 0
+    assert "Source:       cache miss" in out3
+
+
+def test_execute_requires_cached_dataset_then_runs_without_evaluation(
+    capsys,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _write_stub_contract(tmp_path / "traps", "reasoning/chain-trap")
+    generated_root = tmp_path / "adapter" / "generated"
+    _write_generated_adapter(generated_root)
+    config_path = tmp_path / ".opentrap" / "opentrap.yaml"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(yaml.safe_dump(_base_payload(), sort_keys=False), encoding="utf-8")
+    samples_dir = tmp_path / ".opentrap" / "samples"
+    samples_dir.mkdir(parents=True, exist_ok=True)
+    _configure_trap_run_paths(
+        monkeypatch=monkeypatch,
+        tmp_path=tmp_path,
+        config_path=config_path,
+        samples_dir=samples_dir,
+        generated_root=generated_root,
+    )
+
+    missing_code = main(["execute", "reasoning/chain-trap"])
+    missing = capsys.readouterr()
+    assert missing_code == 1
+    assert "cached dataset is unavailable" in missing.err
+
+    generate_code = main(["generate", "reasoning/chain-trap"])
+    _ = capsys.readouterr()
+    assert generate_code == 0
+
+    execute_code = main(["execute", "reasoning/chain-trap", "--max-cases", "5"])
+    captured = capsys.readouterr()
+    assert execute_code == 0
+    assert "OpenTrap Execute" in captured.out
+    assert "Trap Evaluation" not in captured.out
+    run_manifest_path = _extract_manifest_path(captured.out)
+    run_manifest = json.loads(run_manifest_path.read_text(encoding="utf-8"))
+    report = json.loads((run_manifest_path.parent / "report.json").read_text(encoding="utf-8"))
+    assert run_manifest["counts"]["selected_cases"] == 1
+    assert run_manifest["counts"]["harness_executed"] == 1
+    assert run_manifest["scorer_status"] == "pending"
+    assert report["scorer_status"] == "pending"
+
+
+def test_eval_command_supports_run_id_and_latest_and_fails_nonzero_on_error(
+    capsys,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _write_stub_contract_with_behavior(
+        tmp_path / "traps",
+        "reasoning/chain-trap",
+        evaluate_body='raise RuntimeError("boom during evaluate")',
+    )
+    generated_root = tmp_path / "adapter" / "generated"
+    _write_generated_adapter(generated_root)
+    config_path = tmp_path / ".opentrap" / "opentrap.yaml"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(yaml.safe_dump(_base_payload(), sort_keys=False), encoding="utf-8")
+    samples_dir = tmp_path / ".opentrap" / "samples"
+    samples_dir.mkdir(parents=True, exist_ok=True)
+    _configure_trap_run_paths(
+        monkeypatch=monkeypatch,
+        tmp_path=tmp_path,
+        config_path=config_path,
+        samples_dir=samples_dir,
+        generated_root=generated_root,
+    )
+
+    generate_code = main(["generate", "reasoning/chain-trap"])
+    _ = capsys.readouterr()
+    assert generate_code == 0
+    execute_code = main(["execute", "reasoning/chain-trap"])
+    execute_capture = capsys.readouterr()
+    assert execute_code == 0
+    run_manifest_path = _extract_manifest_path(execute_capture.out)
+    run_id = run_manifest_path.parent.name
+
+    eval_by_id_code = main(["eval", run_id, "--max-cases", "1"])
+    eval_by_id = capsys.readouterr()
+    assert eval_by_id_code == 1
+    assert "OpenTrap Eval" in eval_by_id.out
+    assert "Trap evaluation failed: boom during evaluate" in eval_by_id.err
+
+    eval_latest_code = main(["eval", "latest"])
+    eval_latest = capsys.readouterr()
+    assert eval_latest_code == 1
+    assert "OpenTrap Eval" in eval_latest.out

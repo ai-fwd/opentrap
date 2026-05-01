@@ -24,7 +24,10 @@ def run_trap_evaluation(
     trap: TrapSpec[Any, Any, Any, Any],
     run_manifest_path: Path,
     event_sink: EventSink,
+    max_cases: int | None = None,
 ) -> None:
+    if max_cases is not None and max_cases < 1:
+        raise RuntimeError("max_cases must be >= 1")
     emit_event(
         event_sink,
         "evaluate_started",
@@ -45,6 +48,7 @@ def run_trap_evaluation(
                         "run_dir": str(run_manifest_path.parent),
                         "report_path": str(report_path),
                         "event_sink": event_sink_for_evaluation,
+                        "max_cases": max_cases,
                     }
                 )
         finally:
@@ -301,6 +305,41 @@ def find_latest_finalized_run_manifest(*, runs_dir: Path, trap_id: str) -> Path:
 
     if latest is None:
         raise RuntimeError(f"No finalized run found for trap '{trap_id}' in {runs_dir}")
+    return latest[3]
+
+
+def find_latest_finalized_run_manifest_global(*, runs_dir: Path) -> Path:
+    if not runs_dir.exists() or not runs_dir.is_dir():
+        raise RuntimeError(
+            "No finalized run found (runs directory does not exist: "
+            f"{runs_dir})"
+        )
+
+    latest: tuple[datetime.datetime, datetime.datetime, str, Path] | None = None
+    for candidate_dir in sorted(runs_dir.iterdir()):
+        if not candidate_dir.is_dir():
+            continue
+        manifest_path = candidate_dir / "run.json"
+        if not manifest_path.exists():
+            continue
+        try:
+            payload = load_json(manifest_path)
+        except Exception:  # noqa: BLE001
+            continue
+        if payload.get("status") != "finalized":
+            continue
+        finalized = _parse_iso_timestamp(payload.get("finalized_at_utc"))
+        created = _parse_iso_timestamp(payload.get("created_at_utc"))
+        if finalized is None:
+            finalized = created
+        if finalized is None or created is None:
+            continue
+        key = (finalized, created, candidate_dir.name, manifest_path)
+        if latest is None or key > latest:
+            latest = key
+
+    if latest is None:
+        raise RuntimeError(f"No finalized run found in {runs_dir}")
     return latest[3]
 
 

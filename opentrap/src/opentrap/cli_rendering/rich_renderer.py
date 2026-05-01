@@ -129,7 +129,7 @@ class RichRenderer:
 
         header = Table.grid()
         header.add_column()
-        header.add_row("[bold cyan]OpenTrap[/bold cyan] run")
+        header.add_row(f"[bold cyan]{escape(model.title)}[/bold cyan]")
 
         config = _build_rich_rows([(label, escape(value)) for label, value in model.config_rows])
 
@@ -159,10 +159,13 @@ class RichRenderer:
             header,
             Panel(config, title="Run Configuration", border_style="blue"),
             Panel(steps, title="Progress", border_style="green"),
-            counts_panel,
-            execution_panel,
-            evaluation_panel,
         ]
+        if model.show_cases_panel:
+            renderables.append(counts_panel)
+        if model.show_execution_panel:
+            renderables.append(execution_panel)
+        if model.show_evaluation_panel:
+            renderables.append(evaluation_panel)
         if self.verbose:
             renderables.append(self._render_verbose_output())
         return Group(*renderables)

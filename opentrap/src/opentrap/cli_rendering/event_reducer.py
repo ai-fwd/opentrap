@@ -74,6 +74,8 @@ def reduce_event(state: RunDisplayState, event: RunEvent) -> ReduceResult:
         state.generation_status = "completed"
         state.generation_message = f"Dataset generated {source}".strip()
         result.progress_message = f"✓ {state.generation_message}"
+        if state.stage == "generate":
+            result.stop_live = True
         result.refresh = True
         return result
 
@@ -142,6 +144,8 @@ def reduce_event(state: RunDisplayState, event: RunEvent) -> ReduceResult:
             state.harness_status = "completed"
             state.harness_message = "Harness completed"
             result.progress_message = "✓ Harness completed"
+        if state.stage == "execute":
+            result.stop_live = True
         result.refresh = True
         return result
 
@@ -236,6 +240,9 @@ def _on_generate_progress(state: RunDisplayState, payload: Mapping[str, object])
 
 
 def _on_run_started(state: RunDisplayState, payload: Mapping[str, object]) -> None:
+    stage = payload.get("stage")
+    if isinstance(stage, str) and stage:
+        state.stage = stage
     trap_id = payload.get("trap_id")
     if isinstance(trap_id, str) and trap_id:
         state.trap_id = trap_id
@@ -251,6 +258,11 @@ def _on_run_started(state: RunDisplayState, payload: Mapping[str, object]) -> No
     run_manifest_path = payload.get("run_manifest_path")
     if isinstance(run_manifest_path, str) and run_manifest_path:
         state.run_manifest_path = run_manifest_path
+    max_cases = payload.get("max_cases")
+    if isinstance(max_cases, int):
+        state.max_cases = max_cases
+    else:
+        state.max_cases = None
 
     counts_payload = payload.get("counts")
     if isinstance(counts_payload, Mapping):

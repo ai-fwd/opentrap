@@ -173,6 +173,7 @@ class Trap(
             run_manifest_path=eval_context.run_manifest_path,
             trap_id=eval_context.trap_id,
             event_sink=eval_context.event_sink,
+            max_cases=eval_context.max_cases,
         )
         return EvaluationResult(
             success_count=artifacts.summary.llm_judge_success_count,

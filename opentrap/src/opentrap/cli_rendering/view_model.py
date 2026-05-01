@@ -16,8 +16,12 @@ class StepView:
 
 @dataclass(frozen=True)
 class RunViewModel:
+    title: str
     config_rows: list[tuple[str, str]]
     steps: list[StepView]
+    show_cases_panel: bool
+    show_execution_panel: bool
+    show_evaluation_panel: bool
     cases_rows: list[tuple[str, str]]
     execution_rows: list[tuple[str, str]]
     evaluation_rows: list[tuple[str, str]]
@@ -25,24 +29,52 @@ class RunViewModel:
 
 @dataclass(frozen=True)
 class FinalSummaryView:
+    show_cases: bool
+    show_execution: bool
+    show_evaluation: bool
     cases_rows: list[tuple[str, str]]
     execution_rows: list[tuple[str, str]]
     evaluation_rows: list[tuple[str, str]]
 
 
 def build_run_view_model(state: RunDisplayState) -> RunViewModel:
-    return RunViewModel(
-        config_rows=[
-            ("Trap", state.trap_id),
-            ("Target", state.target),
-            ("Run", display_path(Path(state.run_dir)) if state.run_dir != "-" else state.run_dir),
-        ],
-        steps=[
+    stage = state.stage if state.stage in {"run", "generate", "execute", "eval"} else "run"
+    config_rows = [
+        ("Trap", state.trap_id),
+        ("Target", state.target),
+        ("Run", display_path(Path(state.run_dir)) if state.run_dir != "-" else state.run_dir),
+    ]
+    if state.max_cases is not None:
+        config_rows.append(("Max cases", str(state.max_cases)))
+
+    if stage == "generate":
+        steps = [StepView(status=state.generation_status, message=state.generation_message)]
+    elif stage == "execute":
+        steps = [
+            StepView(status=state.adapter_status, message=state.adapter_message),
+            StepView(status=state.harness_status, message=state.harness_message),
+        ]
+    elif stage == "eval":
+        steps = [StepView(status=state.evaluation_status, message=state.evaluation_message)]
+    else:
+        steps = [
             StepView(status=state.generation_status, message=state.generation_message),
             StepView(status=state.adapter_status, message=state.adapter_message),
             StepView(status=state.harness_status, message=state.harness_message),
             StepView(status=state.evaluation_status, message=state.evaluation_message),
-        ],
+        ]
+
+    show_cases_panel = stage in {"run", "generate", "execute"}
+    show_execution_panel = stage in {"run", "execute"}
+    show_evaluation_panel = stage in {"run", "eval"}
+
+    return RunViewModel(
+        title=f"OpenTrap {stage.title()}",
+        config_rows=config_rows,
+        steps=steps,
+        show_cases_panel=show_cases_panel,
+        show_execution_panel=show_execution_panel,
+        show_evaluation_panel=show_evaluation_panel,
         cases_rows=[
             ("Scenario cases", str(state.scenario_cases)),
             ("  Base", str(state.base_cases)),
@@ -67,6 +99,9 @@ def build_run_view_model(state: RunDisplayState) -> RunViewModel:
 
 def build_final_summary_view(summary: SecuritySummary) -> FinalSummaryView:
     return FinalSummaryView(
+        show_cases=True,
+        show_execution=True,
+        show_evaluation=True,
         cases_rows=cases_rows(summary),
         execution_rows=execution_rows(summary),
         evaluation_rows=evaluation_rows(summary),

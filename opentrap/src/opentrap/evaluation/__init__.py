@@ -12,7 +12,11 @@ from opentrap.evaluation.artifacts import (
 from opentrap.evaluation.context import EvaluationContext
 from opentrap.evaluation.judge import JudgeResult, LLMJudge
 from opentrap.evaluation.result import EvaluationResult
-from opentrap.evaluation.runner import find_latest_finalized_run_manifest, run_trap_evaluation
+from opentrap.evaluation.runner import (
+    find_latest_finalized_run_manifest,
+    find_latest_finalized_run_manifest_global,
+    run_trap_evaluation,
+)
 from opentrap.evaluation.scorers import RougeLScoreScorer, SentenceTransformerSbertScorer
 from opentrap.evaluation.status import emit_evaluation_phase, emit_evaluation_progress
 
@@ -27,6 +31,7 @@ __all__ = [
     "SentenceTransformerSbertScorer",
     "EvaluationResult",
     "find_latest_finalized_run_manifest",
+    "find_latest_finalized_run_manifest_global",
     "find_trap_entry",
     "load_observed_outputs",
     "load_run_manifest",

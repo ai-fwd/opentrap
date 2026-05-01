@@ -193,6 +193,7 @@ def evaluate_prompt_injection_run(
     llm_judge_scorer: LlmJudgeScorer | None = None,
     sbert_model_name: str = DEFAULT_SBERT_MODEL_NAME,
     event_sink: EventSink | None = None,
+    max_cases: int | None = None,
 ) -> EvaluationArtifacts:
     """Evaluate one finalized run for this trap and persist artifacts."""
     emit_evaluation_phase(event_sink, phase="started")
@@ -209,6 +210,7 @@ def evaluate_prompt_injection_run(
         trap_id=trap_id,
         trap_entry=trap_entry,
         observed_outputs=observed_outputs,
+        max_cases=max_cases,
     )
 
     emit_evaluation_phase(event_sink, phase="scoring_cases")
@@ -263,8 +265,13 @@ def _build_input_records(
     trap_id: str,
     trap_entry: Mapping[str, Any],
     observed_outputs: Mapping[int, str],
+    max_cases: int | None = None,
 ) -> list[PromptInjectionEvaluationInputRecord]:
     cases = _as_case_list(trap_entry)
+    if max_cases is not None:
+        if max_cases < 1:
+            raise RuntimeError("max_cases must be >= 1")
+        cases = cases[:max_cases]
 
     clean_case_by_file_id: dict[str, dict[str, Any]] = {}
     for case in cases:

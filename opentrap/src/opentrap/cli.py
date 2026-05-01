@@ -19,8 +19,15 @@ from opentrap.config_loader import (
     load_trap_config,
     write_trap_config,
 )
+from opentrap.evaluation import find_latest_finalized_run_manifest_global, run_trap_evaluation
 from opentrap.events import emit_event
-from opentrap.run_orchestration import RunEnvironment, run_single_trap
+from opentrap.io_utils import load_json
+from opentrap.run_orchestration import (
+    RunEnvironment,
+    run_execute_trap,
+    run_generate_trap,
+    run_single_trap,
+)
 from opentrap.trap import SharedConfig, TrapFieldSpec
 from opentrap.trap.loader import load_registry_from_candidates
 from opentrap.trap.registry import TrapRegistry, TrapRegistryError
@@ -172,20 +179,50 @@ def cmd_init() -> int:
     return 0
 
 
-def cmd_run(trap_ref: str, *, verbose: bool) -> int:
-    """Execute one trap run."""
-    event_sink = build_renderer(verbose=verbose)
+def _empty_counts() -> dict[str, int]:
+    return {
+        "generated_artifacts": 0,
+        "scenario_cases": 0,
+        "base_cases": 0,
+        "variant_cases": 0,
+        "selected_cases": 0,
+        "harness_executed": 0,
+        "harness_passed": 0,
+        "harness_failed": 0,
+        "scored_cases": 0,
+        "trap_successes": 0,
+    }
+
+
+def _counts_from_manifest(manifest: Mapping[str, object]) -> dict[str, int]:
+    raw_counts = manifest.get("counts")
+    if not isinstance(raw_counts, Mapping):
+        return _empty_counts()
+    counts = _empty_counts()
+    for key in counts:
+        value = raw_counts.get(key)
+        if isinstance(value, int):
+            counts[key] = value
+    return counts
+
+
+def _load_trap_runtime_inputs(
+    *,
+    trap_ref: str,
+    event_sink,
+) -> tuple[str, object, object, RunEnvironment] | None:
+    """Load registry/config/trap instance for one trap command."""
 
     registry = _load_registry()
     if registry is None:
         emit_event(event_sink, "run_failed", stage="validate", error="could not load trap registry")
-        return 1
+        return None
 
     try:
         resolved = _resolve_trap_ref(trap_ref)
     except ValueError as exc:
         emit_event(event_sink, "run_failed", stage="validate", error=str(exc))
-        return 1
+        return None
     if not registry.has_trap(resolved):
         emit_event(
             event_sink,
@@ -193,7 +230,7 @@ def cmd_run(trap_ref: str, *, verbose: bool) -> int:
             stage="validate",
             error=f"trap '{resolved}' was not found",
         )
-        return 1
+        return None
 
     try:
         trap_fields: dict[str, Mapping[str, TrapFieldSpec]] = {
@@ -201,7 +238,7 @@ def cmd_run(trap_ref: str, *, verbose: bool) -> int:
         }
     except TrapRegistryError as exc:
         emit_event(event_sink, "run_failed", stage="validate", error=str(exc))
-        return 1
+        return None
 
     try:
         loaded = load_trap_config(
@@ -211,13 +248,13 @@ def cmd_run(trap_ref: str, *, verbose: bool) -> int:
         )
     except ConfigError as exc:
         emit_event(event_sink, "run_failed", stage="config", error=str(exc))
-        return 1
+        return None
 
     try:
         selected_trap = registry.create_trap(resolved)
     except TrapRegistryError as exc:
         emit_event(event_sink, "run_failed", stage="trap_init", error=str(exc))
-        return 1
+        return None
 
     environment = RunEnvironment(
         repo_root=DEFAULT_REPO_ROOT,
@@ -225,6 +262,16 @@ def cmd_run(trap_ref: str, *, verbose: bool) -> int:
         dataset_dir=DEFAULT_DATASET_DIR,
         adapter_generated_root=DEFAULT_ADAPTER_GENERATED_ROOT,
     )
+    return resolved, loaded, selected_trap, environment
+
+
+def cmd_run(trap_ref: str, *, max_cases: int | None, verbose: bool) -> int:
+    """Execute one trap run."""
+    event_sink = build_renderer(verbose=verbose)
+    loaded_inputs = _load_trap_runtime_inputs(trap_ref=trap_ref, event_sink=event_sink)
+    if loaded_inputs is None:
+        return 1
+    resolved, loaded, selected_trap, environment = loaded_inputs
 
     try:
         run_ready = run_single_trap(
@@ -237,12 +284,169 @@ def cmd_run(trap_ref: str, *, verbose: bool) -> int:
             product_under_test=loaded.product_under_test,
             harness=loaded.harness,
             event_sink=event_sink,
+            max_cases=max_cases,
         )
     except Exception as exc:  # noqa: BLE001
         emit_event(event_sink, "run_failed", stage="run", error=str(exc))
         return 1
 
     return 0 if run_ready.succeeded else 1
+
+
+def cmd_generate(trap_ref: str, *, force: bool, verbose: bool) -> int:
+    """Generate/reuse trap dataset without running harness/eval."""
+    event_sink = build_renderer(verbose=verbose)
+    loaded_inputs = _load_trap_runtime_inputs(trap_ref=trap_ref, event_sink=event_sink)
+    if loaded_inputs is None:
+        return 1
+    resolved, loaded, selected_trap, environment = loaded_inputs
+
+    emit_event(
+        event_sink,
+        "run_started",
+        trap_id=resolved,
+        requested_trap_ref=trap_ref,
+        target=loaded.product_under_test,
+        harness_command=" ".join(loaded.harness.command),
+        stage="generate",
+        counts=_empty_counts(),
+    )
+    try:
+        prepared = run_generate_trap(
+            trap_id=resolved,
+            shared=loaded.shared,
+            trap_config=loaded.trap_configs[resolved],
+            registry={resolved: selected_trap},
+            dataset_dir=environment.dataset_dir,
+            event_sink=event_sink,
+            force=force,
+        )
+    except Exception as exc:  # noqa: BLE001
+        emit_event(event_sink, "run_failed", stage="generate", error=str(exc))
+        return 1
+
+    source = "cache hit" if prepared.dataset.dataset_source == "cache_hit" else "cache miss"
+    print()
+    print("Dataset")
+    print(f"Source:       {source}")
+    print(f"Path:         {prepared.dataset.dataset_cache_dir}")
+    print(f"Fingerprint:  {prepared.dataset.dataset_fingerprint}")
+    print(f"Case count:   {prepared.total_case_count}")
+    return 0
+
+
+def cmd_execute(trap_ref: str, *, max_cases: int | None, verbose: bool) -> int:
+    """Execute harness against cached trap dataset and finalize run artifacts."""
+    event_sink = build_renderer(verbose=verbose)
+    loaded_inputs = _load_trap_runtime_inputs(trap_ref=trap_ref, event_sink=event_sink)
+    if loaded_inputs is None:
+        return 1
+    resolved, loaded, selected_trap, environment = loaded_inputs
+
+    try:
+        run_ready = run_execute_trap(
+            trap_id=resolved,
+            requested_trap_ref=trap_ref,
+            shared=loaded.shared,
+            trap_config=loaded.trap_configs[resolved],
+            registry={resolved: selected_trap},
+            environment=environment,
+            product_under_test=loaded.product_under_test,
+            harness=loaded.harness,
+            event_sink=event_sink,
+            max_cases=max_cases,
+        )
+    except Exception as exc:  # noqa: BLE001
+        emit_event(event_sink, "run_failed", stage="run", error=str(exc))
+        return 1
+    return 0 if run_ready.succeeded else 1
+
+
+def _resolve_eval_manifest_path(run_ref: str) -> Path:
+    if run_ref == "latest":
+        return find_latest_finalized_run_manifest_global(runs_dir=DEFAULT_RUNS_DIR)
+    manifest_path = DEFAULT_RUNS_DIR / run_ref / "run.json"
+    if not manifest_path.exists():
+        raise RuntimeError(f"run '{run_ref}' was not found in {DEFAULT_RUNS_DIR}")
+    return manifest_path
+
+
+def _resolve_trap_id_from_run_manifest(manifest: Mapping[str, object]) -> str:
+    traps = manifest.get("traps")
+    if not isinstance(traps, list):
+        raise RuntimeError("run manifest is missing traps payload")
+    for trap_entry in traps:
+        if isinstance(trap_entry, Mapping):
+            trap_id = trap_entry.get("trap_id")
+            if isinstance(trap_id, str) and trap_id:
+                return trap_id
+    raise RuntimeError("run manifest does not contain a valid trap_id")
+
+
+def cmd_eval(run_ref: str, *, max_cases: int | None, verbose: bool) -> int:
+    """Evaluate an existing finalized run."""
+    event_sink = build_renderer(verbose=verbose)
+
+    registry = _load_registry()
+    if registry is None:
+        emit_event(event_sink, "run_failed", stage="validate", error="could not load trap registry")
+        return 1
+
+    try:
+        run_manifest_path = _resolve_eval_manifest_path(run_ref)
+        run_manifest = load_json(run_manifest_path)
+        if run_manifest.get("status") != "finalized":
+            raise RuntimeError(f"run '{run_manifest_path.parent.name}' is not finalized")
+        trap_id = _resolve_trap_id_from_run_manifest(run_manifest)
+    except Exception as exc:  # noqa: BLE001
+        emit_event(event_sink, "run_failed", stage="validate", error=str(exc))
+        return 1
+
+    try:
+        trap = registry.create_trap(trap_id)
+    except TrapRegistryError as exc:
+        emit_event(event_sink, "run_failed", stage="trap_init", error=str(exc))
+        return 1
+
+    harness_tokens = run_manifest.get("harness_command")
+    harness_command = (
+        " ".join(token for token in harness_tokens if isinstance(token, str))
+        if isinstance(harness_tokens, list)
+        else "-"
+    )
+    target = run_manifest.get("product_under_test")
+    target_value = target if isinstance(target, str) and target else "-"
+    emit_event(
+        event_sink,
+        "run_started",
+        trap_id=trap_id,
+        requested_trap_ref=trap_id,
+        target=target_value,
+        harness_command=harness_command,
+        run_id=run_manifest.get("run_id"),
+        run_dir=str(run_manifest_path.parent),
+        run_manifest_path=str(run_manifest_path),
+        stage="eval",
+        max_cases=max_cases,
+        counts=_counts_from_manifest(run_manifest),
+    )
+    try:
+        run_trap_evaluation(
+            trap_id=trap_id,
+            trap=trap,
+            run_manifest_path=run_manifest_path,
+            event_sink=event_sink,
+            max_cases=max_cases,
+        )
+    except Exception as exc:  # noqa: BLE001
+        emit_event(
+            event_sink,
+            "run_failed",
+            stage="evaluate",
+            error=f"Trap evaluation failed: {exc}",
+        )
+        return 1
+    return 0
 
 
 @app.command("list")
@@ -262,11 +466,55 @@ def init_command() -> int:
 @app.command("run")
 def run_command(
     trap: Annotated[str, typer.Argument(help="Trap reference in target/name format.")],
+    max_cases: Annotated[int | None, typer.Option("--max-cases", min=1)] = None,
     verbose: Annotated[bool, typer.Option("--verbose")] = False,
 ) -> int:
     """Run one trap."""
     return cmd_run(
         trap,
+        max_cases=max_cases,
+        verbose=verbose,
+    )
+
+
+@app.command("generate")
+def generate_command(
+    trap: Annotated[str, typer.Argument(help="Trap reference in target/name format.")],
+    force: Annotated[bool, typer.Option("--force")] = False,
+    verbose: Annotated[bool, typer.Option("--verbose")] = False,
+) -> int:
+    """Generate/reuse trap dataset only."""
+    return cmd_generate(
+        trap,
+        force=force,
+        verbose=verbose,
+    )
+
+
+@app.command("execute")
+def execute_command(
+    trap: Annotated[str, typer.Argument(help="Trap reference in target/name format.")],
+    max_cases: Annotated[int | None, typer.Option("--max-cases", min=1)] = None,
+    verbose: Annotated[bool, typer.Option("--verbose")] = False,
+) -> int:
+    """Execute harness on cached trap dataset without evaluation."""
+    return cmd_execute(
+        trap,
+        max_cases=max_cases,
+        verbose=verbose,
+    )
+
+
+@app.command("eval")
+def eval_command(
+    run: Annotated[str, typer.Argument(help="Run id or 'latest'.")],
+    max_cases: Annotated[int | None, typer.Option("--max-cases", min=1)] = None,
+    verbose: Annotated[bool, typer.Option("--verbose")] = False,
+) -> int:
+    """Evaluate one existing finalized run."""
+    return cmd_eval(
+        run,
+        max_cases=max_cases,
         verbose=verbose,
     )
 

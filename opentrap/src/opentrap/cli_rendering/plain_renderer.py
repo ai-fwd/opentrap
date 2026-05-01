@@ -50,35 +50,53 @@ class PlainRenderer:
             self._print_evaluation_output(result.evaluation_output_payload)
 
         if result.final_summary_path is not None:
-            self.print_final_summary(result.final_summary_path)
+            self.print_final_summary(result.final_summary_path, stage=self._state.stage)
+
+        if (
+            event.type == "run_finalized"
+            and self._state.stage == "execute"
+            and isinstance(event.payload.get("run_manifest_path"), str)
+        ):
+            self.print_final_summary(
+                Path(str(event.payload.get("run_manifest_path"))),
+                stage="execute",
+            )
 
         if result.run_failed_error is not None:
             print(f"{STATUS_PREFIX} Run failed: {result.run_failed_error}", file=sys.stderr)
 
-    def print_final_summary(self, run_manifest_path: Path) -> None:
+    def print_final_summary(self, run_manifest_path: Path, *, stage: str) -> None:
         """Render final textual report summary for one trap run."""
         summary = load_security_summary(run_manifest_path)
         view = build_final_summary_view(summary)
         print()
-        if summary.security_status == "unavailable" and summary.scored_cases == 0:
+        if (
+            stage in {"run", "eval"}
+            and summary.security_status == "unavailable"
+            and summary.scored_cases == 0
+        ):
             print("Evaluation")
             print("⚠ Skipped  no cases were evaluated")
             print()
-        print("Cases")
-        _print_plain_rows(view.cases_rows)
-        print()
-        print("Case Execution")
-        _print_plain_rows(view.execution_rows)
-        print()
-        print("Trap Evaluation")
-        _print_plain_rows(view.evaluation_rows)
+        if stage in {"run", "generate", "execute"}:
+            print("Cases")
+            _print_plain_rows(view.cases_rows)
+            print()
+        if stage in {"run", "execute"}:
+            print("Case Execution")
+            _print_plain_rows(view.execution_rows)
+            print()
+        if stage in {"run", "eval"}:
+            print("Trap Evaluation")
+            _print_plain_rows(view.evaluation_rows)
         if self.verbose:
             print()
             print("Artifacts")
             _print_plain_rows(artifact_rows(run_manifest_path))
 
     def _print_run_header(self) -> None:
-        print("OpenTrap Run")
+        title = self._state.stage.title() if self._state.stage else "Run"
+        print(f"OpenTrap {title}")
         print(f"Trap:      {self._state.trap_id}")
         print(f"Target:    {self._state.target}")
         if self._state.run_dir != "-":
