@@ -134,11 +134,15 @@ def test_file_count_invariants_hold(tmp_path: Path) -> None:
         base_html_generator=_StaticHTMLGenerator(),
     )
     records = _load_records(run_dir)
+    poisoned_per_base = len(generator_module.ATTACK_TYPES) * len(
+        generator_module.DIRECTIVE_PREFIXES
+    )
+    expected_total = config.base_count * (1 + poisoned_per_base)
 
-    assert len(records) == 27
-    assert len([r for r in records if not r["is_poisoned"]]) == 3
-    assert len([r for r in records if r["is_poisoned"]]) == 24
-    assert len(list((run_dir / "data").glob("*.htm"))) == 27
+    assert len(records) == expected_total
+    assert len([r for r in records if not r["is_poisoned"]]) == config.base_count
+    assert len([r for r in records if r["is_poisoned"]]) == config.base_count * poisoned_per_base
+    assert len(list((run_dir / "data").glob("*.htm"))) == expected_total
 
 
 def test_temperature_mapping_math() -> None:
@@ -176,7 +180,9 @@ def test_density_ceiling_wins_for_diversity_one_density_zero(tmp_path: Path) -> 
     records = _load_records(run_dir)
 
     poisoned = [record for record in records if record["is_poisoned"]]
-    assert len(poisoned) == 8
+    assert len(poisoned) == len(generator_module.ATTACK_TYPES) * len(
+        generator_module.DIRECTIVE_PREFIXES
+    )
     assert all(record["injection_count"] == 1 for record in poisoned)
     assert all(len(record["attack_types"]) == 1 for record in poisoned)
 
@@ -204,22 +210,29 @@ def test_metadata_links_base_and_poisoned_records(tmp_path: Path) -> None:
 
     base_records = [record for record in records if not record["is_poisoned"]]
     poisoned_records = [record for record in records if record["is_poisoned"]]
+    poisoned_per_base = len(generator_module.ATTACK_TYPES) * len(
+        generator_module.DIRECTIVE_PREFIXES
+    )
 
     assert len(base_records) == 1
-    assert len(poisoned_records) == 8
+    assert len(poisoned_records) == poisoned_per_base
 
     base_id = base_records[0]["file_id"]
     assert base_records[0]["attack_types"] == []
     assert base_records[0]["injection_count"] == 0
+    assert base_records[0]["directive_prefix"] is None
 
     poison_attack_heads = [record["attack_types"][0] for record in poisoned_records]
     assert set(poison_attack_heads) == set(generator_module.ATTACK_TYPES)
+    poison_prefixes = [record["directive_prefix"] for record in poisoned_records]
+    assert set(poison_prefixes) == set(generator_module.DIRECTIVE_PREFIXES)
 
     for record in poisoned_records:
         assert record["base_file_id"] == base_id
-        assert 0 <= record["variant_index"] <= 7
+        assert 0 <= record["variant_index"] < poisoned_per_base
         assert record["injection_count"] == len(record["attack_types"])
         assert len(record["injection_locations"]) == record["injection_count"]
+        assert record["directive_prefix"] in generator_module.DIRECTIVE_PREFIXES
 
 
 def test_location_randomization_stays_within_valid_families(tmp_path: Path) -> None:
@@ -470,7 +483,10 @@ def test_file_naming_is_sequential_and_deterministic(tmp_path: Path) -> None:
     )
     records = _load_records(run_dir)
     filenames = [record["filename"] for record in records]
-    assert filenames == [f"{i:05d}.htm" for i in range(1, 10)]
+    poisoned_per_base = len(generator_module.ATTACK_TYPES) * len(
+        generator_module.DIRECTIVE_PREFIXES
+    )
+    assert filenames == [f"{i:05d}.htm" for i in range(1, 2 + poisoned_per_base)]
 
 
 def test_llm_config_requires_openai_env(monkeypatch) -> None:

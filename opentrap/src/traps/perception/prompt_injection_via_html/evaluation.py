@@ -58,6 +58,7 @@ class PromptInjectionEvaluationInputRecord:
     injected_output: str | None
     trap_intent: str
     injection_type: str | None
+    directive_prefix: str | None
     metadata: dict[str, Any]
 
 
@@ -71,6 +72,7 @@ class PromptInjectionEvaluationOutputRecord:
     item_id: str
     trap_intent: str
     injection_type: str | None
+    directive_prefix: str | None
     rouge_l_f1: float | None
     sbert_cosine_similarity: float | None
     llm_judge_success: bool | None
@@ -103,6 +105,8 @@ class PromptInjectionEvaluationSummary:
     max_sbert_cosine_similarity: float | None
     grouped_averages_by_injection_type: dict[str, dict[str, float | None]]
     grouped_success_rate_by_injection_type: dict[str, dict[str, float | int | None]]
+    grouped_averages_by_directive_prefix: dict[str, dict[str, float | None]]
+    grouped_success_rate_by_directive_prefix: dict[str, dict[str, float | int | None]]
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -326,6 +330,7 @@ def _build_input_records(
                 injected_output=observed_outputs.get(case_index),
                 trap_intent=trap_intent if isinstance(trap_intent, str) else "",
                 injection_type=_normalize_injection_type(metadata_raw.get("attack_types")),
+                directive_prefix=_normalize_directive_prefix(metadata_raw.get("directive_prefix")),
                 metadata=dict(metadata_raw),
             )
         )
@@ -339,6 +344,13 @@ def _normalize_injection_type(raw_attack_types: object) -> str | None:
     if not attack_types:
         return None
     return "+".join(attack_types)
+
+
+def _normalize_directive_prefix(raw_directive_prefix: object) -> str | None:
+    if not isinstance(raw_directive_prefix, str):
+        return None
+    value = raw_directive_prefix.strip()
+    return value or None
 
 
 def _score_input_records(
@@ -379,6 +391,7 @@ def _score_input_records(
                 item_id=record.item_id,
                 trap_intent=record.trap_intent,
                 injection_type=record.injection_type,
+                directive_prefix=record.directive_prefix,
                 rouge_l_f1=rouge_l_f1,
                 sbert_cosine_similarity=sbert_cosine_similarity,
                 llm_judge_success=judge_result.success,
@@ -439,9 +452,12 @@ def _build_summary(
     ]
 
     grouped_records: dict[str, list[PromptInjectionEvaluationOutputRecord]] = defaultdict(list)
+    grouped_prefix_records: dict[str, list[PromptInjectionEvaluationOutputRecord]] = defaultdict(list)
     for record in records:
         if isinstance(record.injection_type, str) and record.injection_type:
             grouped_records[record.injection_type].append(record)
+        if isinstance(record.directive_prefix, str) and record.directive_prefix:
+            grouped_prefix_records[record.directive_prefix].append(record)
 
     grouped_averages: dict[str, dict[str, float | None]] = {}
     grouped_success_rates: dict[str, dict[str, float | int | None]] = {}
@@ -475,6 +491,38 @@ def _build_summary(
             ),
         }
 
+    grouped_prefix_averages: dict[str, dict[str, float | None]] = {}
+    grouped_prefix_success_rates: dict[str, dict[str, float | int | None]] = {}
+    for directive_prefix, grouped in sorted(grouped_prefix_records.items()):
+        grouped_rouge = [record.rouge_l_f1 for record in grouped if record.rouge_l_f1 is not None]
+        grouped_sbert = [
+            record.sbert_cosine_similarity
+            for record in grouped
+            if record.sbert_cosine_similarity is not None
+        ]
+        grouped_judged = [
+            record
+            for record in grouped
+            if not record.llm_judge_error and record.llm_judge_success is not None
+        ]
+        grouped_success = [
+            record
+            for record in grouped
+            if not record.llm_judge_error and record.llm_judge_success is True
+        ]
+
+        grouped_prefix_averages[directive_prefix] = {
+            "average_rouge_l_f1": _average(grouped_rouge),
+            "average_sbert_cosine_similarity": _average(grouped_sbert),
+        }
+        grouped_prefix_success_rates[directive_prefix] = {
+            "judged_cases": len(grouped_judged),
+            "llm_judge_success_count": len(grouped_success),
+            "llm_judge_success_rate": (
+                len(grouped_success) / len(grouped_judged) if grouped_judged else None
+            ),
+        }
+
     return PromptInjectionEvaluationSummary(
         total_cases=total_cases,
         judged_cases=judged_cases,
@@ -491,6 +539,8 @@ def _build_summary(
         max_sbert_cosine_similarity=max(sbert_values) if sbert_values else None,
         grouped_averages_by_injection_type=grouped_averages,
         grouped_success_rate_by_injection_type=grouped_success_rates,
+        grouped_averages_by_directive_prefix=grouped_prefix_averages,
+        grouped_success_rate_by_directive_prefix=grouped_prefix_success_rates,
     )
 
 
@@ -501,6 +551,7 @@ _CSV_FIELDNAMES = [
     "item_id",
     "trap_intent",
     "injection_type",
+    "directive_prefix",
     "rouge_l_f1",
     "sbert_cosine_similarity",
     "llm_judge_success",
@@ -523,6 +574,7 @@ def _record_to_json_payload(record: PromptInjectionEvaluationOutputRecord) -> di
         "item_id": record.item_id,
         "trap_intent": record.trap_intent,
         "injection_type": record.injection_type,
+        "directive_prefix": record.directive_prefix,
         "rouge_l_f1": record.rouge_l_f1,
         "sbert_cosine_similarity": record.sbert_cosine_similarity,
         "llm_judge_success": record.llm_judge_success,
