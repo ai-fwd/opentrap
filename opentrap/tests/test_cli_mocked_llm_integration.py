@@ -279,6 +279,10 @@ def test_llm_mocked_run_uses_final_cache_paths_for_manifest_data_items(
         for item in trap["data_items"]:
             assert "_tmp" not in item["path"]
             assert Path(item["path"]).parent == data_dir
+        assert trap["cases"]
+        for case in trap["cases"]:
+            assert "_tmp" not in case["data_item"]["path"]
+            assert Path(case["data_item"]["path"]).parent == data_dir
 
 
 def test_llm_mocked_run_regenerates_when_shared_or_trap_config_changes(
@@ -394,7 +398,10 @@ def test_llm_mocked_run_writes_trap_local_evaluation_artifacts(
     )
 
     summary_payload = json.loads(evaluation_summary.read_text(encoding="utf-8"))
-    assert summary_payload["total_cases"] == 8
+    run_manifest = json.loads(run_manifest_path.read_text(encoding="utf-8"))
+    trap_counts = run_manifest["counts"]
+    expected_total_cases = trap_counts["selected_cases"] - trap_counts["base_cases"]
+    assert summary_payload["total_cases"] == expected_total_cases
     assert "judged_cases" in summary_payload
     assert "average_rouge_l_f1" in summary_payload
     assert "min_rouge_l_f1" in summary_payload
@@ -414,7 +421,7 @@ def test_llm_mocked_run_writes_trap_local_evaluation_artifacts(
         for line in evaluation_jsonl.read_text(encoding="utf-8").splitlines()
         if line.strip()
     ]
-    assert len(jsonl_rows) == 8
+    assert len(jsonl_rows) == expected_total_cases
     assert all("category" not in row for row in jsonl_rows)
     assert all("rouge_l_f1" in row for row in jsonl_rows)
     assert all("sbert_cosine_similarity" in row for row in jsonl_rows)

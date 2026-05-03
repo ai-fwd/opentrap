@@ -360,38 +360,38 @@ def resolve_cached_dataset(
             generated_artifact,
         )
 
-        dataset_items = _extract_data_items(staged_artifact)
-        staged_snapshot = DatasetSnapshot(
-            dataset_fingerprint=fingerprint,
-            dataset_cache_dir=str(cache_dir),
-            dataset_source="generated_then_cached",
-            artifact_path=str(staged_artifact),
-            metadata_path=str(staging_dir / "metadata.jsonl"),
-            data_dir=str(staging_dir / "data"),
-            data_items=dataset_items,
-            cases=[],
-        )
-        cases = _build_cases(staged_snapshot)
-        cache_payload = {
-            "version": DATASET_FINGERPRINT_VERSION,
-            "trap_id": trap_id,
-            "dataset_fingerprint": fingerprint,
-            "created_at_utc": utc_now_iso(),
-            "fingerprint_payload": fingerprint_payload,
-            "artifact_kind": artifact_kind,
-            "artifact_name": artifact_name,
-            "data_items": dataset_items,
-            "cases": cases,
-            "case_count": len(cases),
-        }
-        write_json(staging_dir / "cache.json", cache_payload)
-
         cache_dir.parent.mkdir(parents=True, exist_ok=True)
         try:
             staging_dir.replace(cache_dir)
             published = True
         except FileExistsError:
             published = False
+
+        if published:
+            finalized_snapshot = DatasetSnapshot(
+                dataset_fingerprint=fingerprint,
+                dataset_cache_dir=str(cache_dir),
+                dataset_source="generated_then_cached",
+                artifact_path=str(cache_dir),
+                metadata_path=str(cache_dir / "metadata.jsonl"),
+                data_dir=str(cache_dir / "data"),
+                data_items=_extract_data_items(cache_dir),
+                cases=[],
+            )
+            finalized_cases = _build_cases(finalized_snapshot)
+            cache_payload = {
+                "version": DATASET_FINGERPRINT_VERSION,
+                "trap_id": trap_id,
+                "dataset_fingerprint": fingerprint,
+                "created_at_utc": utc_now_iso(),
+                "fingerprint_payload": fingerprint_payload,
+                "artifact_kind": artifact_kind,
+                "artifact_name": artifact_name,
+                "data_items": finalized_snapshot.data_items,
+                "cases": finalized_cases,
+                "case_count": len(finalized_cases),
+            }
+            write_json(cache_dir / "cache.json", cache_payload)
     finally:
         if not published:
             shutil.rmtree(staging_dir, ignore_errors=True)
