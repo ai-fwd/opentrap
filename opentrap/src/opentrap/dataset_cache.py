@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from opentrap.artifacts import CACHE_DESCRIPTOR_FILE_NAME, DATASET_METADATA_FILE_NAME
 from opentrap.io_utils import load_json_maybe, utc_now_iso, write_json
 from opentrap.trap import SharedConfig, TrapCaseContext, TrapSpec
 
@@ -48,8 +49,6 @@ class DatasetSnapshot:
             "artifact_path": self.artifact_path,
             "metadata_path": self.metadata_path,
             "data_dir": self.data_dir,
-            "data_items": self.data_items,
-            "cases": self.cases,
             "case_count": len(self.cases),
         }
 
@@ -145,7 +144,7 @@ def _extract_data_items(artifact_path: Path) -> list[dict[str, str]]:
     if artifact_path.is_file():
         return []
 
-    metadata_path = artifact_path / "metadata.jsonl"
+    metadata_path = artifact_path / DATASET_METADATA_FILE_NAME
     data_dir = artifact_path / "data"
     collected: list[dict[str, str]] = []
 
@@ -183,7 +182,7 @@ def _resolve_cached_artifact_layout(
     if artifact_kind == "directory":
         return _CachedArtifactLayout(
             artifact_path=cache_dir,
-            metadata_path=cache_dir / "metadata.jsonl",
+            metadata_path=cache_dir / DATASET_METADATA_FILE_NAME,
             data_dir=cache_dir / "data",
         )
 
@@ -191,7 +190,7 @@ def _resolve_cached_artifact_layout(
         artifact_path = cache_dir / artifact_name
         return _CachedArtifactLayout(
             artifact_path=artifact_path,
-            metadata_path=artifact_path / "metadata.jsonl",
+            metadata_path=artifact_path / DATASET_METADATA_FILE_NAME,
             data_dir=artifact_path / "data",
         )
 
@@ -200,7 +199,7 @@ def _resolve_cached_artifact_layout(
 
 def _read_cached_dataset_snapshot(cache_dir: Path) -> DatasetSnapshot | None:
     """Load dataset snapshot when cache metadata and artifact are fully available."""
-    cache_metadata_path = cache_dir / "cache.json"
+    cache_metadata_path = cache_dir / CACHE_DESCRIPTOR_FILE_NAME
     if not cache_metadata_path.exists():
         return None
 
@@ -214,10 +213,6 @@ def _read_cached_dataset_snapshot(cache_dir: Path) -> DatasetSnapshot | None:
 
     # Always prefer paths derived from the finalized cached artifact. Cache metadata
     # may contain stale absolute paths captured before staging was moved into cache.
-    data_items = _extract_data_items(layout.artifact_path)
-    if not data_items:
-        data_items = _normalize_data_items(cache_metadata.get("data_items"))
-
     return DatasetSnapshot(
         dataset_fingerprint=str(cache_metadata.get("dataset_fingerprint", "")),
         dataset_cache_dir=str(cache_dir),
@@ -225,8 +220,8 @@ def _read_cached_dataset_snapshot(cache_dir: Path) -> DatasetSnapshot | None:
         artifact_path=str(layout.artifact_path),
         metadata_path=str(layout.metadata_path),
         data_dir=str(layout.data_dir),
-        data_items=data_items,
-        cases=_normalize_cases(cache_metadata.get("cases")),
+        data_items=_extract_data_items(layout.artifact_path),
+        cases=[],
     )
 
 
@@ -373,12 +368,20 @@ def resolve_cached_dataset(
                 dataset_cache_dir=str(cache_dir),
                 dataset_source="generated_then_cached",
                 artifact_path=str(cache_dir),
-                metadata_path=str(cache_dir / "metadata.jsonl"),
+                metadata_path=str(cache_dir / DATASET_METADATA_FILE_NAME),
                 data_dir=str(cache_dir / "data"),
                 data_items=_extract_data_items(cache_dir),
                 cases=[],
             )
             finalized_cases = _build_cases(finalized_snapshot)
+            generation_counts = trap.generation_counts(
+                TrapCaseContext(
+                    artifact_path=Path(finalized_snapshot.artifact_path),
+                    metadata_path=Path(finalized_snapshot.metadata_path),
+                    data_dir=Path(finalized_snapshot.data_dir),
+                    data_items=tuple(dict(item) for item in finalized_snapshot.data_items),
+                )
+            )
             cache_payload = {
                 "version": DATASET_FINGERPRINT_VERSION,
                 "trap_id": trap_id,
@@ -387,11 +390,14 @@ def resolve_cached_dataset(
                 "fingerprint_payload": fingerprint_payload,
                 "artifact_kind": artifact_kind,
                 "artifact_name": artifact_name,
-                "data_items": finalized_snapshot.data_items,
-                "cases": finalized_cases,
-                "case_count": len(finalized_cases),
+                "counts": {
+                    "generated_artifacts": generation_counts.generated_artifacts,
+                    "base_cases": generation_counts.base_cases,
+                    "variant_cases": generation_counts.variant_cases,
+                    "scenario_cases": len(finalized_cases),
+                },
             }
-            write_json(cache_dir / "cache.json", cache_payload)
+            write_json(cache_dir / CACHE_DESCRIPTOR_FILE_NAME, cache_payload, atomic=True)
     finally:
         if not published:
             shutil.rmtree(staging_dir, ignore_errors=True)

@@ -17,6 +17,7 @@ from pathlib import Path
 import pytest
 import yaml
 
+from opentrap.adapter.manifest import load_manifest_payload, load_manifest_view
 from opentrap.cli import main
 
 TRAP_ID = "perception/prompt_injection_via_html"
@@ -246,12 +247,12 @@ def test_llm_selected_trap_fails_fast_when_llm_env_is_missing(
     )
 
 
-def test_llm_mocked_run_uses_final_cache_paths_for_manifest_data_items(
+def test_llm_mocked_run_rebuilds_case_views_from_final_cache_metadata(
     capsys,
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    """Ensure manifest data item paths point at the finalized cache artifact, not staging."""
+    """Ensure metadata points at final cache artifacts and can rebuild case views."""
     generated_root = tmp_path / "adapter" / "generated"
     _write_generated_adapter(generated_root)
     _prepare_llm_trap_run(
@@ -264,23 +265,34 @@ def test_llm_mocked_run_uses_final_cache_paths_for_manifest_data_items(
     code1 = main(["run", TRAP_ID])
     captured1 = capsys.readouterr()
     assert code1 == 0
-    trap_1 = _read_trap_entry(_extract_manifest_path(captured1.out))
+    manifest_path_1 = _extract_manifest_path(captured1.out)
+    trap_1 = _read_trap_entry(manifest_path_1)
 
     code2 = main(["run", TRAP_ID])
     captured2 = capsys.readouterr()
     assert code2 == 0
-    trap_2 = _read_trap_entry(_extract_manifest_path(captured2.out))
+    manifest_path_2 = _extract_manifest_path(captured2.out)
+    trap_2 = _read_trap_entry(manifest_path_2)
 
-    for trap in (trap_1, trap_2):
+    for manifest_path, trap in ((manifest_path_1, trap_1), (manifest_path_2, trap_2)):
         data_dir = Path(trap["data_dir"])
         assert Path(trap["artifact_path"]) == Path(trap["dataset_cache_dir"])
         assert data_dir == Path(trap["dataset_cache_dir"]) / "data"
-        assert trap["data_items"]
-        for item in trap["data_items"]:
-            assert "_tmp" not in item["path"]
-            assert Path(item["path"]).parent == data_dir
-        assert trap["cases"]
-        for case in trap["cases"]:
+        metadata_rows = [
+            json.loads(line)
+            for line in Path(trap["metadata_path"]).read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        assert metadata_rows
+        assert all("_tmp" not in row["filename"] for row in metadata_rows)
+
+        manifest_view = load_manifest_view(manifest_path, load_manifest_payload(manifest_path))
+        assert manifest_view.traps[0].data_items
+        assert manifest_view.traps[0].cases
+        for item in manifest_view.traps[0].data_items:
+            assert "_tmp" not in str(item.path)
+            assert item.path.parent == data_dir
+        for case in manifest_view.traps[0].cases:
             assert "_tmp" not in case["data_item"]["path"]
             assert Path(case["data_item"]["path"]).parent == data_dir
 

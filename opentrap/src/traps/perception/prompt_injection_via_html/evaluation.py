@@ -29,6 +29,7 @@ from typing import Any, Protocol
 
 from llm_config import LLMConfig, load_llm_config_from_env
 
+from opentrap.artifacts import OBSERVATIONS_FILE_NAME
 from opentrap.evaluation import (
     EvaluationArtifacts,
     JudgeResult,
@@ -209,12 +210,13 @@ def evaluate_prompt_injection_run(
     run_id = _require_manifest_string(manifest_payload, "run_id")
     trap_entry = find_trap_entry(manifest_payload, trap_id=trap_id)
 
-    observed_outputs = load_observed_outputs(run_dir / "observations.jsonl")
+    observed_outputs = load_observed_outputs(run_dir / OBSERVATIONS_FILE_NAME)
     emit_evaluation_phase(event_sink, phase="pairing_cases")
     input_records = _build_input_records(
         run_id=run_id,
         trap_id=trap_id,
         trap_entry=trap_entry,
+        repo_root=_resolve_repo_root(manifest_payload),
         observed_outputs=observed_outputs,
         max_cases=max_cases,
     )
@@ -258,11 +260,59 @@ def _require_manifest_string(payload: Mapping[str, Any], key: str) -> str:
     return value
 
 
-def _as_case_list(trap_entry: Mapping[str, Any]) -> list[dict[str, Any]]:
+def _resolve_repo_root(run_manifest: Mapping[str, Any]) -> Path:
+    raw_repo_root = run_manifest.get("repo_root")
+    if isinstance(raw_repo_root, str) and raw_repo_root:
+        return Path(raw_repo_root)
+    return Path.cwd()
+
+
+def _as_case_list(
+    trap_entry: Mapping[str, Any],
+    *,
+    repo_root: Path,
+) -> list[dict[str, Any]]:
     raw_cases = trap_entry.get("cases")
-    if not isinstance(raw_cases, list):
-        raise RuntimeError("trap entry must include a 'cases' list")
-    return [case for case in raw_cases if isinstance(case, dict)]
+    if isinstance(raw_cases, list):
+        return [case for case in raw_cases if isinstance(case, dict)]
+
+    metadata_path = _resolve_artifact_path(trap_entry.get("metadata_path"), repo_root=repo_root)
+    data_dir = _resolve_artifact_path(trap_entry.get("data_dir"), repo_root=repo_root)
+    if metadata_path is None or data_dir is None:
+        raise RuntimeError("trap entry must include metadata_path and data_dir")
+
+    cases: list[dict[str, Any]] = []
+    for index, raw_line in enumerate(metadata_path.read_text(encoding="utf-8").splitlines()):
+        if not raw_line.strip():
+            continue
+        record = json.loads(raw_line)
+        if not isinstance(record, dict):
+            continue
+        file_id = record.get("file_id")
+        filename = record.get("filename")
+        if not isinstance(file_id, str) or not isinstance(filename, str):
+            continue
+        cases.append(
+            {
+                "case_index": index,
+                "item_id": file_id,
+                "data_item": {
+                    "id": file_id,
+                    "path": str(data_dir / filename),
+                },
+                "metadata": record,
+            }
+        )
+    return cases
+
+
+def _resolve_artifact_path(raw_path: object, *, repo_root: Path) -> Path | None:
+    if not isinstance(raw_path, str) or not raw_path:
+        return None
+    path = Path(raw_path)
+    if path.is_absolute():
+        return path
+    return repo_root / path
 
 
 def _build_input_records(
@@ -270,10 +320,11 @@ def _build_input_records(
     run_id: str,
     trap_id: str,
     trap_entry: Mapping[str, Any],
+    repo_root: Path,
     observed_outputs: Mapping[int, str],
     max_cases: int | None = None,
 ) -> list[PromptInjectionEvaluationInputRecord]:
-    cases = _as_case_list(trap_entry)
+    cases = _as_case_list(trap_entry, repo_root=repo_root)
     if max_cases is not None:
         if max_cases < 1:
             raise RuntimeError("max_cases must be >= 1")
@@ -424,7 +475,11 @@ def _build_summary(
 ) -> PromptInjectionEvaluationSummary:
     total_cases = len(records)
     judged_cases = len(
-        [record for record in records if not record.llm_judge_error and record.llm_judge_success is not None]
+        [
+            record
+            for record in records
+            if not record.llm_judge_error and record.llm_judge_success is not None
+        ]
     )
     success_count = len([record for record in records if record.llm_judge_success is True])
     failure_count = len(
@@ -452,7 +507,9 @@ def _build_summary(
     ]
 
     grouped_records: dict[str, list[PromptInjectionEvaluationOutputRecord]] = defaultdict(list)
-    grouped_prefix_records: dict[str, list[PromptInjectionEvaluationOutputRecord]] = defaultdict(list)
+    grouped_prefix_records: dict[str, list[PromptInjectionEvaluationOutputRecord]] = defaultdict(
+        list
+    )
     for record in records:
         if isinstance(record.injection_type, str) and record.injection_type:
             grouped_records[record.injection_type].append(record)

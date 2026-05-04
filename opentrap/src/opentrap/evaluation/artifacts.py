@@ -2,12 +2,22 @@
 
 from __future__ import annotations
 
-import csv
 import json
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass, is_dataclass
 from pathlib import Path
 from typing import Any
+
+from opentrap.artifacts import (
+    EVALUATION_CSV_FILE_NAME,
+    EVALUATION_JSONL_FILE_NAME,
+    EVALUATION_REPORT_HTML_FILE_NAME,
+    EVALUATION_SUMMARY_FILE_NAME,
+    write_csv_artifact,
+    write_json_artifact,
+    write_jsonl_artifact,
+    write_text_artifact,
+)
 
 
 @dataclass(frozen=True)
@@ -77,9 +87,9 @@ def write_evaluation_artifacts(
     csv_exclude_fields: set[str] | None = None,
     evaluation_report_html: str | None = None,
 ) -> EvaluationArtifacts:
-    evaluation_jsonl_path = run_dir / "evaluation.jsonl"
-    evaluation_csv_path = run_dir / "evaluation.csv"
-    evaluation_summary_path = run_dir / "evaluation_summary.json"
+    evaluation_jsonl_path = run_dir / EVALUATION_JSONL_FILE_NAME
+    evaluation_csv_path = run_dir / EVALUATION_CSV_FILE_NAME
+    evaluation_summary_path = run_dir / EVALUATION_SUMMARY_FILE_NAME
     evaluation_report_html_path = None
 
     write_jsonl_records(evaluation_jsonl_path, records, record_to_payload=record_to_payload)
@@ -90,13 +100,13 @@ def write_evaluation_artifacts(
         record_to_payload=record_to_payload,
         exclude_fields=csv_exclude_fields or set(),
     )
-    evaluation_summary_path.write_text(
-        json.dumps(to_json_payload(summary), indent=2) + "\n",
-        encoding="utf-8",
-    )
+    summary_payload = to_json_payload(summary)
+    if not isinstance(summary_payload, Mapping):
+        raise RuntimeError("evaluation summary payload must be a mapping")
+    write_json_artifact(evaluation_summary_path, summary_payload)
     if isinstance(evaluation_report_html, str):
-        evaluation_report_html_path = run_dir / "evaluation_report.html"
-        evaluation_report_html_path.write_text(evaluation_report_html, encoding="utf-8")
+        evaluation_report_html_path = run_dir / EVALUATION_REPORT_HTML_FILE_NAME
+        write_text_artifact(evaluation_report_html_path, evaluation_report_html)
 
     return EvaluationArtifacts(
         evaluation_jsonl_path=evaluation_jsonl_path,
@@ -113,10 +123,10 @@ def write_jsonl_records(
     *,
     record_to_payload: Callable[[Any], Mapping[str, Any]] | None = None,
 ) -> None:
-    with path.open("w", encoding="utf-8") as handle:
-        for record in records:
-            payload = _record_payload(record, record_to_payload=record_to_payload)
-            handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
+    write_jsonl_artifact(
+        path,
+        (_record_payload(record, record_to_payload=record_to_payload) for record in records),
+    )
 
 
 def write_csv_records(
@@ -129,13 +139,11 @@ def write_csv_records(
 ) -> None:
     excluded = exclude_fields or set()
     csv_fields = [field for field in fieldnames if field not in excluded]
-    with path.open("w", encoding="utf-8", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=csv_fields)
-        writer.writeheader()
-        for record in records:
-            payload = dict(_record_payload(record, record_to_payload=record_to_payload))
-            row = {field: _csv_value(payload.get(field)) for field in csv_fields}
-            writer.writerow(row)
+    write_csv_artifact(
+        path,
+        (_record_payload(record, record_to_payload=record_to_payload) for record in records),
+        fieldnames=csv_fields,
+    )
 
 
 def to_json_payload(value: Any) -> Any:
@@ -157,11 +165,3 @@ def _record_payload(
     if not isinstance(payload, Mapping):
         raise RuntimeError("evaluation record payload must be a mapping")
     return payload
-
-
-def _csv_value(value: Any) -> Any:
-    if isinstance(value, Mapping) or (
-        isinstance(value, Sequence) and not isinstance(value, str | bytes)
-    ):
-        return json.dumps(value, ensure_ascii=False, sort_keys=True)
-    return value

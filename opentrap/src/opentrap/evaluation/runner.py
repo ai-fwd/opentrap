@@ -11,6 +11,7 @@ from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from pathlib import Path
 from typing import Any
 
+from opentrap.artifacts import REPORT_FILE_NAME, RUN_MANIFEST_FILE_NAME
 from opentrap.evaluation.result import EvaluationResult
 from opentrap.events import EventSink, emit_event
 from opentrap.io_utils import load_json, load_json_maybe, write_json
@@ -35,7 +36,7 @@ def run_trap_evaluation(
         run_manifest_path=str(run_manifest_path),
     )
     set_scorer_status(run_manifest_path=run_manifest_path, scorer_status="running")
-    report_path = run_manifest_path.parent / "report.json"
+    report_path = run_manifest_path.parent / REPORT_FILE_NAME
     captured_output = _CapturedEvaluationOutput()
     event_sink_for_evaluation = _build_uncaptured_event_sink(event_sink)
     try:
@@ -217,7 +218,7 @@ def set_scorer_status(*, run_manifest_path: Path, scorer_status: str) -> None:
         manifest["scorer_status"] = scorer_status
         write_json(run_manifest_path, manifest, atomic=True)
 
-    report_path = run_manifest_path.parent / "report.json"
+    report_path = run_manifest_path.parent / REPORT_FILE_NAME
     report = load_json_maybe(report_path)
     if report is not None:
         report["scorer_status"] = scorer_status
@@ -235,7 +236,7 @@ def _require_trap_eval_result(value: Any) -> EvaluationResult:
 
 
 def _set_security_result(*, run_manifest_path: Path, security_result: SecurityResult) -> None:
-    report_path = run_manifest_path.parent / "report.json"
+    report_path = run_manifest_path.parent / REPORT_FILE_NAME
     report = load_json_maybe(report_path) or _build_minimal_report(run_manifest_path)
     report["security_result"] = security_result.to_report_payload()
     write_json(report_path, report, atomic=True)
@@ -263,7 +264,7 @@ def _set_evaluation_counts(
         manifest["counts"] = counts
         write_json(run_manifest_path, manifest, atomic=True)
 
-    report_path = run_manifest_path.parent / "report.json"
+    report_path = run_manifest_path.parent / REPORT_FILE_NAME
     report = load_json_maybe(report_path) or _build_minimal_report(run_manifest_path)
     report_counts = report.get("counts")
     if not isinstance(report_counts, dict):
@@ -341,7 +342,7 @@ def _find_latest_run_manifest(
     for candidate_dir in sorted(runs_dir.iterdir()):
         if not candidate_dir.is_dir():
             continue
-        manifest_path = candidate_dir / "run.json"
+        manifest_path = candidate_dir / RUN_MANIFEST_FILE_NAME
         if not manifest_path.exists():
             continue
         try:

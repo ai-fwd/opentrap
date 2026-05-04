@@ -16,6 +16,12 @@ from typing import Any
 from urllib.error import URLError
 from urllib.request import urlopen
 
+from opentrap.artifacts import (
+    REPORT_FILE_NAME,
+    RUN_MANIFEST_FILE_NAME,
+    SESSIONS_FILE_NAME,
+    TRACES_FILE_NAME,
+)
 from opentrap.config_loader import HarnessConfig
 from opentrap.counts import COUNT_FIELDS
 from opentrap.dataset_cache import DatasetSnapshot, resolve_cached_dataset
@@ -45,8 +51,6 @@ ADAPTER_READY_TIMEOUT_SECONDS = 10.0
 ADAPTER_POLL_INTERVAL_SECONDS = 0.1
 STATUS_HEARTBEAT_INTERVAL_SECONDS = 3.0
 ADAPTER_TERMINATE_TIMEOUT_SECONDS = 3.0
-SESSIONS_FILE_NAME = "sessions.jsonl"
-TRACES_FILE_NAME = "traces.jsonl"
 ADAPTER_STATUS_PREFIX = "[adapter]"
 
 
@@ -338,25 +342,17 @@ def _update_session_payload(
     raise RuntimeError(f"session_id {session_id!r} was not found in {sessions_path}")
 
 
-def _start_case_session(manifest_path: Path, *, case_index: int) -> ActiveSessionDescriptor:
+def _start_case_session(
+    manifest_path: Path,
+    *,
+    case_index: int,
+    case: Mapping[str, Any],
+) -> ActiveSessionDescriptor:
     manifest = load_json(manifest_path)
     run_id = manifest.get("run_id")
     if not isinstance(run_id, str) or not run_id:
         raise RuntimeError("manifest.run_id must be a non-empty string")
 
-    traps = manifest.get("traps")
-    if not isinstance(traps, list) or not traps or not isinstance(traps[0], dict):
-        raise RuntimeError("manifest.traps must contain the selected trap entry")
-
-    cases = traps[0].get("cases")
-    if not isinstance(cases, list):
-        raise RuntimeError("manifest.traps[0].cases must be a list")
-    if case_index < 0 or case_index >= len(cases):
-        raise RuntimeError(f"case index {case_index} is out of range for this run")
-
-    case = cases[case_index]
-    if not isinstance(case, dict):
-        raise RuntimeError(f"case {case_index} is not a JSON object")
     item_id = case.get("item_id")
     item_id_value = item_id if isinstance(item_id, str) else None
 
@@ -387,19 +383,7 @@ def _start_case_session(manifest_path: Path, *, case_index: int) -> ActiveSessio
     append_jsonl(session_path, session_payload)
     evidence_path.touch(exist_ok=True)
 
-    sessions = manifest.get("sessions")
-    if not isinstance(sessions, list):
-        sessions = []
-    sessions.append(
-        {
-            "session_id": session_id,
-            "case_index": case_index,
-            "evidence_file": evidence_path.name,
-        }
-    )
-
     manifest["sessions_file"] = SESSIONS_FILE_NAME
-    manifest["sessions"] = sessions
     manifest["active_case_index"] = case_index
     manifest["active_session_id"] = session_id
     manifest["status"] = "session_active"
@@ -470,7 +454,7 @@ def _finalize_run(manifest_path: Path, *, succeeded: bool) -> None:
     manifest["scorer_status"] = "pending"
     manifest["counts"] = counts
 
-    report_path = manifest_path.parent / "report.json"
+    report_path = manifest_path.parent / REPORT_FILE_NAME
     report_payload = {
         "run_id": manifest["run_id"],
         "finalized_at_utc": ended_at_utc,
@@ -602,9 +586,8 @@ def prepare_trap_dataset(
         "trap_slug": trap_slug,
         **dataset.as_manifest_fields(),
     }
-    selected_cases = [dict(case) for case in dataset.cases[:selected_case_count]]
-    trap_entry["cases"] = selected_cases
-    trap_entry["case_count"] = len(selected_cases)
+    trap_entry["selected_case_count"] = selected_case_count
+    trap_entry["case_count"] = selected_case_count
 
     return PreparedTrapDataset(
         trap_id=trap_id,
@@ -640,15 +623,6 @@ def _load_resume_payload(
     if not isinstance(trap_id, str) or not trap_id:
         raise RuntimeError("run manifest traps[0].trap_id must be a non-empty string")
 
-    raw_cases = trap_entry.get("cases")
-    if not isinstance(raw_cases, list):
-        raise RuntimeError("run manifest traps[0].cases must be a list")
-    cases = [dict(case) for case in raw_cases if isinstance(case, dict)]
-    if not cases:
-        raise RuntimeError("run manifest traps[0].cases must include at least one case")
-    trap_entry["cases"] = cases
-    trap_entry["case_count"] = len(cases)
-
     raw_command = manifest.get("harness_command")
     if not isinstance(raw_command, list) or not raw_command:
         raise RuntimeError("run manifest harness_command must be a non-empty list")
@@ -673,30 +647,62 @@ def _load_resume_payload(
     return trap_id, trap_entry, harness, product_under_test, requested_trap_ref
 
 
-def _build_dataset_snapshot_from_trap_entry(trap_entry: Mapping[str, Any]) -> DatasetSnapshot:
-    raw_data_items = trap_entry.get("data_items")
+def _extract_data_items_from_metadata(
+    *,
+    metadata_path: Path,
+    data_dir: Path,
+) -> list[dict[str, str]]:
     data_items: list[dict[str, str]] = []
-    if isinstance(raw_data_items, list):
-        for data_item in raw_data_items:
-            if not isinstance(data_item, dict):
-                continue
-            item_id = data_item.get("id")
-            path = data_item.get("path")
-            if isinstance(item_id, str) and isinstance(path, str):
-                data_items.append({"id": item_id, "path": path})
+    for raw_line in metadata_path.read_text(encoding="utf-8").splitlines():
+        if not raw_line.strip():
+            continue
+        record = json.loads(raw_line)
+        if not isinstance(record, dict):
+            continue
+        item_id = record.get("file_id")
+        filename = record.get("filename")
+        if isinstance(item_id, str) and isinstance(filename, str):
+            data_items.append({"id": item_id, "path": str(data_dir / filename)})
+    return data_items
 
-    raw_cases = trap_entry.get("cases")
-    cases: list[dict[str, Any]] = []
-    if isinstance(raw_cases, list):
-        cases = [dict(case) for case in raw_cases if isinstance(case, dict)]
+
+def _normalize_cases(raw_cases: object) -> list[dict[str, Any]]:
+    if not isinstance(raw_cases, list):
+        return []
+    normalized: list[dict[str, Any]] = []
+    for index, case in enumerate(raw_cases):
+        if not isinstance(case, dict):
+            continue
+        case_payload = dict(case)
+        case_payload["case_index"] = index
+        normalized.append(case_payload)
+    return normalized
+
+
+def _build_dataset_snapshot_from_trap_entry(
+    trap_entry: Mapping[str, Any],
+    *,
+    trap: TrapSpec[Any, Any, Any, Any],
+) -> DatasetSnapshot:
+    artifact_path = Path(str(trap_entry.get("artifact_path", "")))
+    metadata_path = Path(str(trap_entry.get("metadata_path", "")))
+    data_dir = Path(str(trap_entry.get("data_dir", "")))
+    data_items = _extract_data_items_from_metadata(metadata_path=metadata_path, data_dir=data_dir)
+    context = TrapCaseContext(
+        artifact_path=artifact_path,
+        metadata_path=metadata_path,
+        data_dir=data_dir,
+        data_items=tuple(dict(item) for item in data_items),
+    )
+    cases = _normalize_cases(trap.build_cases(context))
 
     return DatasetSnapshot(
         dataset_fingerprint=str(trap_entry.get("dataset_fingerprint", "")),
         dataset_cache_dir=str(trap_entry.get("dataset_cache_dir", "")),
         dataset_source=str(trap_entry.get("dataset_source", "cache_hit")),
-        artifact_path=str(trap_entry.get("artifact_path", "")),
-        metadata_path=str(trap_entry.get("metadata_path", "")),
-        data_dir=str(trap_entry.get("data_dir", "")),
+        artifact_path=str(artifact_path),
+        metadata_path=str(metadata_path),
+        data_dir=str(data_dir),
         data_items=data_items,
         cases=cases,
     )
@@ -723,7 +729,7 @@ def execute_prepared_trap(
 ) -> TrapRunResult:
     resolved_run_id = run_id or uuid.uuid4().hex
     resolved_run_dir = run_dir or (environment.runs_dir / resolved_run_id)
-    resolved_manifest_path = run_manifest_path or (resolved_run_dir / "run.json")
+    resolved_manifest_path = run_manifest_path or (resolved_run_dir / RUN_MANIFEST_FILE_NAME)
 
     if run_dir is None and initialize_manifest:
         resolved_run_dir.mkdir(parents=True, exist_ok=False)
@@ -774,7 +780,6 @@ def execute_prepared_trap(
             "harness_command": list(harness.command),
             "harness_cwd": harness.cwd,
             "sessions_file": SESSIONS_FILE_NAME,
-            "sessions": [],
             "traps": [prepared.trap_entry],
             "trap_count": 1,
             "counts": counts_for_run_started,
@@ -853,7 +858,12 @@ def execute_prepared_trap(
                     display_case_index=case_index + 1,
                     selected_cases=prepared.selected_case_count,
                 )
-                descriptor = _start_case_session(resolved_manifest_path, case_index=case_index)
+                case = prepared.dataset.cases[case_index]
+                descriptor = _start_case_session(
+                    resolved_manifest_path,
+                    case_index=case_index,
+                    case=case,
+                )
 
                 harness_exit_code = 1
                 harness_stdout = ""
@@ -958,7 +968,7 @@ def run_single_trap(
     run_id = uuid.uuid4().hex
     run_dir = environment.runs_dir / run_id
     run_dir.mkdir(parents=True, exist_ok=False)
-    run_manifest_path = run_dir / "run.json"
+    run_manifest_path = run_dir / RUN_MANIFEST_FILE_NAME
     emit_event(
         event_sink,
         "run_started",
@@ -1053,7 +1063,7 @@ def run_execute_trap(
     run_id = uuid.uuid4().hex
     run_dir = environment.runs_dir / run_id
     run_dir.mkdir(parents=True, exist_ok=False)
-    run_manifest_path = run_dir / "run.json"
+    run_manifest_path = run_dir / RUN_MANIFEST_FILE_NAME
     emit_event(
         event_sink,
         "run_started",
@@ -1104,14 +1114,14 @@ def run_continue_trap(
     trap_id, trap_entry, harness, product_under_test, requested_trap_ref = _load_resume_payload(
         run_manifest_path=run_manifest_path
     )
-    selected_case_count = len(trap_entry["cases"])
+    counts = _counts_from_manifest(load_json(run_manifest_path))
+    selected_case_count = counts["selected_cases"]
 
     progress = _compute_harness_progress(
         manifest_path=run_manifest_path,
         selected_case_count=selected_case_count,
     )
     _clear_run_active_session(run_manifest_path)
-    counts = _counts_from_manifest(load_json(run_manifest_path))
     counts["selected_cases"] = selected_case_count
     counts["harness_executed"] = progress.harness_executed
     counts["harness_passed"] = progress.harness_passed
@@ -1139,7 +1149,7 @@ def run_continue_trap(
             counts=counts,
             selected_case_count=selected_case_count,
             total_case_count=selected_case_count,
-            dataset=_build_dataset_snapshot_from_trap_entry(trap_entry),
+            dataset=_build_dataset_snapshot_from_trap_entry(trap_entry, trap=trap),
         ),
         requested_trap_ref=requested_trap_ref,
         environment=environment,

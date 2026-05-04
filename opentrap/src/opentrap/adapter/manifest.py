@@ -5,6 +5,8 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+from opentrap.artifacts import DATASET_METADATA_FILE_NAME
+
 from .models import DataItemView, ManifestTrapView, ManifestView, _RuntimeMetadata
 
 
@@ -67,6 +69,56 @@ def load_manifest_data_items(
     return tuple(items)
 
 
+def load_manifest_cases(
+    trap_payload: Mapping[str, Any],
+    *,
+    repo_root: Path,
+) -> tuple[dict[str, Any], ...]:
+    raw_cases = trap_payload.get("cases")
+    if isinstance(raw_cases, list):
+        return tuple(dict(case) for case in raw_cases if isinstance(case, dict))
+
+    metadata_path = resolve_manifest_path(
+        trap_payload.get("metadata_path"),
+        repo_root=repo_root,
+    )
+    data_dir = resolve_manifest_path(trap_payload.get("data_dir"), repo_root=repo_root)
+    if metadata_path is None:
+        artifact_path = resolve_manifest_path(
+            trap_payload.get("artifact_path"),
+            repo_root=repo_root,
+        )
+        metadata_path = (
+            artifact_path / DATASET_METADATA_FILE_NAME if artifact_path is not None else None
+        )
+    if metadata_path is None or data_dir is None or not metadata_path.exists():
+        return ()
+
+    cases: list[dict[str, Any]] = []
+    for index, raw_line in enumerate(metadata_path.read_text(encoding="utf-8").splitlines()):
+        if not raw_line.strip():
+            continue
+        record = json.loads(raw_line)
+        if not isinstance(record, dict):
+            continue
+        item_id = record.get("file_id")
+        filename = record.get("filename")
+        if not isinstance(item_id, str) or not isinstance(filename, str):
+            continue
+        cases.append(
+            {
+                "case_index": index,
+                "item_id": item_id,
+                "data_item": {
+                    "id": item_id,
+                    "path": str(data_dir / filename),
+                },
+                "metadata": record,
+            }
+        )
+    return tuple(cases)
+
+
 def load_manifest_view(manifest_path: Path, payload: Mapping[str, Any]) -> ManifestView:
     repo_root = resolve_repo_root(payload)
     requested = payload.get("requested")
@@ -81,6 +133,19 @@ def load_manifest_view(manifest_path: Path, payload: Mapping[str, Any]) -> Manif
             trap_id = raw_trap.get("trap_id")
             if not isinstance(trap_id, str) or not trap_id:
                 continue
+            data_items = load_manifest_data_items(raw_trap, repo_root=repo_root)
+            cases = load_manifest_cases(raw_trap, repo_root=repo_root)
+            if not data_items:
+                data_items = tuple(
+                    DataItemView(
+                        id=str(case["data_item"]["id"]),
+                        path=Path(str(case["data_item"]["path"])),
+                    )
+                    for case in cases
+                    if isinstance(case.get("data_item"), Mapping)
+                    and isinstance(case["data_item"].get("id"), str)
+                    and isinstance(case["data_item"].get("path"), str)
+                )
             traps.append(
                 ManifestTrapView(
                     trap_id=trap_id,
@@ -96,12 +161,8 @@ def load_manifest_view(manifest_path: Path, payload: Mapping[str, Any]) -> Manif
                         raw_trap.get("data_dir"),
                         repo_root=repo_root,
                     ),
-                    data_items=load_manifest_data_items(raw_trap, repo_root=repo_root),
-                    cases=tuple(
-                        dict(case)
-                        for case in raw_trap.get("cases", [])
-                        if isinstance(case, dict)
-                    ),
+                    data_items=data_items,
+                    cases=cases,
                 )
             )
 

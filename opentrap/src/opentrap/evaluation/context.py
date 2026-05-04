@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from opentrap.artifacts import REPORT_FILE_NAME
 from opentrap.events import EventSink
 
 
@@ -35,7 +36,7 @@ class EvaluationContext:
 
         run_manifest_path = cls._read_path(value, "run_manifest_path")
         run_dir = cls._read_optional_path(value, "run_dir") or run_manifest_path.parent
-        report_path = cls._read_optional_path(value, "report_path") or (run_dir / "report.json")
+        report_path = cls._read_optional_path(value, "report_path") or (run_dir / REPORT_FILE_NAME)
         trap_id_value = value.get("trap_id")
         trap_id = (
             trap_id_value

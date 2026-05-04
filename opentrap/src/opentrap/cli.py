@@ -11,6 +11,7 @@ from typing import Annotated
 import click
 import typer
 
+from opentrap.artifacts import RUN_MANIFEST_FILE_NAME
 from opentrap.cli_rendering import build_renderer
 from opentrap.config_loader import (
     ConfigError,
@@ -360,7 +361,7 @@ def cmd_execute(trap_ref: str, *, max_cases: int | None, verbose: bool) -> int:
 def _resolve_eval_manifest_path(run_ref: str) -> Path:
     if run_ref == "latest":
         return find_latest_finalized_run_manifest_global(runs_dir=DEFAULT_RUNS_DIR)
-    manifest_path = DEFAULT_RUNS_DIR / run_ref / "run.json"
+    manifest_path = DEFAULT_RUNS_DIR / run_ref / RUN_MANIFEST_FILE_NAME
     if not manifest_path.exists():
         raise RuntimeError(f"run '{run_ref}' was not found in {DEFAULT_RUNS_DIR}")
     return manifest_path
@@ -369,7 +370,7 @@ def _resolve_eval_manifest_path(run_ref: str) -> Path:
 def _resolve_continue_manifest_path(run_ref: str) -> Path:
     if run_ref == "latest":
         return find_latest_non_finalized_run_manifest_global(runs_dir=DEFAULT_RUNS_DIR)
-    manifest_path = DEFAULT_RUNS_DIR / run_ref / "run.json"
+    manifest_path = DEFAULT_RUNS_DIR / run_ref / RUN_MANIFEST_FILE_NAME
     if not manifest_path.exists():
         raise RuntimeError(f"run '{run_ref}' was not found in {DEFAULT_RUNS_DIR}")
     return manifest_path

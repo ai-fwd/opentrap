@@ -260,13 +260,6 @@ def _rewrite_run_as_interrupted(run_manifest_path: Path, *, completed_case_count
         encoding="utf-8",
     )
 
-    session_refs = run_manifest.get("sessions")
-    if isinstance(session_refs, list):
-        run_manifest["sessions"] = [
-            row for row in session_refs[:completed_case_count] if isinstance(row, dict)
-        ]
-    else:
-        run_manifest["sessions"] = []
     run_manifest["status"] = "ready"
     run_manifest["scorer_status"] = "pending"
     run_manifest["active_case_index"] = None
@@ -673,12 +666,19 @@ def test_trap_run_single_records_manifest_and_artifact(
         f"reasoning/chain-trap|summarize docs|7|{expected_sample_count}"
     )
     run_dir = run_manifest_path.parent
-    session_id = run_manifest["sessions"][0]["session_id"]
-    assert run_manifest["sessions"][0]["evidence_file"] == "traces.jsonl"
     sessions_file = run_manifest.get("sessions_file")
     assert sessions_file == "sessions.jsonl"
     sessions_path = run_dir / sessions_file
     assert sessions_path.exists()
+    session_rows = [
+        json.loads(line)
+        for line in sessions_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert len(session_rows) == 1
+    session_id = session_rows[0]["session_id"]
+    assert session_rows[0]["case_index"] == 0
+    assert session_rows[0]["item_id"] == "00001"
     assert not (run_dir / f"session-{session_id}.json").exists()
     traces_path = run_dir / "traces.jsonl"
     assert traces_path.exists()

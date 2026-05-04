@@ -18,6 +18,7 @@ from html_utils import (
     _replace_opening_tag,
 )
 
+from opentrap.artifacts import DATASET_METADATA_FILE_NAME
 from opentrap.trap import SampleBoundary
 
 ATTACK_TYPES = (
@@ -259,7 +260,7 @@ def run_generation(
 
     insertion_count = compute_insertion_count(config.density_temperature)
     distinct_count = compute_distinct_count(config.diversity_temperature, insertion_count)
-    metadata_path = run_dir / "metadata.jsonl"
+    metadata_path = run_dir / DATASET_METADATA_FILE_NAME
     file_number = 1
 
     with metadata_path.open("w", encoding="utf-8") as metadata_file:

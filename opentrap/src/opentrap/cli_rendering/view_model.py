@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+from opentrap.artifacts import SESSIONS_FILE_NAME, TRACES_FILE_NAME
 from opentrap.cli_rendering.display_state import RunDisplayState, SecuritySummary, display_path
 
 
@@ -146,8 +147,8 @@ def evaluation_rows(summary: SecuritySummary) -> list[tuple[str, str]]:
 def artifact_rows(run_manifest_path: Path) -> list[tuple[str, str]]:
     return [
         ("Run manifest", display_path(run_manifest_path)),
-        ("Sessions", display_path(run_manifest_path.parent / "sessions.jsonl")),
-        ("Traces", display_path(run_manifest_path.parent / "traces.jsonl")),
+        ("Sessions", display_path(run_manifest_path.parent / SESSIONS_FILE_NAME)),
+        ("Traces", display_path(run_manifest_path.parent / TRACES_FILE_NAME)),
     ]
 
 

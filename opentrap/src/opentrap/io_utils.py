@@ -12,6 +12,12 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from opentrap.artifacts import (
+    append_jsonl_artifact,
+    write_json_artifact,
+    write_jsonl_artifact,
+)
+
 
 def utc_now_iso() -> str:
     """Return the current UTC timestamp in ISO-8601 format."""
@@ -26,14 +32,7 @@ def write_json(path: Path, payload: dict[str, Any], *, atomic: bool = False) -> 
         payload: Mapping payload to serialize.
         atomic: When True, write through a temporary sibling file and replace.
     """
-    content = json.dumps(payload, indent=2) + "\n"
-    if not atomic:
-        path.write_text(content, encoding="utf-8")
-        return
-
-    temp_path = path.with_suffix(path.suffix + ".tmp")
-    temp_path.write_text(content, encoding="utf-8")
-    temp_path.replace(path)
+    write_json_artifact(path, payload, atomic=atomic)
 
 
 def load_json(path: Path) -> dict[str, Any]:
@@ -68,20 +67,12 @@ def write_jsonl(
     atomic: bool = False,
 ) -> None:
     """Serialize JSON-object rows to newline-delimited JSON."""
-    content = "".join(json.dumps(row) + "\n" for row in rows)
-    if not atomic:
-        path.write_text(content, encoding="utf-8")
-        return
-
-    temp_path = path.with_suffix(path.suffix + ".tmp")
-    temp_path.write_text(content, encoding="utf-8")
-    temp_path.replace(path)
+    write_jsonl_artifact(path, rows, atomic=atomic)
 
 
 def append_jsonl(path: Path, row: dict[str, Any]) -> None:
     """Append one JSON-object row to a newline-delimited JSON file."""
-    with path.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(row) + "\n")
+    append_jsonl_artifact(path, row)
 
 
 def load_jsonl(path: Path) -> list[dict[str, Any]]:

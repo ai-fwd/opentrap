@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar, Token
@@ -8,9 +7,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from opentrap.artifacts import (
+    ACTIVE_SESSION_FILE_NAME,
+    OBSERVATIONS_FILE_NAME,
+    append_jsonl_artifact,
+)
 from opentrap.io_utils import load_json_maybe, utc_now_iso, write_json
-
-OBSERVATIONS_FILE_NAME = "observations.jsonl"
 
 
 @dataclass(frozen=True)
@@ -73,7 +75,7 @@ _current_execution_context: ContextVar[ActiveSessionDescriptor | None] = Context
 
 
 def active_session_path_for_run(run_dir: Path) -> Path:
-    return run_dir / "active_session.json"
+    return run_dir / ACTIVE_SESSION_FILE_NAME
 
 
 def load_active_session_descriptor(path: Path) -> ActiveSessionDescriptor | None:
@@ -128,8 +130,10 @@ def emit_event(
 
     trace_row: dict[str, Any] = {
         "case_index": execution_context.case_index,
-        "request_id": request_id if isinstance(request_id, str) else None,
         "event_type": event_type,
+    }
+    optional_fields = {
+        "request_id": request_id if isinstance(request_id, str) else None,
         "route_name": route_name if isinstance(route_name, str) else None,
         "route_mode": route_mode if isinstance(route_mode, str) else None,
         "method": method if isinstance(method, str) else None,
@@ -138,11 +142,13 @@ def emit_event(
         "status_code": status_code if isinstance(status_code, int) else None,
         "duration": duration if isinstance(duration, int | float) else None,
     }
-    if event_type == "llm_responses_observed":
-        trace_row["model"] = model if isinstance(model, str) else None
+    trace_row.update(
+        {field: value for field, value in optional_fields.items() if value is not None}
+    )
+    if event_type == "llm_responses_observed" and isinstance(model, str):
+        trace_row["model"] = model
 
-    with execution_context.evidence_path.open("a", encoding="utf-8") as evidence_file:
-        evidence_file.write(json.dumps(trace_row) + "\n")
+    append_jsonl_artifact(execution_context.evidence_path, trace_row)
 
 
 def emit_observation(
@@ -175,5 +181,4 @@ def emit_observation(
         "status_code": status_code if isinstance(status_code, int) else None,
         "timestamp_utc": utc_now_iso(),
     }
-    with observations_path.open("a", encoding="utf-8") as observations_file:
-        observations_file.write(json.dumps(observation) + "\n")
+    append_jsonl_artifact(observations_path, observation)

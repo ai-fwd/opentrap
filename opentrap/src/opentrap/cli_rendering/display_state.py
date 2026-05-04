@@ -6,6 +6,11 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
+from opentrap.artifacts import (
+    EVALUATION_CSV_FILE_NAME,
+    EVALUATION_REPORT_HTML_FILE_NAME,
+    REPORT_FILE_NAME,
+)
 from opentrap.counts import COUNT_FIELDS
 from opentrap.io_utils import load_json_maybe
 
@@ -68,7 +73,7 @@ class RunDisplayState:
 
 def load_security_summary(run_manifest_path: Path) -> SecuritySummary:
     """Load normalized security summary fields from a run report."""
-    report_path = run_manifest_path.parent / "report.json"
+    report_path = run_manifest_path.parent / REPORT_FILE_NAME
     report = load_json_maybe(report_path) or {}
     counts = report.get("counts")
     if not isinstance(counts, Mapping):
@@ -136,10 +141,10 @@ def adapter_endpoint(payload: Mapping[str, object]) -> str | None:
 
 
 def preferred_report_artifact_path(run_manifest_path: Path) -> Path:
-    html_report_path = run_manifest_path.parent / "evaluation_report.html"
+    html_report_path = run_manifest_path.parent / EVALUATION_REPORT_HTML_FILE_NAME
     if html_report_path.exists():
         return html_report_path
-    return run_manifest_path.parent / "evaluation.csv"
+    return run_manifest_path.parent / EVALUATION_CSV_FILE_NAME
 
 
 def int_or_default(value: object, *, default: int) -> int:

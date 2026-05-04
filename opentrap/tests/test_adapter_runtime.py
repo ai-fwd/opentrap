@@ -776,8 +776,6 @@ def test_route_dispatch_events_are_emitted_for_intercept(tmp_path: Path) -> None
         "method",
         "path",
         "query",
-        "status_code",
-        "duration",
     }
     for event in _read_evidence(manifest_path):
         if event["event_type"] == "route_dispatch_pre":
