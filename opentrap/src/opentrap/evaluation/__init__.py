@@ -15,6 +15,7 @@ from opentrap.evaluation.result import EvaluationResult
 from opentrap.evaluation.runner import (
     find_latest_finalized_run_manifest,
     find_latest_finalized_run_manifest_global,
+    find_latest_non_finalized_run_manifest_global,
     run_trap_evaluation,
 )
 from opentrap.evaluation.scorers import RougeLScoreScorer, SentenceTransformerSbertScorer
@@ -32,6 +33,7 @@ __all__ = [
     "EvaluationResult",
     "find_latest_finalized_run_manifest",
     "find_latest_finalized_run_manifest_global",
+    "find_latest_non_finalized_run_manifest_global",
     "find_trap_entry",
     "load_observed_outputs",
     "load_run_manifest",

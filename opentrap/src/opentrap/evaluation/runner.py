@@ -6,7 +6,7 @@ import datetime
 import io
 import logging
 import sys
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from pathlib import Path
 from typing import Any
@@ -283,48 +283,59 @@ def _build_minimal_report(run_manifest_path: Path) -> dict[str, Any]:
 
 
 def find_latest_finalized_run_manifest(*, runs_dir: Path, trap_id: str) -> Path:
-    if not runs_dir.exists() or not runs_dir.is_dir():
-        raise RuntimeError(
-            "No finalized run found for trap "
-            f"'{trap_id}' (runs directory does not exist: {runs_dir})"
-        )
-
-    latest: tuple[datetime.datetime, datetime.datetime, str, Path] | None = None
-    for candidate_dir in sorted(runs_dir.iterdir()):
-        if not candidate_dir.is_dir():
-            continue
-        manifest_path = candidate_dir / "run.json"
-        if not manifest_path.exists():
-            continue
-        try:
-            payload = load_json(manifest_path)
-        except Exception:  # noqa: BLE001
-            continue
-        if payload.get("status") != "finalized":
-            continue
-        if not _manifest_includes_trap(payload, trap_id):
-            continue
-        finalized = _parse_iso_timestamp(payload.get("finalized_at_utc"))
-        created = _parse_iso_timestamp(payload.get("created_at_utc"))
-        if finalized is None:
-            finalized = created
-        if finalized is None or created is None:
-            continue
-        key = (finalized, created, candidate_dir.name, manifest_path)
-        if latest is None or key > latest:
-            latest = key
-
-    if latest is None:
+    found = _find_latest_run_manifest(
+        runs_dir=runs_dir,
+        status_match=lambda status: status == "finalized",
+        trap_id=trap_id,
+    )
+    if found is None:
+        if not runs_dir.exists() or not runs_dir.is_dir():
+            raise RuntimeError(
+                "No finalized run found for trap "
+                f"'{trap_id}' (runs directory does not exist: {runs_dir})"
+            )
         raise RuntimeError(f"No finalized run found for trap '{trap_id}' in {runs_dir}")
-    return latest[3]
+    return found
 
 
 def find_latest_finalized_run_manifest_global(*, runs_dir: Path) -> Path:
+    found = _find_latest_run_manifest(
+        runs_dir=runs_dir,
+        status_match=lambda status: status == "finalized",
+    )
+    if found is None:
+        if not runs_dir.exists() or not runs_dir.is_dir():
+            raise RuntimeError(
+                "No finalized run found (runs directory does not exist: "
+                f"{runs_dir})"
+            )
+        raise RuntimeError(f"No finalized run found in {runs_dir}")
+    return found
+
+
+def find_latest_non_finalized_run_manifest_global(*, runs_dir: Path) -> Path:
+    found = _find_latest_run_manifest(
+        runs_dir=runs_dir,
+        status_match=lambda status: status != "finalized",
+    )
+    if found is None:
+        if not runs_dir.exists() or not runs_dir.is_dir():
+            raise RuntimeError(
+                "No resumable run found (runs directory does not exist: "
+                f"{runs_dir})"
+            )
+        raise RuntimeError(f"No resumable run found in {runs_dir}")
+    return found
+
+
+def _find_latest_run_manifest(
+    *,
+    runs_dir: Path,
+    status_match: Callable[[str], bool],
+    trap_id: str | None = None,
+) -> Path | None:
     if not runs_dir.exists() or not runs_dir.is_dir():
-        raise RuntimeError(
-            "No finalized run found (runs directory does not exist: "
-            f"{runs_dir})"
-        )
+        return None
 
     latest: tuple[datetime.datetime, datetime.datetime, str, Path] | None = None
     for candidate_dir in sorted(runs_dir.iterdir()):
@@ -337,20 +348,22 @@ def find_latest_finalized_run_manifest_global(*, runs_dir: Path) -> Path:
             payload = load_json(manifest_path)
         except Exception:  # noqa: BLE001
             continue
-        if payload.get("status") != "finalized":
+        status = payload.get("status")
+        if not isinstance(status, str) or not status_match(status):
             continue
-        finalized = _parse_iso_timestamp(payload.get("finalized_at_utc"))
+        if trap_id is not None and not _manifest_includes_trap(payload, trap_id):
+            continue
+        sort_timestamp = _parse_iso_timestamp(payload.get("finalized_at_utc"))
         created = _parse_iso_timestamp(payload.get("created_at_utc"))
-        if finalized is None:
-            finalized = created
-        if finalized is None or created is None:
+        if sort_timestamp is None:
+            sort_timestamp = created
+        if sort_timestamp is None or created is None:
             continue
-        key = (finalized, created, candidate_dir.name, manifest_path)
+        key = (sort_timestamp, created, candidate_dir.name, manifest_path)
         if latest is None or key > latest:
             latest = key
-
     if latest is None:
-        raise RuntimeError(f"No finalized run found in {runs_dir}")
+        return None
     return latest[3]
 
 

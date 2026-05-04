@@ -81,8 +81,29 @@ class _AdapterStderrBridge:
     buffered_lines: list[str]
 
 
+@dataclass(frozen=True)
+class _HarnessProgress:
+    completed_case_indexes: set[int]
+    next_case_index: int
+    harness_executed: int
+    harness_passed: int
+    harness_failed: int
+
+
 def _initial_counts() -> dict[str, int]:
     return dict.fromkeys(COUNT_FIELDS, 0)
+
+
+def _counts_from_manifest(manifest: Mapping[str, Any]) -> dict[str, int]:
+    raw_counts = manifest.get("counts")
+    counts = _initial_counts()
+    if not isinstance(raw_counts, Mapping):
+        return counts
+    for key in counts:
+        value = raw_counts.get(key)
+        if isinstance(value, int) and value >= 0:
+            counts[key] = value
+    return counts
 
 
 def _update_manifest_counts(manifest_path: Path, *, updates: Mapping[str, int]) -> dict[str, int]:
@@ -100,6 +121,59 @@ def _update_manifest_counts(manifest_path: Path, *, updates: Mapping[str, int]) 
     manifest["counts"] = counts
     write_json(manifest_path, manifest, atomic=True)
     return counts
+
+
+def _clear_run_active_session(manifest_path: Path) -> None:
+    manifest = load_json(manifest_path)
+    status = manifest.get("status")
+    if status == "session_active":
+        manifest["status"] = "ready"
+    manifest["active_case_index"] = None
+    manifest["active_session_id"] = None
+    write_json(manifest_path, manifest, atomic=True)
+    clear_active_session_descriptor(_active_session_path(manifest_path))
+
+
+def _compute_harness_progress(
+    *,
+    manifest_path: Path,
+    selected_case_count: int,
+) -> _HarnessProgress:
+    if selected_case_count < 0:
+        raise RuntimeError("selected_case_count must be >= 0")
+    manifest = load_json(manifest_path)
+    session_payloads = _load_session_payloads_from_manifest(manifest, run_dir=manifest_path.parent)
+    completed_by_case_index: dict[int, int] = {}
+    for session_payload in session_payloads:
+        case_index = session_payload.get("case_index")
+        ended_at_utc = session_payload.get("ended_at_utc")
+        harness_exit_code = session_payload.get("harness_exit_code")
+        if (
+            not isinstance(case_index, int)
+            or case_index < 0
+            or case_index >= selected_case_count
+            or not isinstance(ended_at_utc, str)
+            or not ended_at_utc
+            or not isinstance(harness_exit_code, int)
+        ):
+            continue
+        completed_by_case_index[case_index] = harness_exit_code
+
+    completed_case_indexes = set(completed_by_case_index)
+    next_case_index = 0
+    while next_case_index < selected_case_count and next_case_index in completed_case_indexes:
+        next_case_index += 1
+
+    harness_executed = len(completed_case_indexes)
+    harness_failed = sum(1 for exit_code in completed_by_case_index.values() if exit_code != 0)
+    harness_passed = harness_executed - harness_failed
+    return _HarnessProgress(
+        completed_case_indexes=completed_case_indexes,
+        next_case_index=next_case_index,
+        harness_executed=harness_executed,
+        harness_passed=harness_passed,
+        harness_failed=harness_failed,
+    )
 
 
 def _launch_adapter(
@@ -543,6 +617,91 @@ def prepare_trap_dataset(
     )
 
 
+def _load_resume_payload(
+    *,
+    run_manifest_path: Path,
+) -> tuple[str, dict[str, Any], HarnessConfig, str, str]:
+    manifest = load_json(run_manifest_path)
+    status = manifest.get("status")
+    if status == "finalized":
+        run_id = run_manifest_path.parent.name
+        raise RuntimeError(f"run '{run_id}' is already finalized and cannot be continued")
+    if status not in {"armed", "ready", "session_active"}:
+        raise RuntimeError(
+            f"run '{run_manifest_path.parent.name}' is not resumable "
+            f"(unexpected status {status!r})"
+        )
+
+    traps = manifest.get("traps")
+    if not isinstance(traps, list) or not traps or not isinstance(traps[0], dict):
+        raise RuntimeError("run manifest is missing traps[0] payload")
+    trap_entry = dict(traps[0])
+    trap_id = trap_entry.get("trap_id")
+    if not isinstance(trap_id, str) or not trap_id:
+        raise RuntimeError("run manifest traps[0].trap_id must be a non-empty string")
+
+    raw_cases = trap_entry.get("cases")
+    if not isinstance(raw_cases, list):
+        raise RuntimeError("run manifest traps[0].cases must be a list")
+    cases = [dict(case) for case in raw_cases if isinstance(case, dict)]
+    if not cases:
+        raise RuntimeError("run manifest traps[0].cases must include at least one case")
+    trap_entry["cases"] = cases
+    trap_entry["case_count"] = len(cases)
+
+    raw_command = manifest.get("harness_command")
+    if not isinstance(raw_command, list) or not raw_command:
+        raise RuntimeError("run manifest harness_command must be a non-empty list")
+    command_tokens: list[str] = []
+    for index, token in enumerate(raw_command):
+        if not isinstance(token, str) or not token.strip():
+            raise RuntimeError(f"run manifest harness_command[{index}] must be a non-empty string")
+        command_tokens.append(token)
+
+    raw_cwd = manifest.get("harness_cwd")
+    if not isinstance(raw_cwd, str) or not raw_cwd.strip():
+        raise RuntimeError("run manifest harness_cwd must be a non-empty string")
+    harness = HarnessConfig(command=tuple(command_tokens), cwd=raw_cwd)
+
+    product_under_test = manifest.get("product_under_test")
+    if not isinstance(product_under_test, str) or not product_under_test:
+        raise RuntimeError("run manifest product_under_test must be a non-empty string")
+
+    requested = manifest.get("requested")
+    requested_trap_ref = requested if isinstance(requested, str) and requested else trap_id
+
+    return trap_id, trap_entry, harness, product_under_test, requested_trap_ref
+
+
+def _build_dataset_snapshot_from_trap_entry(trap_entry: Mapping[str, Any]) -> DatasetSnapshot:
+    raw_data_items = trap_entry.get("data_items")
+    data_items: list[dict[str, str]] = []
+    if isinstance(raw_data_items, list):
+        for data_item in raw_data_items:
+            if not isinstance(data_item, dict):
+                continue
+            item_id = data_item.get("id")
+            path = data_item.get("path")
+            if isinstance(item_id, str) and isinstance(path, str):
+                data_items.append({"id": item_id, "path": path})
+
+    raw_cases = trap_entry.get("cases")
+    cases: list[dict[str, Any]] = []
+    if isinstance(raw_cases, list):
+        cases = [dict(case) for case in raw_cases if isinstance(case, dict)]
+
+    return DatasetSnapshot(
+        dataset_fingerprint=str(trap_entry.get("dataset_fingerprint", "")),
+        dataset_cache_dir=str(trap_entry.get("dataset_cache_dir", "")),
+        dataset_source=str(trap_entry.get("dataset_source", "cache_hit")),
+        artifact_path=str(trap_entry.get("artifact_path", "")),
+        metadata_path=str(trap_entry.get("metadata_path", "")),
+        data_dir=str(trap_entry.get("data_dir", "")),
+        data_items=data_items,
+        cases=cases,
+    )
+
+
 def execute_prepared_trap(
     *,
     prepared: PreparedTrapDataset,
@@ -557,13 +716,32 @@ def execute_prepared_trap(
     run_dir: Path | None = None,
     run_manifest_path: Path | None = None,
     emit_run_started_event: bool = True,
+    initialize_manifest: bool = True,
+    resume_from_case_index: int = 0,
+    completed_case_indexes: set[int] | None = None,
+    starting_counts: Mapping[str, int] | None = None,
 ) -> TrapRunResult:
     resolved_run_id = run_id or uuid.uuid4().hex
     resolved_run_dir = run_dir or (environment.runs_dir / resolved_run_id)
     resolved_manifest_path = run_manifest_path or (resolved_run_dir / "run.json")
 
-    if run_dir is None:
+    if run_dir is None and initialize_manifest:
         resolved_run_dir.mkdir(parents=True, exist_ok=False)
+
+    if resume_from_case_index < 0:
+        raise RuntimeError("resume_from_case_index must be >= 0")
+    completed_indexes = (
+        set(completed_case_indexes)
+        if completed_case_indexes is not None
+        else set(range(max(0, resume_from_case_index)))
+    )
+
+    counts_for_run_started = dict(prepared.counts)
+    if starting_counts is not None:
+        for key in ("harness_executed", "harness_passed", "harness_failed"):
+            value = starting_counts.get(key)
+            if isinstance(value, int) and value >= 0:
+                counts_for_run_started[key] = value
 
     if emit_run_started_event:
         emit_event(
@@ -578,164 +756,176 @@ def execute_prepared_trap(
             run_manifest_path=str(resolved_manifest_path),
             stage=stage,
             max_cases=max_cases,
-            counts=prepared.counts,
+            counts=counts_for_run_started,
         )
 
-    run_manifest: dict[str, Any] = {
-        "run_id": resolved_run_id,
-        "repo_root": str(environment.repo_root.resolve()),
-        "product_under_test": product_under_test,
-        "created_at_utc": utc_now_iso(),
-        "requested": requested_trap_ref,
-        "status": "armed",
-        "scorer_status": "pending",
-        "active_case_index": None,
-        "active_session_id": None,
-        "harness_command": list(harness.command),
-        "harness_cwd": harness.cwd,
-        "sessions_file": SESSIONS_FILE_NAME,
-        "sessions": [],
-        "traps": [prepared.trap_entry],
-        "trap_count": 1,
-        "counts": prepared.counts,
-    }
-    write_json(resolved_manifest_path, run_manifest, atomic=True)
+    if initialize_manifest:
+        run_manifest: dict[str, Any] = {
+            "run_id": resolved_run_id,
+            "repo_root": str(environment.repo_root.resolve()),
+            "product_under_test": product_under_test,
+            "created_at_utc": utc_now_iso(),
+            "requested": requested_trap_ref,
+            "status": "armed",
+            "run_mode": "run" if stage == "run" else stage,
+            "scorer_status": "pending",
+            "active_case_index": None,
+            "active_session_id": None,
+            "harness_command": list(harness.command),
+            "harness_cwd": harness.cwd,
+            "sessions_file": SESSIONS_FILE_NAME,
+            "sessions": [],
+            "traps": [prepared.trap_entry],
+            "trap_count": 1,
+            "counts": counts_for_run_started,
+        }
+        write_json(resolved_manifest_path, run_manifest, atomic=True)
+    else:
+        run_manifest = load_json_maybe(resolved_manifest_path) or {}
 
     harness_cwd = environment.repo_root / harness.cwd
     adapter_port = ADAPTER_PORT
     adapter_process: subprocess.Popen[Any] | None = None
     adapter_stderr_bridge: _AdapterStderrBridge | None = None
-    succeeded = True
-    harness_executed = 0
-    harness_passed = 0
-    harness_failed = 0
+    harness_executed = int(counts_for_run_started.get("harness_executed", 0))
+    harness_passed = int(counts_for_run_started.get("harness_passed", 0))
+    harness_failed = int(counts_for_run_started.get("harness_failed", 0))
+    succeeded = harness_failed == 0
+
+    has_remaining_cases = any(
+        case_index not in completed_indexes
+        for case_index in range(resume_from_case_index, prepared.selected_case_count)
+    )
     try:
-        emit_event(
-            event_sink,
-            "adapter_launching",
-            product_under_test=product_under_test,
-            host=ADAPTER_HOST,
-            port=adapter_port,
-        )
-        try:
-            adapter_process = _launch_adapter(
-                resolved_manifest_path,
-                environment=environment,
+        if has_remaining_cases:
+            emit_event(
+                event_sink,
+                "adapter_launching",
                 product_under_test=product_under_test,
+                host=ADAPTER_HOST,
                 port=adapter_port,
             )
-            adapter_stderr_bridge = _start_adapter_stderr_bridge(
-                adapter_process,
-                event_sink=event_sink,
-            )
-        except Exception as exc:  # noqa: BLE001
-            raise RuntimeError(f"Failed during adapter launch: {exc}") from exc
-
-        try:
-            _wait_for_adapter_ready(
-                adapter_process,
-                port=adapter_port,
-                heartbeat_interval_seconds=STATUS_HEARTBEAT_INTERVAL_SECONDS,
-                on_wait_heartbeat=lambda elapsed: emit_event(
-                    event_sink,
-                    "generate_progress",
-                    trap_id=prepared.trap_id,
-                    state="adapter_wait",
-                    elapsed_seconds=int(elapsed),
-                ),
-            )
-        except Exception as exc:  # noqa: BLE001
-            raise RuntimeError(f"Failed during adapter startup: {exc}") from exc
-
-        ready_manifest = load_json_maybe(resolved_manifest_path) or run_manifest
-        ready_manifest["status"] = "ready"
-        ready_manifest["adapter_pid"] = adapter_process.pid
-        ready_manifest["adapter_port"] = adapter_port
-        ready_manifest["ready_at_utc"] = utc_now_iso()
-        write_json(resolved_manifest_path, ready_manifest, atomic=True)
-        emit_event(event_sink, "adapter_ready", host=ADAPTER_HOST, port=adapter_port)
-
-        for case_index in range(prepared.selected_case_count):
-            emit_event(
-                event_sink,
-                "case_started",
-                case_index=case_index,
-                display_case_index=case_index + 1,
-                selected_cases=prepared.selected_case_count,
-            )
-            descriptor = _start_case_session(resolved_manifest_path, case_index=case_index)
-
-            harness_exit_code = 1
-            harness_stdout = ""
-            harness_stderr = ""
             try:
-                result = subprocess.run(
-                    list(harness.command),
-                    cwd=harness_cwd,
-                    check=False,
-                    capture_output=True,
-                    text=True,
-                    encoding="utf-8",
-                    errors="replace",
+                adapter_process = _launch_adapter(
+                    resolved_manifest_path,
+                    environment=environment,
+                    product_under_test=product_under_test,
+                    port=adapter_port,
                 )
-                harness_exit_code = int(result.returncode)
-                harness_stdout = result.stdout or ""
-                harness_stderr = result.stderr or ""
-            finally:
-                _end_case_session(resolved_manifest_path, harness_exit_code=harness_exit_code)
+                adapter_stderr_bridge = _start_adapter_stderr_bridge(
+                    adapter_process,
+                    event_sink=event_sink,
+                )
+            except Exception as exc:  # noqa: BLE001
+                raise RuntimeError(f"Failed during adapter launch: {exc}") from exc
 
-            emit_event(
-                event_sink,
-                "harness_output",
-                case_index=case_index,
-                display_case_index=case_index + 1,
-                selected_cases=prepared.selected_case_count,
-                exit_code=harness_exit_code,
-                session_id=descriptor.session_id,
-                stdout=harness_stdout,
-                stderr=harness_stderr,
-            )
+            try:
+                _wait_for_adapter_ready(
+                    adapter_process,
+                    port=adapter_port,
+                    heartbeat_interval_seconds=STATUS_HEARTBEAT_INTERVAL_SECONDS,
+                    on_wait_heartbeat=lambda elapsed: emit_event(
+                        event_sink,
+                        "generate_progress",
+                        trap_id=prepared.trap_id,
+                        state="adapter_wait",
+                        elapsed_seconds=int(elapsed),
+                    ),
+                )
+            except Exception as exc:  # noqa: BLE001
+                raise RuntimeError(f"Failed during adapter startup: {exc}") from exc
 
-            harness_executed += 1
-            if harness_exit_code == 0:
-                harness_passed += 1
+            ready_manifest = load_json_maybe(resolved_manifest_path) or run_manifest
+            ready_manifest["status"] = "ready"
+            ready_manifest["adapter_pid"] = adapter_process.pid
+            ready_manifest["adapter_port"] = adapter_port
+            ready_manifest["ready_at_utc"] = utc_now_iso()
+            write_json(resolved_manifest_path, ready_manifest, atomic=True)
+            emit_event(event_sink, "adapter_ready", host=ADAPTER_HOST, port=adapter_port)
+
+            for case_index in range(resume_from_case_index, prepared.selected_case_count):
+                if case_index in completed_indexes:
+                    continue
                 emit_event(
                     event_sink,
-                    "case_finished",
+                    "case_started",
                     case_index=case_index,
                     display_case_index=case_index + 1,
                     selected_cases=prepared.selected_case_count,
-                    harness_executed=harness_executed,
-                    harness_passed=harness_passed,
-                    harness_failed=harness_failed,
-                    exit_code=harness_exit_code,
-                    session_id=descriptor.session_id,
-                    succeeded=True,
                 )
-            else:
-                succeeded = False
-                harness_failed += 1
+                descriptor = _start_case_session(resolved_manifest_path, case_index=case_index)
+
+                harness_exit_code = 1
+                harness_stdout = ""
+                harness_stderr = ""
+                try:
+                    result = subprocess.run(
+                        list(harness.command),
+                        cwd=harness_cwd,
+                        check=False,
+                        capture_output=True,
+                        text=True,
+                        encoding="utf-8",
+                        errors="replace",
+                    )
+                    harness_exit_code = int(result.returncode)
+                    harness_stdout = result.stdout or ""
+                    harness_stderr = result.stderr or ""
+                finally:
+                    _end_case_session(resolved_manifest_path, harness_exit_code=harness_exit_code)
+
                 emit_event(
                     event_sink,
-                    "case_finished",
+                    "harness_output",
                     case_index=case_index,
                     display_case_index=case_index + 1,
                     selected_cases=prepared.selected_case_count,
-                    harness_executed=harness_executed,
-                    harness_passed=harness_passed,
-                    harness_failed=harness_failed,
                     exit_code=harness_exit_code,
                     session_id=descriptor.session_id,
-                    succeeded=False,
+                    stdout=harness_stdout,
+                    stderr=harness_stderr,
                 )
-            _update_manifest_counts(
-                resolved_manifest_path,
-                updates={
-                    "harness_executed": harness_executed,
-                    "harness_passed": harness_passed,
-                    "harness_failed": harness_failed,
-                },
-            )
+
+                harness_executed += 1
+                if harness_exit_code == 0:
+                    harness_passed += 1
+                    emit_event(
+                        event_sink,
+                        "case_finished",
+                        case_index=case_index,
+                        display_case_index=case_index + 1,
+                        selected_cases=prepared.selected_case_count,
+                        harness_executed=harness_executed,
+                        harness_passed=harness_passed,
+                        harness_failed=harness_failed,
+                        exit_code=harness_exit_code,
+                        session_id=descriptor.session_id,
+                        succeeded=True,
+                    )
+                else:
+                    succeeded = False
+                    harness_failed += 1
+                    emit_event(
+                        event_sink,
+                        "case_finished",
+                        case_index=case_index,
+                        display_case_index=case_index + 1,
+                        selected_cases=prepared.selected_case_count,
+                        harness_executed=harness_executed,
+                        harness_passed=harness_passed,
+                        harness_failed=harness_failed,
+                        exit_code=harness_exit_code,
+                        session_id=descriptor.session_id,
+                        succeeded=False,
+                    )
+                _update_manifest_counts(
+                    resolved_manifest_path,
+                    updates={
+                        "harness_executed": harness_executed,
+                        "harness_passed": harness_passed,
+                        "harness_failed": harness_failed,
+                    },
+                )
     finally:
         clear_active_session_descriptor(_active_session_path(resolved_manifest_path))
         _terminate_process(adapter_process)
@@ -902,3 +1092,84 @@ def run_execute_trap(
         run_manifest_path=run_manifest_path,
         emit_run_started_event=False,
     )
+
+
+def run_continue_trap(
+    *,
+    run_manifest_path: Path,
+    trap: TrapSpec[Any, Any, Any, Any],
+    environment: RunEnvironment,
+    event_sink: EventSink,
+) -> TrapRunResult:
+    trap_id, trap_entry, harness, product_under_test, requested_trap_ref = _load_resume_payload(
+        run_manifest_path=run_manifest_path
+    )
+    selected_case_count = len(trap_entry["cases"])
+
+    progress = _compute_harness_progress(
+        manifest_path=run_manifest_path,
+        selected_case_count=selected_case_count,
+    )
+    _clear_run_active_session(run_manifest_path)
+    counts = _counts_from_manifest(load_json(run_manifest_path))
+    counts["selected_cases"] = selected_case_count
+    counts["harness_executed"] = progress.harness_executed
+    counts["harness_passed"] = progress.harness_passed
+    counts["harness_failed"] = progress.harness_failed
+    _update_manifest_counts(
+        run_manifest_path,
+        updates={
+            "selected_cases": selected_case_count,
+            "harness_executed": progress.harness_executed,
+            "harness_passed": progress.harness_passed,
+            "harness_failed": progress.harness_failed,
+        },
+    )
+
+    manifest = load_json(run_manifest_path)
+    if manifest.get("run_mode") is None:
+        manifest["run_mode"] = "run"
+        write_json(run_manifest_path, manifest, atomic=True)
+
+    run_ready = execute_prepared_trap(
+        prepared=PreparedTrapDataset(
+            trap_id=trap_id,
+            trap_slug=str(trap_entry.get("trap_slug", trap_id.replace("/", "__"))),
+            trap_entry=trap_entry,
+            counts=counts,
+            selected_case_count=selected_case_count,
+            total_case_count=selected_case_count,
+            dataset=_build_dataset_snapshot_from_trap_entry(trap_entry),
+        ),
+        requested_trap_ref=requested_trap_ref,
+        environment=environment,
+        product_under_test=product_under_test,
+        harness=harness,
+        event_sink=event_sink,
+        stage="run",
+        max_cases=None,
+        run_id=run_manifest_path.parent.name,
+        run_dir=run_manifest_path.parent,
+        run_manifest_path=run_manifest_path,
+        emit_run_started_event=True,
+        initialize_manifest=False,
+        resume_from_case_index=progress.next_case_index,
+        completed_case_indexes=progress.completed_case_indexes,
+        starting_counts=counts,
+    )
+    try:
+        run_trap_evaluation(
+            trap_id=trap_id,
+            trap=trap,
+            run_manifest_path=run_ready.run_manifest_path,
+            event_sink=event_sink,
+            max_cases=None,
+        )
+    except Exception as exc:  # noqa: BLE001
+        emit_event(
+            event_sink,
+            "run_failed",
+            stage="evaluate",
+            error=f"Trap evaluation failed: {exc}",
+        )
+    return run_ready

@@ -146,6 +146,152 @@ from __future__ import annotations
     (generated_dir / "adapter.yaml").write_text("routes: []\nupstreams: {}\n", encoding="utf-8")
 
 
+def _write_multi_case_stub_contract(
+    root: Path,
+    trap_id: str,
+    *,
+    case_count: int,
+    evaluate_body: str = (
+        "return EvaluationResult(success_count=0, evaluated_count=CASE_COUNT, details=None)"
+    ),
+) -> None:
+    target, trap_name = trap_id.split("/", 1)
+    trap_dir = root / target / trap_name
+    trap_dir.mkdir(parents=True)
+
+    source = f"""
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from typing import Any, Mapping
+
+from opentrap.evaluation import EvaluationResult
+from opentrap.trap import (
+    SharedConfig,
+    TrapCaseContext,
+    TrapFieldSpec,
+    TrapGenerationCounts,
+    TrapSpec,
+)
+
+
+CASE_COUNT = {case_count}
+
+
+class Trap(TrapSpec[Mapping[str, Any], Mapping[str, Any], Mapping[str, Any], Mapping[str, Any]]):
+    trap_id = ""
+    fields = {{
+        "knob": TrapFieldSpec(type="integer", default=1, min=1),
+    }}
+
+    def generate(
+        self,
+        shared_config: SharedConfig,
+        trap_config: Mapping[str, Any],
+        output_base: Path,
+    ) -> Path:
+        run_dir = output_base / "artifact"
+        data_dir = run_dir / "data"
+        data_dir.mkdir(parents=True, exist_ok=True)
+        metadata_path = run_dir / "metadata.jsonl"
+        lines: list[str] = []
+        for index in range(1, CASE_COUNT + 1):
+            item_id = f"{{index:05d}}"
+            filename = f"{{item_id}}.txt"
+            (data_dir / filename).write_text(
+                "{trap_id}|"
+                + item_id
+                + "|"
+                + shared_config.scenario
+                + "|"
+                + str(trap_config["knob"]),
+                encoding="utf-8",
+            )
+            lines.append(json.dumps({{"file_id": item_id, "filename": filename}}))
+        metadata_path.write_text("\\n".join(lines) + "\\n", encoding="utf-8")
+        return run_dir
+
+    def bind(self, context: Mapping[str, Any]) -> Mapping[str, Any]:
+        return dict(context)
+
+    def build_cases(self, context: TrapCaseContext) -> list[dict[str, Any]]:
+        cases: list[dict[str, Any]] = []
+        for item in context.data_items:
+            item_id = item["id"]
+            item_path = Path(item["path"])
+            cases.append(
+                {{
+                    "item_id": item_id,
+                    "data_item": {{"id": item_id, "path": str(item_path)}},
+                    "metadata": {{"file_id": item_id, "filename": item_path.name}},
+                }}
+            )
+        return cases
+
+    def generation_counts(self, _context: TrapCaseContext) -> TrapGenerationCounts:
+        return TrapGenerationCounts(
+            generated_artifacts=CASE_COUNT,
+            base_cases=CASE_COUNT,
+            variant_cases=0,
+        )
+
+    def evaluate(self, context: Mapping[str, Any]) -> Mapping[str, Any]:
+        {evaluate_body}
+"""
+    (trap_dir / "trap.py").write_text(textwrap.dedent(source), encoding="utf-8")
+
+
+def _rewrite_run_as_interrupted(run_manifest_path: Path, *, completed_case_count: int) -> None:
+    run_manifest = json.loads(run_manifest_path.read_text(encoding="utf-8"))
+    run_dir = run_manifest_path.parent
+
+    sessions_file = run_manifest.get("sessions_file")
+    assert sessions_file == "sessions.jsonl"
+    sessions_path = run_dir / sessions_file
+    session_rows = [
+        json.loads(line)
+        for line in sessions_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    kept_rows = session_rows[:completed_case_count]
+    sessions_path.write_text(
+        "\n".join(json.dumps(row) for row in kept_rows) + ("\n" if kept_rows else ""),
+        encoding="utf-8",
+    )
+
+    session_refs = run_manifest.get("sessions")
+    if isinstance(session_refs, list):
+        run_manifest["sessions"] = [
+            row for row in session_refs[:completed_case_count] if isinstance(row, dict)
+        ]
+    else:
+        run_manifest["sessions"] = []
+    run_manifest["status"] = "ready"
+    run_manifest["scorer_status"] = "pending"
+    run_manifest["active_case_index"] = None
+    run_manifest["active_session_id"] = None
+    run_manifest["finalized_at_utc"] = None
+    run_manifest["succeeded"] = None
+    run_manifest["report_path"] = None
+    run_manifest["counts"]["harness_executed"] = completed_case_count
+    run_manifest["counts"]["harness_passed"] = completed_case_count
+    run_manifest["counts"]["harness_failed"] = 0
+    run_manifest["counts"]["scored_cases"] = 0
+    run_manifest["counts"]["trap_successes"] = 0
+    run_manifest["counts"]["evaluation_errors"] = 0
+    run_manifest_path.write_text(json.dumps(run_manifest, indent=2) + "\n", encoding="utf-8")
+
+    for artifact_name in (
+        "report.json",
+        "evaluation.csv",
+        "evaluation.jsonl",
+        "evaluation_summary.json",
+        "evaluation_report.html",
+    ):
+        (run_dir / artifact_name).unlink(missing_ok=True)
+
+
 def _configure_trap_run_paths(
     *,
     monkeypatch,
@@ -1141,3 +1287,140 @@ def test_eval_command_supports_run_id_and_latest_and_fails_nonzero_on_error(
     eval_latest = capsys.readouterr()
     assert eval_latest_code == 1
     assert "OpenTrap Eval" in eval_latest.out
+
+
+def test_continue_latest_resumes_interrupted_run_and_evaluates(
+    capsys,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _write_multi_case_stub_contract(tmp_path / "traps", "reasoning/chain-trap", case_count=3)
+    generated_root = tmp_path / "adapter" / "generated"
+    _write_generated_adapter(generated_root)
+    harness_counter = tmp_path / "harness-counter.txt"
+
+    config_path = tmp_path / ".opentrap" / "opentrap.yaml"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    payload = _base_payload()
+    payload["harness"]["command"] = [
+        sys.executable,
+        "-c",
+        (
+            "from pathlib import Path; "
+            f"p=Path({str(harness_counter)!r}); "
+            "n=int(p.read_text()) if p.exists() else 0; "
+            "p.write_text(str(n+1), encoding='utf-8')"
+        ),
+    ]
+    config_path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
+    samples_dir = tmp_path / ".opentrap" / "samples"
+    samples_dir.mkdir(parents=True, exist_ok=True)
+    _configure_trap_run_paths(
+        monkeypatch=monkeypatch,
+        tmp_path=tmp_path,
+        config_path=config_path,
+        samples_dir=samples_dir,
+        generated_root=generated_root,
+    )
+
+    initial_code = main(["run", "reasoning/chain-trap"])
+    initial_capture = capsys.readouterr()
+    assert initial_code == 0
+    run_manifest_path = _extract_manifest_path(initial_capture.out)
+
+    _rewrite_run_as_interrupted(run_manifest_path, completed_case_count=2)
+    harness_counter.write_text("0", encoding="utf-8")
+
+    continue_code = main(["continue", "latest"])
+    continue_capture = capsys.readouterr()
+    assert continue_code == 0
+    assert "OpenTrap Run" in continue_capture.out
+    assert "Trap Evaluation" in continue_capture.out
+    assert _extract_manifest_path(continue_capture.out) == run_manifest_path
+    assert harness_counter.read_text(encoding="utf-8") == "1"
+
+    run_manifest = json.loads(run_manifest_path.read_text(encoding="utf-8"))
+    report = json.loads((run_manifest_path.parent / "report.json").read_text(encoding="utf-8"))
+    assert run_manifest["status"] == "finalized"
+    assert run_manifest["counts"]["selected_cases"] == 3
+    assert run_manifest["counts"]["harness_executed"] == 3
+    assert run_manifest["counts"]["harness_passed"] == 3
+    assert run_manifest["counts"]["harness_failed"] == 0
+    assert run_manifest["scorer_status"] == "completed"
+    assert report["scorer_status"] == "completed"
+    assert report["counts"]["scored_cases"] == 3
+
+
+def test_continue_by_run_id_resumes_specific_interrupted_run(
+    capsys,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _write_multi_case_stub_contract(tmp_path / "traps", "reasoning/chain-trap", case_count=2)
+    generated_root = tmp_path / "adapter" / "generated"
+    _write_generated_adapter(generated_root)
+
+    config_path = tmp_path / ".opentrap" / "opentrap.yaml"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(yaml.safe_dump(_base_payload(), sort_keys=False), encoding="utf-8")
+    samples_dir = tmp_path / ".opentrap" / "samples"
+    samples_dir.mkdir(parents=True, exist_ok=True)
+    _configure_trap_run_paths(
+        monkeypatch=monkeypatch,
+        tmp_path=tmp_path,
+        config_path=config_path,
+        samples_dir=samples_dir,
+        generated_root=generated_root,
+    )
+
+    initial_code = main(["run", "reasoning/chain-trap"])
+    initial_capture = capsys.readouterr()
+    assert initial_code == 0
+    run_manifest_path = _extract_manifest_path(initial_capture.out)
+    run_id = run_manifest_path.parent.name
+
+    _rewrite_run_as_interrupted(run_manifest_path, completed_case_count=1)
+
+    continue_code = main(["continue", run_id])
+    continue_capture = capsys.readouterr()
+    assert continue_code == 0
+    assert _extract_manifest_path(continue_capture.out) == run_manifest_path
+
+    run_manifest = json.loads(run_manifest_path.read_text(encoding="utf-8"))
+    assert run_manifest["status"] == "finalized"
+    assert run_manifest["counts"]["harness_executed"] == 2
+    assert run_manifest["scorer_status"] == "completed"
+
+
+def test_continue_fails_for_finalized_run(
+    capsys,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _write_stub_contract(tmp_path / "traps", "reasoning/chain-trap")
+    generated_root = tmp_path / "adapter" / "generated"
+    _write_generated_adapter(generated_root)
+
+    config_path = tmp_path / ".opentrap" / "opentrap.yaml"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(yaml.safe_dump(_base_payload(), sort_keys=False), encoding="utf-8")
+    samples_dir = tmp_path / ".opentrap" / "samples"
+    samples_dir.mkdir(parents=True, exist_ok=True)
+    _configure_trap_run_paths(
+        monkeypatch=monkeypatch,
+        tmp_path=tmp_path,
+        config_path=config_path,
+        samples_dir=samples_dir,
+        generated_root=generated_root,
+    )
+
+    run_code = main(["run", "reasoning/chain-trap"])
+    run_capture = capsys.readouterr()
+    assert run_code == 0
+    run_manifest_path = _extract_manifest_path(run_capture.out)
+    run_id = run_manifest_path.parent.name
+
+    continue_code = main(["continue", run_id])
+    continue_capture = capsys.readouterr()
+    assert continue_code == 1
+    assert "already finalized and cannot be continued" in continue_capture.err

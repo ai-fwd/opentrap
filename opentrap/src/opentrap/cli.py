@@ -12,7 +12,6 @@ import click
 import typer
 
 from opentrap.cli_rendering import build_renderer
-from opentrap.counts import COUNT_FIELDS
 from opentrap.config_loader import (
     ConfigError,
     HarnessConfig,
@@ -20,11 +19,17 @@ from opentrap.config_loader import (
     load_trap_config,
     write_trap_config,
 )
-from opentrap.evaluation import find_latest_finalized_run_manifest_global, run_trap_evaluation
+from opentrap.counts import COUNT_FIELDS
+from opentrap.evaluation import (
+    find_latest_finalized_run_manifest_global,
+    find_latest_non_finalized_run_manifest_global,
+    run_trap_evaluation,
+)
 from opentrap.events import emit_event
 from opentrap.io_utils import load_json
 from opentrap.run_orchestration import (
     RunEnvironment,
+    run_continue_trap,
     run_execute_trap,
     run_generate_trap,
     run_single_trap,
@@ -361,6 +366,15 @@ def _resolve_eval_manifest_path(run_ref: str) -> Path:
     return manifest_path
 
 
+def _resolve_continue_manifest_path(run_ref: str) -> Path:
+    if run_ref == "latest":
+        return find_latest_non_finalized_run_manifest_global(runs_dir=DEFAULT_RUNS_DIR)
+    manifest_path = DEFAULT_RUNS_DIR / run_ref / "run.json"
+    if not manifest_path.exists():
+        raise RuntimeError(f"run '{run_ref}' was not found in {DEFAULT_RUNS_DIR}")
+    return manifest_path
+
+
 def _resolve_trap_id_from_run_manifest(manifest: Mapping[str, object]) -> str:
     traps = manifest.get("traps")
     if not isinstance(traps, list):
@@ -439,6 +453,47 @@ def cmd_eval(run_ref: str, *, max_cases: int | None, verbose: bool) -> int:
     return 0
 
 
+def cmd_continue(run_ref: str, *, verbose: bool) -> int:
+    """Resume an interrupted run and complete evaluation."""
+    event_sink = build_renderer(verbose=verbose)
+    registry = _load_registry()
+    if registry is None:
+        emit_event(event_sink, "run_failed", stage="validate", error="could not load trap registry")
+        return 1
+
+    try:
+        run_manifest_path = _resolve_continue_manifest_path(run_ref)
+        run_manifest = load_json(run_manifest_path)
+        trap_id = _resolve_trap_id_from_run_manifest(run_manifest)
+    except Exception as exc:  # noqa: BLE001
+        emit_event(event_sink, "run_failed", stage="validate", error=str(exc))
+        return 1
+
+    try:
+        trap = registry.create_trap(trap_id)
+    except TrapRegistryError as exc:
+        emit_event(event_sink, "run_failed", stage="trap_init", error=str(exc))
+        return 1
+
+    environment = RunEnvironment(
+        repo_root=DEFAULT_REPO_ROOT,
+        runs_dir=DEFAULT_RUNS_DIR,
+        dataset_dir=DEFAULT_DATASET_DIR,
+        adapter_generated_root=DEFAULT_ADAPTER_GENERATED_ROOT,
+    )
+    try:
+        run_ready = run_continue_trap(
+            run_manifest_path=run_manifest_path,
+            trap=trap,
+            environment=environment,
+            event_sink=event_sink,
+        )
+    except Exception as exc:  # noqa: BLE001
+        emit_event(event_sink, "run_failed", stage="run", error=str(exc))
+        return 1
+    return 0 if run_ready.succeeded else 1
+
+
 @app.command("list")
 def list_command(
     target: Annotated[str, typer.Option("--target")] = "",
@@ -505,6 +560,18 @@ def eval_command(
     return cmd_eval(
         run,
         max_cases=max_cases,
+        verbose=verbose,
+    )
+
+
+@app.command("continue")
+def continue_command(
+    run: Annotated[str, typer.Argument(help="Interrupted run id or 'latest'.")] = "latest",
+    verbose: Annotated[bool, typer.Option("--verbose")] = False,
+) -> int:
+    """Resume an interrupted run and finish evaluation."""
+    return cmd_continue(
+        run,
         verbose=verbose,
     )
 
