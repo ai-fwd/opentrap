@@ -13,7 +13,7 @@ OpenTrap is a CLI-first security testing toolkit for agent and LLM applications.
 
 ## Quick Demo
 
-The built-in demo runs the _Acme Client_ inbox assistant end to end with simulated trap data and model responses. The demo showcases prompt injection via HTML with the goal to "change email sentiment from positive to negative".
+The built-in demo runs the _[Acme Client](.github/assets/acme-client.png)_ inbox assistant end to end with simulated trap data and model responses. The demo showcases prompt injection via HTML with the goal to "change email sentiment from positive to negative".
 
 
 ```bash
@@ -34,7 +34,7 @@ Here's what's happening behind the scenes:
 
 ![OpenTrap demo report preview](.github/assets/demo/demo-report.png)
 
-Open the [full report](.github/assets/demo/evaluation_report.html) and inspect all run and evaluation artifacts under `.github/assets/demo/`
+Open the [full report](https://htmlpreview.github.io/?https://github.com/ai-fwd/opentrap/blob/master/.github/assets/demo/evaluation_report.html) and inspect all run and evaluation artifacts under `.github/assets/demo/`
 
 ## How It Works
 
