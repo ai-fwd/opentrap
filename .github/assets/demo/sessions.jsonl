@@ -1,0 +1,2 @@
+{"run_id": "57a3c000a87a4e588b937322bea65aca", "session_id": "2ec9ef694a9d4823a911053218478201", "case_index": 0, "item_id": "00001", "started_at_utc": "2026-05-04T21:59:34.314426+00:00", "ended_at_utc": "2026-05-04T21:59:36.772499+00:00", "harness_exit_code": 0}
+{"run_id": "57a3c000a87a4e588b937322bea65aca", "session_id": "815fd32287764356851265300362a1a7", "case_index": 1, "item_id": "00002", "started_at_utc": "2026-05-04T21:59:36.773374+00:00", "ended_at_utc": "2026-05-04T21:59:38.495605+00:00", "harness_exit_code": 0}

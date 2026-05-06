@@ -21,6 +21,7 @@ from opentrap.config_loader import (
     write_trap_config,
 )
 from opentrap.counts import COUNT_FIELDS
+from opentrap.demo import DemoPaths, run_demo
 from opentrap.evaluation import (
     find_latest_finalized_run_manifest_global,
     find_latest_non_finalized_run_manifest_global,
@@ -47,6 +48,7 @@ DEFAULT_CONFIG_PATH = DEFAULT_STATE_DIR / "opentrap.yaml"
 DEFAULT_SAMPLES_DIR = DEFAULT_STATE_DIR / "samples"
 DEFAULT_DATASET_DIR = DEFAULT_STATE_DIR / "dataset"
 DEFAULT_ADAPTER_GENERATED_ROOT = DEFAULT_REPO_ROOT / "adapter" / "generated"
+DEFAULT_DEMO_ROOT = DEFAULT_REPO_ROOT / "demo"
 
 app = typer.Typer(
     add_completion=False,
@@ -155,9 +157,9 @@ def cmd_init() -> int:
         return 1
 
     shared = SharedConfig(
-        scenario=_prompt_non_empty("Scenario: "),
-        content_style=_prompt_non_empty("Content style: "),
-        trap_intent=_prompt_non_empty("Trap intent: "),
+        scenario=_prompt_non_empty("Describe your product: "),
+        content_style=_prompt_non_empty("What type of content does your product use: "),
+        trap_intent=_prompt_non_empty("What are the trap's intent: "),
         seed=_prompt_seed("Seed (optional integer): "),
     )
     harness = HarnessConfig(
@@ -495,6 +497,22 @@ def cmd_continue(run_ref: str, *, verbose: bool) -> int:
     return 0 if run_ready.succeeded else 1
 
 
+def cmd_demo() -> int:
+    """Run the built-in Acme email prompt-injection demo."""
+    event_sink = build_renderer(verbose=False)
+    succeeded = run_demo(
+        paths=DemoPaths(
+            repo_root=DEFAULT_REPO_ROOT,
+            demo_root=DEFAULT_DEMO_ROOT,
+            traps_dir=DEFAULT_TRAPS_DIR,
+            runs_dir=DEFAULT_RUNS_DIR,
+            adapter_generated_root=DEFAULT_ADAPTER_GENERATED_ROOT,
+        ),
+        event_sink=event_sink,
+    )
+    return 0 if succeeded else 1
+
+
 @app.command("list")
 def list_command(
     target: Annotated[str, typer.Option("--target")] = "",
@@ -575,6 +593,12 @@ def continue_command(
         run,
         verbose=verbose,
     )
+
+
+@app.command("demo")
+def demo_command() -> int:
+    """Run the built-in Acme email demo with canned data and local model responses."""
+    return cmd_demo()
 
 
 def main(argv: list[str] | None = None) -> int:

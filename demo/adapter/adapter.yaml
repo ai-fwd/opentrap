@@ -1,0 +1,18 @@
+routes:
+  - name: inbox-passthrough
+    path: /_upstream/inbox
+    methods: [GET]
+    mode: passthrough
+    upstream: acme_client
+  - name: upstream-email
+    path: /_upstream/emails/{email_id}
+    methods: [GET]
+    mode: intercept
+  - name: openai-responses
+    path: /v1/responses
+    methods: [POST]
+    mode: observe
+    upstream: openai
+upstreams:
+  acme_client: http://127.0.0.1:3000
+  openai: http://127.0.0.1:7861
